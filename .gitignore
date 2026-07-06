@@ -1,0 +1,12 @@
+# Zephyr build output
+build/
+*.build/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Editor / OS
+.vscode/
+.DS_Store

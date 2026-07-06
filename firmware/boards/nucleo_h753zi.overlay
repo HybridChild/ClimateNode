@@ -1,0 +1,9 @@
+/* Adafruit SCD-40 on I2C1 (SCL=PB8, SDA=PB9). The board dts already enables
+ * i2c1 with the right pinctrl, so we add only the sensor child node. */
+&i2c1 {
+	scd40: scd40@62 {
+		compatible = "sensirion,scd40";
+		reg = <0x62>;
+		status = "okay";
+	};
+};
