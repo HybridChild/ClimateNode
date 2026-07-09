@@ -1,0 +1,421 @@
+# Understanding the Zephyr Build System
+
+*A from-first-principles guide to how a Zephyr application actually gets built.*
+
+This is a teaching document, not project documentation. It explains the concepts,
+components, and flow of the Zephyr build system in the order that makes them easiest to
+learn. It uses this repository — a CO₂ sensor node on an ST Nucleo-H753ZI — only as a
+running example to keep the ideas concrete. For the project-specific details (exact file
+paths, verified line numbers, the artifact-by-artifact table), see its companion,
+[`build-system-overview.md`](build-system-overview.md).
+
+---
+
+## 1. Why the Zephyr build feels strange at first
+
+If you come from application programming, "building" means: take my source files, compile
+them, link them, done. A Zephyr build is not that. Or rather, *that* is only the last and
+least interesting step.
+
+The reason is that Zephyr targets *thousands* of different circuit boards and
+microcontrollers from one shared source tree, and it lets you compile in or leave out
+hundreds of independent features. Before a single line of your `main.c` can be compiled,
+the build system has to answer two questions that an application programmer never thinks
+about:
+
+1. **What hardware am I running on, and how is it wired?** (Which UART is the console?
+   Where is the I²C controller? What clock feeds it?)
+2. **Which of Zephyr's features do I want compiled into this particular image?**
+   (Networking? The sensor subsystem? Which drivers?)
+
+Neither answer lives in your C code. Both are *resolved by the build system* and then
+handed to your code as generated headers. So the mental model you need is not "compiler" —
+it is **"a configuration system that generates code, which then gets compiled."** Once you
+internalise that, everything else falls into place.
+
+---
+
+## 2. The one big idea: two questions, two systems, resolved before boot
+
+Zephyr answers those two questions with two entirely separate machineries, and the single
+most useful thing you can hold in your head is which is which:
+
+| The question | The system that answers it | Its nature |
+| --- | --- | --- |
+| *What hardware exists, and how is it wired?* | **Devicetree** | **Facts** — dictated by the physical board. Ideally data, not code. |
+| *Which software features do I compile in?* | **Kconfig** | **Policy** — your choice, and it can differ per application. |
+
+Keep these apart in your mind and you have already understood most of the system. Almost
+every file you will touch, and every generated artifact you will see, belongs to one side
+or the other. The build's central job is to **reconcile** the two — to take "the hardware
+has an I²C-attached CO₂ sensor" (a devicetree fact) and "yes, compile the sensor
+subsystem" (a Kconfig policy) and turn them into a working driver bound to a real bus.
+
+There is a second idea, just as important: **Zephyr resolves everything it possibly can at
+compile time.** On a big operating system, a driver might scan a bus at runtime and
+discover devices. Zephyr does the opposite — by the time `main()` runs, your sensor is
+*already* a fully-formed `struct device` in memory, with its bus and address baked in by
+macros that were expanded during the build. "Describe the hardware as data; resolve before
+boot" is the philosophy behind the whole design. Nearly every arrow in this document
+happens on your workstation during the build, not on the microcontroller.
+
+---
+
+## 3. The three tools: who does what
+
+Three programs cooperate to produce firmware, and they sit in a strict hierarchy. Confusing
+their roles is the most common source of "wait, what actually does the building?"
+
+```
+west   — orchestrates: manages the source tree and launches the build   (Python)
+cmake  — configures:   answers the two questions, plans the build
+ninja  — executes:     runs the planned compile and link commands
+```
+
+**West** is a workspace manager, not a build tool. Zephyr is not one repository — it is the
+core `zephyr` tree plus dozens of separate modules (hardware abstraction layers, crypto
+libraries, `nanopb`, and so on). West's original job is to clone and version-pin all of
+them from a manifest (`west init`, `west update`). It *also* offers `west build` as a
+convenience, but that command is a thin wrapper: it works out the board and paths, then
+shells out to CMake and Ninja. West itself compiles nothing.
+
+**CMake** is where the real intelligence lives. When you build a normal C project, CMake's
+job is modest — find some libraries, generate a Makefile. In Zephyr, CMake runs the entire
+configuration process described in this document: it resolves the board, parses the
+devicetree, runs Kconfig, and only then plans the compilation. Its *output* is not object
+files; it is a complete, static list of every command needed to build the firmware.
+
+**Ninja** is deliberately dumb and fast. It reads the command list CMake produced
+(`build.ninja`) and executes it, rebuilding only what changed. It makes no decisions.
+
+A useful slogan: **CMake thinks, Ninja executes.** This split has a practical consequence
+you will feel daily. Editing a `.c` file changes nothing about the *configuration*, so only
+Ninja needs to re-run — fast. But editing your devicetree overlay, your `prj.conf`, or a
+Kconfig option changes the configuration itself, so CMake must run again to regenerate
+everything downstream. Usually the build detects this automatically; when generated state
+gets into a confusing stale condition, a *pristine* build (`west build -p`) wipes the output
+directory and starts the configuration from scratch.
+
+---
+
+## 4. Devicetree: describing the hardware
+
+### 4.1 What it is
+
+Devicetree is a small, declarative language for describing hardware. Zephyr borrowed it
+from the Linux kernel, where it solved exactly the same problem: one kernel binary that
+runs on many boards, each described by a data file instead of by board-specific C code.
+
+A devicetree is a hierarchy of **nodes**, each with **properties**. A node describes one
+piece of hardware — a UART, an I²C controller, a sensor — and its properties describe that
+hardware's parameters:
+
+```dts
+&i2c1 {                          /* an I²C controller that already exists in the SoC */
+    status = "okay";             /* this peripheral is present and enabled */
+    clock-frequency = <400000>;
+};
+```
+
+Two properties carry special weight and deserve immediate attention:
+
+- **`status`** is either `"okay"` (this hardware is present and should be used) or
+  `"disabled"` (it exists on the chip but is not wired up on this board). A vast number of
+  build problems come down to a node not being `"okay"`.
+- **`compatible`** is a string naming *what kind of device this is*, e.g.
+  `"sensirion,scd40"`. It is the single most important concept in devicetree, and we return
+  to it below.
+
+### 4.2 Layering: SoC, board, and your overlay
+
+You never write a devicetree from scratch. It is assembled in layers, each adding to or
+overriding the one beneath:
+
+1. **The SoC include** (`.dtsi`) ships with Zephyr and declares every peripheral the chip
+   *has* — on the STM32H753, that is every I²C, SPI, UART, the Ethernet MAC, and so on —
+   most of them `disabled` by default.
+2. **The board file** (`.dts`) is written by whoever ported the board. It takes the SoC's
+   peripherals and turns `"okay"` the ones this board actually wires out, assigning the
+   physical pins. On the Nucleo-H753ZI, that includes enabling `&i2c1` on pins PB8/PB9 and
+   the Ethernet MAC with its PHY.
+3. **Your overlay** is where *you* customise, without touching the tree. This is a crucial
+   point about how you are meant to work: **the SoC and board files live in the read-only
+   Zephyr workspace and you do not edit them.** Instead you supply a small overlay that is
+   merged on top.
+
+In this project, the sensor is not part of the board — it is a breakout we wired on. So the
+overlay grafts a new child node onto the existing I²C controller:
+
+```dts
+&i2c1 {                          /* reference the board's existing controller… */
+    scd40: scd40@62 {            /* …and add our sensor as a child of it */
+        compatible = "sensirion,scd40";
+        reg = <0x62>;            /* the sensor's address on the I²C bus */
+        status = "okay";
+    };
+};
+```
+
+The `@62` in the node name and `reg = <0x62>` are the device's I²C address. Making the
+sensor a *child* of the I²C node is how devicetree expresses "this device sits on that
+bus" — a relationship the driver will read back later.
+
+### 4.3 `compatible` and bindings: the linchpin
+
+Return to `compatible`, because it does two independent jobs, and understanding both
+unlocks how hardware descriptions connect to actual code.
+
+Every `compatible` string points to a **binding** — a YAML schema file in the Zephyr tree
+(here, `dts/bindings/sensor/sensirion,scd40.yaml`). The binding declares which properties a
+node of that kind may have and what they mean. This is the first job: **validation.** When
+the tree is parsed, each node is checked against its binding; a typo'd property or a missing
+required one is an error, caught on your workstation, not in the field.
+
+The second job is **driver binding**. A Zephyr driver announces which `compatible` it
+serves:
+
+```c
+#define DT_DRV_COMPAT sensirion_scd40      /* note: the comma becomes an underscore */
+```
+
+and then a macro walks the tree and instantiates that driver *once for every enabled node*
+with that compatible. One string, matched from two directions — schema on one side, driver
+on the other. Get it wrong and the build fails immediately; it never silently misbehaves at
+runtime.
+
+### 4.4 How the devicetree becomes something code can use
+
+Here is where people are often misled by the name. There is a classic tool called `dtc`,
+the "devicetree compiler," and you might assume Zephyr uses it to process the tree. **It
+does not** — not as the real processor. Zephyr parses the devicetree with its own Python
+library (`edtlib`) and runs `dtc`, if it is even installed, only as an optional linter to
+catch extra warnings.
+
+The real pipeline is three Python scripts, and the artifact at its centre is a parsed model
+of the tree saved as `edt.pickle`:
+
+```
+board .dts ┐
+SoC  .dtsi ├─► cpp ─► (merged source) ─► gen_edt.py ─► edt.pickle ─► gen_defines.py ─► devicetree_generated.h
+overlay    ┘                                 ▲
+bindings ────────────────────────────────────┘
+```
+
+Step by step:
+
+- **`cpp`** — the C preprocessor — runs first, expanding the `#include`s and macros in the
+  devicetree source into one flat text file. (Yes, the same preprocessor used for C; the
+  `.dts` format deliberately reuses it.)
+- **`gen_edt.py`** reads that flattened source *plus the bindings* and produces
+  **`edt.pickle`**, the authoritative in-memory model of your hardware. It also writes a
+  human-readable `zephyr.dts` — the fully-merged tree, invaluable for answering "did my
+  overlay actually take effect?"
+- **`gen_defines.py`** turns `edt.pickle` into **`devicetree_generated.h`**, a very large
+  header full of `#define`s describing every node.
+
+Your code never reads that header directly. Instead it uses the friendly `DT_*` macros from
+`<zephyr/devicetree.h>`, which expand down to those generated defines. `DT_NODELABEL(scd40)`
+finds the node you labelled; `DEVICE_DT_GET(...)` turns it into a pointer to the driver
+instance; `I2C_DT_SPEC_INST_GET(...)` reads a node's parent bus and address. All of it
+resolves at compile time — the devicetree exists only during the build.
+
+---
+
+## 5. Kconfig: choosing the software
+
+### 5.1 What it is
+
+Kconfig is the other half, and it too comes straight from the Linux kernel. Where
+devicetree describes hardware, Kconfig selects **software features**. Every configurable
+piece of Zephyr — a subsystem, a driver, a library, a buffer size — is a Kconfig **symbol**,
+conventionally referred to in C as `CONFIG_SOMETHING`.
+
+Symbols have types (boolean, integer, string), **defaults**, and — importantly —
+**dependencies** on one another. A driver can declare that it `depends on` a bus being
+enabled, or that enabling it should `select` (force on) a library it needs. This dependency
+graph is what lets you say "I want the sensor subsystem" and have the I²C driver and the
+CRC library pulled in automatically.
+
+### 5.2 Where the answers come from
+
+The final configuration is layered, much like the devicetree, with later layers overriding
+earlier ones:
+
+- The **Kconfig files in the tree** define every symbol, its default, and its dependencies.
+- The **board's `defconfig`** sets baseline choices appropriate to the board.
+- Your **`prj.conf`** — in your application — sets the choices for *this* build. This is the
+  file you edit to turn features on:
+
+  ```conf
+  CONFIG_SENSOR=y     # compile the sensor subsystem
+  CONFIG_I2C=y        # compile the I²C drivers
+  ```
+
+Kconfig reconciles all of these into one resolved answer set: **`.config`**, a flat list of
+every symbol's final value. From `.config` it mechanically generates **`autoconf.h`**, the
+same information as C macros (`CONFIG_SENSOR=y` becomes `#define CONFIG_SENSOR 1`).
+
+### 5.3 How the configuration reaches your code — two routes
+
+The configuration influences the build in two distinct ways, and it is worth separating
+them:
+
+1. **It selects which source files are compiled at all.** CMake reads `.config`, and Zephyr's
+   build glue adds a driver's `.c` files to the build *only if* its `CONFIG_` symbol is set.
+   The SCD4x driver is compiled because `CONFIG_SCD4X` is `y`; on a build where it is not, the
+   file is simply never handed to the compiler.
+2. **It parametrises the code that is compiled.** `autoconf.h` is *force-included* into every
+   single translation unit (via the compiler's `-imacros` flag). That is why any `.c` file can
+   write `#ifdef CONFIG_SOMETHING` without an `#include` — the definitions are always already
+   there. This is how one source file compiles differently for different configurations.
+
+---
+
+## 6. The bridge: how enabling hardware turns on software
+
+We now have the two halves. The most elegant part of the whole system is how they connect —
+how the mere presence of a sensor in your devicetree causes its driver to be compiled,
+without you ever setting the driver's Kconfig option by hand.
+
+The coupling is a clean division of labour between *declaring* a configuration symbol and
+*deciding its value*:
+
+- **Declaration comes from the bindings, and is board-independent.** A script
+  (`gen_driver_kconfig_dts.py`) scans *every binding in the tree* and emits, for each
+  possible `compatible`, a Kconfig symbol named `DT_HAS_<COMPATIBLE>_ENABLED`. This produces
+  a generated Kconfig file that declares thousands of such symbols — for every kind of
+  hardware Zephyr knows about, whether or not you have it.
+- **The value comes from your actual tree.** Each of those symbols is defined as:
+
+  ```
+  config DT_HAS_SENSIRION_SCD40_ENABLED
+      def_bool $(dt_compat_enabled,sensirion,scd40)
+  ```
+
+  where `dt_compat_enabled` is a Kconfig helper function that, during configuration, reads
+  **`edt.pickle`** and returns true only if some `"okay"` node in *your* tree has that
+  compatible.
+
+So `edt.pickle` — the parsed devicetree — is consulted twice: once by `gen_defines.py` to
+make the C macros, and once here, by Kconfig, to decide these `DT_HAS_*` values. The
+bindings say which symbols *can* exist; your hardware says which are *true*.
+
+The payoff is the driver's own Kconfig entry:
+
+```
+config SCD4X
+    default y
+    depends on DT_HAS_SENSIRION_SCD40_ENABLED || DT_HAS_SENSIRION_SCD41_ENABLED
+    select I2C
+    select CRC
+```
+
+Because your overlay put an `"okay"` `sensirion,scd40` node in the tree,
+`DT_HAS_SENSIRION_SCD40_ENABLED` became true, so `CONFIG_SCD4X` defaulted to `y` — and it
+`select`ed the I²C and CRC libraries it needs. You enabled a driver, and pulled in its
+dependencies, purely by describing the hardware. That is the devicetree→Kconfig bridge, and
+it is the heart of Zephyr's configuration model.
+
+---
+
+## 7. The whole build, start to finish
+
+With the concepts in hand, here is the actual sequence when you run `west build`. Notice
+that configuration (everything CMake does) comes first, and compilation is the very last
+act.
+
+1. **West** works out the board and paths and invokes **CMake**.
+2. Your application's `CMakeLists.txt` calls `find_package(Zephyr)`. This is the seam where
+   your project hands control to Zephyr's build system. It must come *before* the CMake
+   `project()` call, because Zephyr needs to install its cross-compiler before CMake probes
+   the compiler — otherwise CMake would test your host `gcc` instead of the ARM one.
+3. `find_package(Zephyr)` pulls in Zephyr's ordered list of build modules. The order is a
+   dependency chain, and one ordering fact matters most: **the devicetree stage runs before
+   the Kconfig stage**, precisely because Kconfig needs `edt.pickle` (via the bridge of
+   §6). Roughly: resolve the board → **devicetree** → **Kconfig** → select the CPU
+   architecture and SoC support → finally the kernel module, which defines the `app` build
+   target that your source attaches to.
+4. Along the way, all the generated files we have discussed are written into the build
+   directory: `edt.pickle`, `devicetree_generated.h`, the generated Kconfig, `.config`,
+   `autoconf.h`.
+5. Only now does CMake plan the compilation — using `.config` to decide which sources are
+   in — and emit `build.ninja`.
+6. **Ninja** runs the compile and link commands, and you get a firmware image.
+
+A detail from step 3 that surprises newcomers: your `CMakeLists.txt` says
+`target_sources(app PRIVATE src/main.c)`, yet you never created an `app` target. Zephyr's
+kernel module created it for you. You are not defining an executable; you are contributing
+your source into Zephyr's pre-existing application target, which is then linked against the
+kernel.
+
+---
+
+## 8. Worked example: from a node in the tree to bytes on the wire
+
+Let us follow this project's sensor all the way through, because it exercises every concept
+above. The theme to watch for is the **compile-time / runtime boundary** — almost everything
+happens during the build.
+
+1. **You describe the hardware.** Your overlay adds the `scd40@62` node under `&i2c1`
+   (§4.2). That is the only hardware fact you supply.
+2. **The tree is parsed.** `cpp` flattens the sources, `gen_edt.py` merges your overlay in
+   and records the node in `edt.pickle`, validating it against the `sensirion,scd40` binding.
+3. **C macros are generated.** `gen_defines.py` writes defines describing the node — crucially,
+   that its parent bus is the I²C controller and its address is `0x62`.
+4. **The bridge fires.** The generated Kconfig declares `DT_HAS_SENSIRION_SCD40_ENABLED`, and
+   `dt_compat_enabled` reads `edt.pickle` and makes it true.
+5. **Kconfig resolves.** `CONFIG_SCD4X` defaults `y`; it selects `CONFIG_I2C` and `CONFIG_CRC`.
+   These land in `.config` and `autoconf.h`.
+6. **The driver is compiled.** Because `CONFIG_SCD4X` is set, CMake includes the driver's
+   `scd4x.c` in the build.
+7. **The driver instantiates itself for your node.** Its `DT_DRV_COMPAT` is `sensirion_scd40`,
+   and a for-each macro creates exactly one device instance — the one you declared. Its
+   configuration captures the bus and address by reading the generated macros from step 3
+   (`I2C_DT_SPEC_INST_GET`). A `struct device` now exists, with a table of function pointers
+   for "fetch a sample" and "read a channel."
+8. **Your application gets a handle.** In `main.c`, `DEVICE_DT_GET(DT_NODELABEL(scd40))`
+   resolves — at compile time — to a pointer to that exact device. If the node did not exist,
+   this would not compile.
+
+Everything to this point happened during the build. Only the final step is runtime:
+
+9. **You read the sensor.** `sensor_sample_fetch()` calls through the device's function-pointer
+   table into the driver, which finally performs a real I²C transaction on the bus — the only
+   part of the whole story that touches hardware.
+
+The arrow from "`&i2c1`" to "the SCD40 driver talking to address `0x62`" was drawn entirely
+by macros during compilation. By the time the firmware runs, there is nothing to discover.
+
+---
+
+## 9. Working with the system day to day
+
+A few practical habits follow directly from the model:
+
+- **Customise with overlays and `prj.conf`, never by editing the tree.** The board and SoC
+  files are shared, read-only infrastructure. Your hardware additions go in an overlay; your
+  feature choices go in `prj.conf`. This is why the system is built the way it is.
+- **When a device isn't working, read the generated `zephyr.dts` first.** It is the fully
+  merged tree. If your node isn't there, or isn't `"okay"`, your overlay didn't take — a
+  build/config problem, before any driver code is even involved.
+- **When a feature isn't compiled, read `.config`.** If `CONFIG_YOURTHING` isn't `y`, the code
+  was never built. Check its `depends on` — often an unmet devicetree or Kconfig dependency is
+  silently keeping it off.
+- **Reach for a pristine build (`-p`) after devicetree or Kconfig changes** if results look
+  stale — those changes ripple through generated files, and a clean regenerate removes doubt.
+- **Never edit anything under the build directory.** It is all generated and will be
+  overwritten. Change the *inputs* and rebuild.
+
+---
+
+## 10. The model in one paragraph
+
+A Zephyr build is a configuration system that generates code and then compiles it. Two
+independent systems answer two independent questions: **devicetree** describes the hardware
+(facts, from the board), and **Kconfig** selects the software (policy, your choice). The
+devicetree is parsed into `edt.pickle`, which becomes both the C macros your code reads and
+the values that decide which drivers Kconfig turns on — that shared parsed tree is the bridge
+between the two halves. CMake runs this entire reconciliation up front and hands a static
+build plan to Ninja, which does the actual compiling. And because it all resolves before the
+target boots, your hardware arrives in `main()` already described, already configured, and
+already bound to its driver.
