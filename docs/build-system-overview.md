@@ -25,7 +25,7 @@ which uses the sibling `../ImpulseZephyr` repo as its reference.
 ```cmake
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})   # line 3 — the seam; must precede project()
 project(scd40_read)
-target_sources(app PRIVATE src/main.c)                  # `app` target is created by Zephyr's kernel.cmake
+target_sources(app PRIVATE src/main.cpp)                # `app` target is created by Zephyr's kernel.cmake
 ```
 
 `find_package(Zephyr)` loads `share/zephyr-package/cmake/ZephyrConfig.cmake`, which prepends
@@ -46,7 +46,7 @@ target_sources(app PRIVATE src/main.c)                  # `app` target is create
 
 | Role | Examples | Rule |
 |---|---|---|
-| **Source inputs — your app** | overlay, `prj.conf`, `CMakeLists.txt`, `main.c` (in *this* repo) | you author these |
+| **Source inputs — your app** | overlay, `prj.conf`, `CMakeLists.txt`, `main.cpp` (in *this* repo) | you author these |
 | **Source inputs — the tree** (read-only) | board `.dts`, SoC `.dtsi`, defconfig, bindings, in-tree driver `.c`/`Kconfig` | live in `~/zephyr-workspace/zephyr`; **override** via overlay/`prj.conf`, don't edit |
 | **Generators** (run at CMake configure) | C preprocessor (`cpp`), the three DT Python scripts, Kconfig | run automatically |
 | **Generated artifacts** | `zephyr.dts`, `devicetree_generated.h`, `Kconfig.dts`, `.config`, `autoconf.h` | live in `build/` only — **never edit** |
@@ -122,8 +122,8 @@ test `#ifdef CONFIG_SCD4X` with no `#include`.
 | ↓ CMake | `scd4x/CMakeLists.txt` | compiles `scd4x.c` **because** `CONFIG_SCD4X` |
 | ↓ driver | `scd4x.c:902-903` | `DT_DRV_COMPAT sensirion_scd40` + `DT_INST_FOREACH_STATUS_OKAY` → 1 instance |
 | ↓ driver | `scd4x.c:894` | `.bus = I2C_DT_SPEC_INST_GET(0)` ← reads the `_BUS`/`_ADDRESS` macros above |
-| ↓ app | `firmware/src/main.c:16` | `DEVICE_DT_GET(DT_NODELABEL(scd40))` ← same node symbol |
-| ↓ runtime | `firmware/src/main.c:26` | `sensor_sample_fetch()` → I²C bytes on the wire |
+| ↓ app | `firmware/src/main.cpp:25` | `DEVICE_DT_GET(DT_NODELABEL(scd40))` ← same node symbol |
+| ↓ runtime | `firmware/src/main.cpp:35` | `sensor_sample_fetch()` → I²C bytes on the wire |
 
 Everything above the `sample_fetch` row resolves **at compile time**; only the final I²C
 exchange is runtime. The command codes, timings, and CRC-8 params underneath

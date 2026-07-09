@@ -5,11 +5,20 @@
  * sample lands roughly every 5 s. sensor_sample_fetch() returns 0 WITHOUT
  * updating the values when no new sample is ready, so the first reads after boot
  * may show stale/zero data — we poll on a 5 s cadence to match the sensor.
+ *
+ * C++ app (see docs/language-cpp.md): the sensor API is a C API called directly
+ * from C++. `main` is never name-mangled, so it needs no extern "C".
  */
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/sensor.h>
+/* C header, not <cstdio>: the minimal C++ runtime (no CONFIG_REQUIRES_FULL_LIBCPP)
+ * ships no <c*> wrapper headers — see docs/language-cpp.md. */
 #include <stdio.h>
+
+namespace {
+constexpr k_timeout_t kSamplePeriod = K_SECONDS(5);
+}  // namespace
 
 int main(void)
 {
@@ -21,13 +30,13 @@ int main(void)
 	}
 	printf("SCD-40 online — first valid sample in ~5 s\n");
 
-	while (1) {
+	while (true) {
 		struct sensor_value co2, temp, hum;
 		int rc = sensor_sample_fetch(scd40);
 
 		if (rc != 0) {
 			printf("sample_fetch failed: %d\n", rc);
-			k_sleep(K_SECONDS(5));
+			k_sleep(kSamplePeriod);
 			continue;
 		}
 
@@ -40,7 +49,7 @@ int main(void)
 		       sensor_value_to_double(&temp),
 		       sensor_value_to_double(&hum));
 
-		k_sleep(K_SECONDS(5));
+		k_sleep(kSamplePeriod);
 	}
 	return 0;
 }

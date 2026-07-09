@@ -12,9 +12,9 @@ Builds against the shared global Zephyr workspace — see [`toolchain.md`](toolc
 ```
 firmware/
 ├── CMakeLists.txt              freestanding app (find_package(Zephyr HINTS $ENV{ZEPHYR_BASE}))
-├── prj.conf                    Kconfig: sensor + I2C + float printf
+├── prj.conf                    Kconfig: C++17 + sensor + I2C + float printf
 ├── boards/nucleo_h753zi.overlay   the SCD-40 device on I2C1
-└── src/main.c                  fetch/get loop, prints every 5 s
+└── src/main.cpp                fetch/get loop, prints every 5 s
 scripts/
 ├── build.sh                    wraps `west build` (venv + ZEPHYR_BASE + -s/-d)
 └── flash.sh                    wraps `west flash -r openocd`
@@ -46,6 +46,8 @@ of the I²C bus:
 **2. Kconfig — `firmware/prj.conf`.**
 
 ```
+CONFIG_CPP=y               # build the app as C++ (see language-cpp.md)
+CONFIG_STD_CPP17=y         # …at C++17 (default would be C++11)
 CONFIG_SENSOR=y            # the sensor subsystem (sample_fetch / channel_get API)
 CONFIG_I2C=y               # I2C bus driver
 CONFIG_STDOUT_CONSOLE=y    # route printf() to the console UART
@@ -57,7 +59,7 @@ Note what's *absent*: we never set `CONFIG_SCD4X`. The driver's Kconfig is `defa
 pulls in `I2C` + `CRC`). Verified in the build: `CONFIG_SCD4X=y`, `CONFIG_CRC=y` appear in
 `build/zephyr/.config` without us asking.
 
-**3. Application — `firmware/src/main.c`.** The classic synchronous sensor loop:
+**3. Application — `firmware/src/main.cpp`.** The classic synchronous sensor loop:
 
 - `DEVICE_DT_GET(DT_NODELABEL(scd40))` resolves the overlay's `scd40:` label to a device pointer *at
   compile time* — if the overlay didn't apply, the build fails rather than crashing at runtime.

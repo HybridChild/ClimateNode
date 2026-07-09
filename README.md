@@ -18,7 +18,7 @@ To make the telemetry *real* (rather than a hard-coded counter), the node reads 
 - **Host:** Raspberry Pi 5 (Linux) — native Gigabit Ethernet, wired **direct-cable** to the Nucleo (no switch). Static IPs on both ends in one subnet, e.g. Pi `192.168.10.1` / Nucleo `192.168.10.2`, mask `255.255.255.0`, no gateway. The Nucleo's LAN8742 PHY has Auto-MDIX, so a normal straight-through cable works. Runs a **Mosquitto MQTT broker** plus the Python test harness (a paho-mqtt client that subscribes to telemetry and publishes commands); can stay permanently wired as a dedicated bench host.
 
 ## What "done" looks like (scope)
-A Zephyr app on the Nucleo that:
+A Zephyr app on the Nucleo — written in **C++ (C++17)** to match the real firmware; see [`docs/language-cpp.md`](docs/language-cpp.md) — that:
 1. Brings up the network interface and connects as an **MQTT client** to the broker on the Pi (keepalive/ping, reconnect on drop).
 2. Reads the SCD-40 over I²C via Zephyr's **sensor API** (upstream `sensirion,scd40` / `scd4x` driver): `SENSOR_CHAN_CO2`, `SENSOR_CHAN_AMBIENT_TEMP`, `SENSOR_CHAN_HUMIDITY`.
 3. **Publishes** those readings as a **Protobuf telemetry message** to a telemetry topic (~every 5 s), and **subscribes** to a command topic, answering with a **Protobuf ack** — encoding/decoding with **nanopb**. MQTT carries each message as one complete payload, so there is no app-level framing / stream reassembly.
@@ -40,8 +40,8 @@ Small but realistic — enough to feel like the real node↔PC protocol:
 Suggested topics: `node/<id>/telemetry`, `node/<id>/command`, `node/<id>/ack`. The SCD-40's ~5 s sample rate defines the natural telemetry period; the command path lets the host change or force it.
 
 ## Proposed structure (to be filled in later)
-- `proto/` — the `.proto` schema (shared contract) + nanopb `.options`.
-- `firmware/` — Zephyr application (`prj.conf`, `CMakeLists.txt`, `src/`, and a **board overlay** defining the I²C bus + `sensirion,scd40` node).
+- `proto/` — the `.proto` schema (shared contract) + nanopb `.options`. Generated `*.pb.c/.h` are **C** and stay C even though the firmware is C++ (they're included across the C↔C++ boundary; see [`docs/language-cpp.md`](docs/language-cpp.md)).
+- `firmware/` — Zephyr application in **C++17** (`prj.conf` with `CONFIG_CPP=y`, `CMakeLists.txt`, `src/*.cpp`, and a **board overlay** defining the I²C bus + `sensirion,scd40` node).
 - `host/` — host test harness: a **Mosquitto** broker config + a Python **paho-mqtt** client that encodes/decodes Protobuf, subscribes to telemetry, and publishes commands.
 - `docs/` — notes: MQTT topic/QoS decisions, versioning experiments, sensor/overlay setup, gotchas.
 
