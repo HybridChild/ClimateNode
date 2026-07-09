@@ -7,7 +7,9 @@ file, consumed by what* — verified against a real `firmware/build/` for `nucle
 **For the concepts** (the mental model, why it's designed this way, how devicetree and
 Kconfig fit together) see the companion guide,
 [`zephyr-build-system-guide.md`](zephyr-build-system-guide.md). This file is the lookup
-reference that guide points back to.
+reference that guide points back to. For the *hard* hardware case — a full out-of-tree board
+for an MCU Zephyr doesn't ship — see [`out-of-tree-hardware-overview.md`](out-of-tree-hardware-overview.md),
+which uses the sibling `../ImpulseZephyr` repo as its reference.
 
 ## Workspace & entry point
 
