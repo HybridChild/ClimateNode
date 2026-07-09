@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Working principles
 
-- The deliverable is fluency in the three patterns the README calls out — TCP framing, schema versioning, nanopb on a constrained target — not a polished product. Treat those as the real work.
+- The deliverable is fluency in the patterns the README calls out — MQTT client lifecycle (connect/keepalive/reconnect, QoS, topics), zbus as the internal bus, schema versioning, and nanopb on a constrained target — not a polished product. Treat those as the real work.
 - When a choice trades simplicity for fidelity to the real firmware↔SW-team contract, prefer fidelity. That is the point of the exercise.
 - `proto/` is the single source of truth for the wire format; firmware and host both derive from it. Change the schema there and regenerate — never hand-edit generated code.
 - Sensor access goes through Zephyr's sensor API, not raw I²C command codes. `../../shared_refs/sensor/SCD4x.yaml` documents what the driver does underneath (command codes, conversion formulas, CRC-8 params) — reach for it when debugging the sensor path.
