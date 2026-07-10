@@ -1,0 +1,13 @@
+{
+  // Shared IntelliSense stack for this Zephyr app: clangd reads
+  // firmware/build/compile_commands.json (see settings.json), which the
+  // Microsoft C/C++ engine can't consume cleanly (Zephyr's GCC-only flags).
+  // settings.json disables cpptools' IntelliSense; these entries make a fresh
+  // VS Code recommend clangd and flag cpptools as the one to avoid.
+  "recommendations": [
+    "llvm-vs-code-extensions.vscode-clangd"
+  ],
+  "unwantedRecommendations": [
+    "ms-vscode.cpptools"
+  ]
+}

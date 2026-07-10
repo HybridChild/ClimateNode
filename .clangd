@@ -1,0 +1,25 @@
+# clangd config for this freestanding Zephyr app.
+#
+# clangd reads firmware/build/compile_commands.json (see .vscode/settings.json),
+# but those commands are for the Zephyr SDK's arm-zephyr-eabi-g++ — a GCC — and
+# are run through ccache. clangd's own engine is clang, so two things need fixing:
+#
+#   1. Compiler: point clangd at the real cross-GCC. This makes it (a) parse flags
+#      in GCC mode and (b) use that GCC as the "query driver" to discover the
+#      target and the built-in system include paths (so <stdio.h>, <stdint.h>,
+#      and the ARM predefined macros resolve). It also sidesteps the ccache
+#      wrapper being argv[0] in compile_commands.json.
+#   2. Remove: drop GCC-only codegen flags that clang doesn't implement and would
+#      otherwise report as "unknown argument" errors. These affect code generation
+#      only, so dropping them has no effect on clangd's analysis.
+#
+# Requires --query-driver=<...arm-zephyr-eabi-*> in clangd.arguments (settings.json)
+# to authorise clangd to run the cross-compiler.
+CompileFlags:
+  Compiler: /Users/esbendn/zephyr-sdk-1.0.1/gnu/arm-zephyr-eabi/bin/arm-zephyr-eabi-g++
+  Remove:
+    - -mfp16-format=*
+    - -fno-reorder-functions
+    - -fno-defer-pop
+    - -mtp=*
+    - --param=*
