@@ -6,9 +6,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status & operating constraints
 
-- **Spec only — no code yet.** There is no build/lint/test tooling. Do not invent build commands; introduce Zephyr `west` tooling only when implementation actually begins.
-- Create the `proto/` / `firmware/` / `host/` / `docs/` tree (per the README's structure section) as work proceeds, not up front.
-- As you resolve the README's open decisions (nanopb integration path, driver source, telemetry trigger), record the decision and its rationale in `docs/`.
+- **Implementation has begun.** `firmware/` is a working Zephyr **C++** app (see `docs/language-cpp.md`): it reads the SCD-40 over I²C via the sensor API and brings up an IPv4 stack on the on-board Ethernet. `proto/` and `host/` do **not** exist yet — create them when that work starts, not up front.
+- **Build / flash / console via the wrapper scripts**, not raw `west` — they source the workspace venv and pass `-s`/`-d` correctly:
+  ```sh
+  ./scripts/build.sh      # incremental; -p forces pristine (required after devicetree/Kconfig edits)
+  ./scripts/flash.sh      # forces the openocd runner; the board's default runner isn't installed
+  ./scripts/console.sh    # serial console @115200 (quit with Ctrl-A then K, not Ctrl-A D)
+  ```
+  The app is **freestanding**: it builds against a shared global west workspace at `~/zephyr-workspace` (**Zephyr v4.4.1**, shared with `../ImpulseZephyr`, so both are pinned to that version). Details in `docs/toolchain.md`.
+- **No test/lint tooling exists.** Verification is build → flash → observe on hardware (console, `net` shell commands, or the Pi).
+- **Networking is up:** static IPv4 `192.168.10.2/24`, no gateway, on a direct cable to the Pi at `192.168.10.1`. It is configured *entirely* in `firmware/prj.conf` via `CONFIG_NET_CONFIG_SETTINGS` — `net_config` applies it at boot, so no app code touches interface bring-up. Ping is verified both ways.
+- **Two of the README's open decisions are resolved** (rationale in `docs/toolchain.md`): nanopb integration = the **in-tree module**; sensor driver = the **upstream in-tree `sensirion,scd40`**. Still open: **telemetry trigger** (5 s poll vs. data-ready) and **QoS / topic design**. Record new decisions and their rationale in `docs/`.
+- `notes/learning-roadmap.md` sequences the concepts as Phases 1–5. Phases 1 (Ethernet/IP) and 2 (TCP) are **done**; **Phase 3 (MQTT) is next** — no MQTT/TCP/socket configs are in `prj.conf` yet. (`notes/` is personal learning material; `docs/` is project documentation.)
 
 ## Working principles
 

@@ -54,7 +54,9 @@ west flash -r openocd --build-dir <build-dir>
 ## Hardware / connection facts
 
 - Board: ST **Nucleo-H753ZI** (STM32H753ZI, Cortex-M7). ST-LINK **V3**.
-- Serial console (VCP): `/dev/cu.usbmodem202144403` @ 115200 8N1.
+- Serial console (VCP): `/dev/cu.usbmodem202144403` @ 115200 8N1 — `scripts/console.sh` opens it
+  with `screen` (auto-detects the `/dev/cu.usbmodem*` port; quit with **Ctrl-A then K**, since
+  Ctrl-A D merely detaches and leaves the port busy).
 - Host tools (`cmake`, `dtc`, `openocd`, `st-flash`, `ninja`, `ccache`) come from Homebrew / the SDK.
 
 ## Verified working
