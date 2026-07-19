@@ -71,8 +71,20 @@ also means log output can lag reality slightly, and can be dropped under flood.
 the calling thread and yields to the scheduler.
 
 There is no busy-waiting anywhere in this file. Every wait is either `zsock_poll()` or
-`k_msleep()`, both of which take the thread off the run queue. On a real product this is
-what lets the CPU drop into a low-power idle state between events.
+`k_msleep()`, both of which take the thread off the run queue.
+
+When no thread is runnable the kernel's idle thread executes `WFI` and the Cortex-M7 core
+clock gates off until the next interrupt. That needs no configuration, and
+`CONFIG_TICKLESS_KERNEL` (already default `y` here) means there is no periodic tick
+dragging the core awake — it sleeps until the next real deadline.
+
+WFI is as far as it goes on this target, though. Deeper STM32 states (STOP, STANDBY) need
+`CONFIG_PM` plus a SoC implementation and `power-states` devicetree nodes, and the
+STM32H7 has neither in Zephyr v4.4.1 — `soc/st/stm32/stm32h7x/` ships no `power.c`, unlike
+its low-power-oriented siblings. Nor would it help much: a node holding a TCP connection
+open keeps the Ethernet MAC and PHY clocked continuously, which costs far more than the
+idle core. Genuinely low-power nodes wake, publish, disconnect, and sleep — a different
+architecture from this one.
 
 ## 3. Where did the socket go?
 
@@ -139,6 +151,54 @@ in the map file rather than hidden in a heap.
 
 Practical consequence: a topic + payload larger than `tx_buf_size` cannot be published,
 and `mqtt_publish()` will fail rather than grow the buffer.
+
+### Everything you hand the library must outlive the connection
+
+This is the most transferable lesson in the file, and it follows directly from the
+no-allocation rule above. **The library stores your pointers; it never copies your data.**
+`rx_buf`, `tx_buf`, `broker`, `will_topic`, `will_message` are all dereferenced throughout
+the life of the connection — long after `client_setup()` has returned.
+
+So `client_setup()` looks like it is building local objects, but nothing it registers is
+local:
+
+```c
+namespace {
+uint8_t rx_buffer[256];          /* namespace scope: static storage duration */
+uint8_t tx_buffer[256];
+struct mqtt_client client;
+struct sockaddr_in broker;
+...
+
+void client_setup(void)
+{
+    broker = {};                 /* assignment to the file-scope object, NOT a declaration */
+    ...
+    static struct mqtt_topic will_topic;    /* explicit `static` for the same reason */
+    static struct mqtt_utf8 will_message;
+    client.will_topic = &will_topic;
+}
+```
+
+The `static` on `will_topic` and `will_message` is load-bearing. Drop it and they become
+stack locals; `client.will_topic` then dangles the instant the function returns, and the
+CONNECT packet is built from whatever has since been written over that stack.
+
+Two points worth being precise about:
+
+- **A pointer to a dead local does not become null.** It keeps pointing at reclaimed stack.
+  That is worse than null: a null dereference faults immediately and loudly, whereas the
+  stale bytes usually survive untouched until the next call overwrites them — so the code
+  appears to work on the bench and fails when an interrupt lands at the wrong moment.
+- **`broker` is reused across sessions.** `run_session()` calls `client_setup()` on every
+  reconnect attempt, so the same struct is re-initialised each time. That is why line
+  `broker = {}` re-zeroes it first: without it, fields from a previous session would
+  silently carry over.
+
+The `namespace { ... }` wrapper is a separate concern — it gives *internal linkage*, the
+C++ replacement for file-scope `static`, keeping these symbols out of other translation
+units. It does not affect lifetime; namespace-scope variables already have static storage
+duration.
 
 ### `keepalive` is a wire field, not a Zephyr timeout
 
