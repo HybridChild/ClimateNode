@@ -2,7 +2,8 @@
 
 Decisions and verified setup for the Nucleo ↔ Pi MQTT link. Terse by intent — for the
 concepts behind any of it, see the companion teaching guide,
-[`communication-guide.md`](communication-guide.md).
+[`communication-guide.md`](communication-guide.md). For how these decisions are expressed
+in code, see [`firmware-mqtt-walkthrough.md`](firmware-mqtt-walkthrough.md).
 
 Resolves the README's open decisions **"decide QoS per topic"** and **"the topic
 hierarchy"**. Decided 2026-07-17.
@@ -125,6 +126,33 @@ does nothing. Check with `systemctl is-enabled NetworkManager-wait-online.servic
 inspect the merged unit with `systemctl cat mosquitto`.
 
 Verified surviving a reboot, 2026-07-18.
+
+### Testing the Last Will — two obvious methods silently cannot work
+
+The will fires when the broker stops hearing from the node for 1.5× keepalive. Observing
+that requires the node to look dead **while the Pi's own networking stays intact** — because
+`192.168.10.1` is both where Mosquitto listens *and* where a local `mosquitto_sub` connects.
+Anything that drops carrier takes the observer down with the node, so nothing can watch.
+
+| Method | Works? | Why |
+|---|---|---|
+| Pull the Ethernet cable | ❌ | Carrier loss makes NetworkManager deactivate `eth0`, removing `192.168.10.1`. The broker's listener and the local subscriber both die with it. Verified: `ip -br addr show eth0` → `DOWN`. |
+| Hold the board's reset button | ❌ | The LAN8742's nRST is tied to the board NRST, so reset kills the **PHY** too — link drops, same as above. (The PHY runs fine without firmware *configuring* it, but not while held in reset.) |
+| **Drop the node's packets at the Pi** | ✅ | Operates at the IP layer; physical link and `eth0` address are untouched, so the observer stays connected. |
+
+Bookworm has no `iptables`; use nftables in a dedicated table so nothing else is disturbed:
+
+```sh
+sudo nft add table inet bench
+sudo nft add chain inet bench input '{ type filter hook input priority 0; }'
+sudo nft add rule inet bench input ip saddr 192.168.10.2 drop
+#   ... wait 1.5x keepalive; `node/1/status offline` appears, published by the broker
+sudo nft delete table inet bench          # node reconnects and republishes "online"
+```
+
+Lower `kKeepaliveSec` to ~10 s first, or the wait is 90 s. **Verified working 2026-07-18.**
+This also exercises both directions of the failure at once: the broker detects a dead node,
+while the node detects a dead broker (unacked `PINGREQ`) and enters its reconnect backoff.
 
 Verify / exercise:
 
