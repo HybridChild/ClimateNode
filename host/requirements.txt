@@ -1,0 +1,15 @@
+# Host harness dependencies. Runs ON THE PI -- Mosquitto binds only
+# 192.168.10.1, which exists on the direct cable to the Nucleo, so nothing on
+# the WiFi LAN can reach the broker.
+#
+# grpcio-tools bundles a protoc whose gencode version matches the protobuf
+# runtime it depends on. That matters: a system protoc (e.g. Homebrew's 35.1)
+# emits gencode too new for an older runtime and fails at import. Generating
+# through `python -m grpc_tools.protoc` keeps both halves in lockstep.
+#
+# Deliberately separate from the Zephyr workspace venv, which is shared with
+# another project and drives the nanopb generator -- upgrading protobuf there
+# to satisfy the host would risk the firmware build.
+
+paho-mqtt>=2.0,<3
+grpcio-tools>=1.60

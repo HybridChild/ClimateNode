@@ -7,6 +7,11 @@ __pycache__/
 *.pyc
 .venv/
 
+# Generated from proto/node.proto by host/generate.sh. The .proto is the source
+# of truth; generated code is never checked in and never hand-edited.
+host/node_pb2.py
+host/*_pb2.pyi
+
 # Editor / OS
 # Share project-mechanics config (clangd wiring, extension picks); ignore the rest
 # (per-user files like launch.json with local debugger paths).
