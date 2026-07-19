@@ -6,7 +6,9 @@ This is a teaching document, not project documentation. It explains the concepts
 flow in the order that makes them easiest to learn, using this repository — a CO₂ sensor
 node on an ST Nucleo-H753ZI talking to a Raspberry Pi — as the running example. For the
 project's actual decisions (topic table, QoS per topic, broker config), see its companion,
-[`mqtt-design.md`](mqtt-design.md).
+[`mqtt-design.md`](mqtt-design.md). Once these concepts make sense,
+[`firmware-mqtt-walkthrough.md`](firmware-mqtt-walkthrough.md) reads the firmware that
+implements them, line by line.
 
 ---
 
