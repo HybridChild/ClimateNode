@@ -1,13 +1,15 @@
-# Ethernet + Protobuf on Zephyr — practice project
+# ClimateNode
 
-**Goal:** rehearse the *core daily interface* of the Vitrolife role — Protobuf messages published over **MQTT 3.1.1 / TCP** between a Zephyr firmware node and a host PC — and get fluent in the parts that bite in production (MQTT client lifecycle, schema versioning, nanopb on a constrained target, and zbus as the internal bus feeding the publisher). The transport was confirmed pre-start via the outgoing consultant (July 2026): **MQTT 3.1.1 over TCP, nanopb on firmware, zbus internally.** See `../../Vitrolife/role.md` and `../../Vitrolife/CLAUDE.md` for why this is the Tier-1 prep focus.
+**A Zephyr CO₂/temperature/humidity sensor node that publishes Protobuf telemetry over MQTT to a host PC.**
 
-This is a **prep/practice project**, not the real product. The aim is learning the patterns, not shipping.
+**Goal:** rehearse the *core daily interface* of production sensor firmware — Protobuf messages published over **MQTT 3.1.1 / TCP** between a Zephyr firmware node and a host PC — and get fluent in the parts that bite in production (MQTT client lifecycle, schema versioning, nanopb on a constrained target, and zbus as the internal bus feeding the publisher). The stack is fixed up front: **MQTT 3.1.1 over TCP, nanopb on firmware, zbus internally.**
 
-To make the telemetry *real* (rather than a hard-coded counter), the node reads a live sensor — an Adafruit SCD-40 CO₂/temperature/humidity breakout — over I²C and publishes those readings over MQTT. This mirrors the real product shape: a sensor-bearing node marshalling readings into Protobuf and publishing them to the host PC.
+This is a **practice project**, not a shipping product. The aim is learning the patterns.
+
+To make the telemetry *real* (rather than a hard-coded counter), the node reads a live sensor — an Adafruit SCD-40 CO₂/temperature/humidity breakout — over I²C and publishes those readings over MQTT. That mirrors the shape of a production node: a sensor-bearing device marshalling readings into Protobuf and publishing them to the host PC.
 
 ## Hardware
-- **Board:** ST Nucleo-H753ZI (STM32H753ZI, Cortex-M7). Same H7 family as the product's STM32H735G.
+- **Board:** ST Nucleo-H753ZI (STM32H753ZI, Cortex-M7) — an H7-class part of the kind commonly used in production sensor nodes.
 - **Ethernet:** on-board RJ45 + LAN8742 PHY (Zephyr board target `nucleo_h753zi`, net-enabled).
 - **Sensor (data source):** Adafruit SCD-40 True CO₂ / Temperature / Humidity breakout ([product 5187](https://www.adafruit.com/product/5187)).
   - Sensirion **SCD40** photoacoustic NDIR sensor on **I²C, address `0x62`**, on a STEMMA QT / Qwiic board.
@@ -18,19 +20,19 @@ To make the telemetry *real* (rather than a hard-coded counter), the node reads 
 - **Host:** Raspberry Pi 5 (Linux) — native Gigabit Ethernet, wired **direct-cable** to the Nucleo (no switch). Static IPs on both ends in one subnet, e.g. Pi `192.168.10.1` / Nucleo `192.168.10.2`, mask `255.255.255.0`, no gateway. The Nucleo's LAN8742 PHY has Auto-MDIX, so a normal straight-through cable works. Runs a **Mosquitto MQTT broker** plus the Python test harness (a paho-mqtt client that subscribes to telemetry and publishes commands); can stay permanently wired as a dedicated bench host.
 
 ## What "done" looks like (scope)
-A Zephyr app on the Nucleo — written in **C++ (C++17)** to match the real firmware; see [`docs/language-cpp.md`](docs/language-cpp.md) — that:
+A Zephyr app on the Nucleo — written in **C++ (C++17)** to match how production firmware of this kind is written; see [`docs/language-cpp.md`](docs/language-cpp.md) — that:
 1. Brings up the network interface and connects as an **MQTT client** to the broker on the Pi (keepalive/ping, reconnect on drop).
 2. Reads the SCD-40 over I²C via Zephyr's **sensor API** (upstream `sensirion,scd40` / `scd4x` driver): `SENSOR_CHAN_CO2`, `SENSOR_CHAN_AMBIENT_TEMP`, `SENSOR_CHAN_HUMIDITY`.
 3. **Publishes** those readings as a **Protobuf telemetry message** to a telemetry topic (~every 5 s), and **subscribes** to a command topic, answering with a **Protobuf ack** — encoding/decoding with **nanopb**. MQTT carries each message as one complete payload, so there is no app-level framing / stream reassembly.
-4. Talks to a **host-side test harness** on the Raspberry Pi (Python, a paho-mqtt client) that decodes and logs the telemetry stream and can publish commands. *(Optional higher-fidelity pass: re-run the harness in C#/.NET on a Windows box later to mirror the real Windows app side.)*
+4. Talks to a **host-side test harness** on the Raspberry Pi (Python, a paho-mqtt client) that decodes and logs the telemetry stream and can publish commands. *(Optional higher-fidelity pass: re-run the harness in C#/.NET on a Windows box later to mirror a Windows-side desktop application.)*
 
 ## The things to actually learn (don't skip these)
 1. **MQTT client on Zephyr** — connect/keepalive, QoS levels, topic design (telemetry vs. command topics), and especially **reconnect handling** when the link drops. Uses Zephyr's `CONFIG_MQTT_LIB`. (MQTT frames and delimits messages itself, so the length-prefix / partial-read problem of raw TCP goes away — each payload arrives whole.)
-2. **zbus as the internal bus** — mirror the real firmware's "zbus inden MQTT": the sensor thread publishes readings to a **zbus channel**; a separate MQTT-publisher observer subscribes to that channel and marshals to nanopb → MQTT publish. Decouples sensing from transport, exactly like the product.
+2. **zbus as the internal bus** — the sensor thread publishes readings to a **zbus channel**; a separate MQTT-publisher observer subscribes to that channel and marshals to nanopb → MQTT publish. Decouples sensing from transport, the way production firmware does.
 3. **Schema versioning & backward-compat** — exercise adding a field and talking old↔new: field numbers, `optional`, unknown-field handling. This is the firmware↔SW-team contract in miniature.
 4. **nanopb on a constrained target** — `.proto` → generated C, `.options` files, fixed-size vs callback fields, no-malloc/static allocation.
 
-**Bonus learning from the sensor:** the SCD-40 adds a clean rehearsal of the **Zephyr sensor subsystem + a devicetree I²C overlay** — wiring a real driver instance in a board overlay, reading channels with `sensor_sample_fetch` / `sensor_channel_get`, and turning `struct sensor_value` into wire fields. That's a common shape in the real firmware.
+**Bonus learning from the sensor:** the SCD-40 adds a clean rehearsal of the **Zephyr sensor subsystem + a devicetree I²C overlay** — wiring a real driver instance in a board overlay, reading channels with `sensor_sample_fetch` / `sensor_channel_get`, and turning `struct sensor_value` into wire fields. That's a common shape in production firmware.
 
 ## Message set (starting point)
 Small but realistic — enough to feel like the real node↔PC protocol:
@@ -46,13 +48,10 @@ Suggested topics: `node/<id>/telemetry`, `node/<id>/command`, `node/<id>/ack`. T
 - `docs/` — notes: MQTT topic/QoS decisions, versioning experiments, sensor/overlay setup, gotchas.
 
 ## Open decisions (resolve before coding)
-- Transport: **MQTT 3.1.1 over TCP** (confirmed to match the product). Broker = **Mosquitto on the Pi**. Decide QoS per topic (0 vs. 1 for telemetry vs. commands), the topic hierarchy, and MQTT keepalive / reconnect strategy. (Raw-TCP framing and gRPC are both out — the real product uses MQTT.)
+- Transport: **MQTT 3.1.1 over TCP** (fixed). Broker = **Mosquitto on the Pi**. Decide QoS per topic (0 vs. 1 for telemetry vs. commands), the topic hierarchy, and MQTT keepalive / reconnect strategy. (Raw-TCP framing and gRPC are both out — MQTT is the target.)
 - nanopb integration path on Zephyr (module vs. vendored generator step).
 - Sensor driver source: upstream Zephyr `sensirion,scd4x` driver vs. a community module — confirm which the in-tree board/Zephyr version ships.
 - Telemetry trigger: poll on a ~5 s timer vs. the SCD-40 data-ready signal.
-
-## Status
-Spec only — **no code yet.** This README is the spec; `CLAUDE.md` covers how to work in the repo once implementation begins.
 
 ## References
 Local PDFs live in [`../../Datasheets/sensor/Adafruit_SCD40/`](../../Datasheets/sensor/Adafruit_SCD40/).

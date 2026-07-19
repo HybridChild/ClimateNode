@@ -12,10 +12,10 @@ hierarchy"**. Decided 2026-07-17.
 
 | | |
 |---|---|
-| Protocol | **MQTT 3.1.1** over TCP (matches the product; confirmed via the outgoing consultant) |
+| Protocol | **MQTT 3.1.1** over TCP (fixed up front — see the README) |
 | Broker | **Mosquitto 2.0.11** on the Pi, `192.168.10.1:1883` |
 | Client | Nucleo at `192.168.10.2`, Zephyr `CONFIG_MQTT_LIB` |
-| Auth | **none** (bench only) — the real product uses credentials + TLS |
+| Auth | **none** (bench only) — production deployments would use credentials + TLS |
 
 ## Topic hierarchy
 
