@@ -1,0 +1,124 @@
+// Wire contract between the sensor node and the host harness.
+//
+// THIS FILE IS THE SINGLE SOURCE OF TRUTH. Firmware and host both generate from
+// it; never hand-edit generated code. See docs/proto-design.md for the design
+// decisions and docs/protobuf-guide.md for the concepts.
+//
+// Field numbers 1-15 encode their tag in a single byte, 16+ take two. Telemetry
+// is the high-rate message, so its fields are kept inside that range.
+//
+// Evolution rules (see docs/proto-design.md):
+//   - NEVER change or reuse a field number.
+//   - Deleting a field means `reserved`-ing its number, not freeing it.
+//   - Adding a field is always safe; old readers skip what they do not know.
+
+syntax = "proto3";
+
+package node;
+
+// ---------------------------------------------------------------------------
+// Telemetry: node -> host, published on node/<id>/telemetry at QoS 0.
+// ---------------------------------------------------------------------------
+
+enum SensorStatus {
+  // proto3 requires the zero value to be first; it is also what a decoder
+  // yields when the field is absent, so it must mean "no information".
+  SENSOR_STATUS_UNSPECIFIED = 0;
+  SENSOR_STATUS_OK = 1;
+  // The SCD-40 needs a warm-up before its first valid conversion.
+  SENSOR_STATUS_WARMING_UP = 2;
+  SENSOR_STATUS_ERROR = 3;
+}
+
+message Telemetry {
+  // Bumped only on a BREAKING change. Additive changes do not touch it —
+  // protobuf already handles those. See docs/proto-design.md.
+  uint32 schema_version = 1;
+
+  // Monotonic per-message counter. Gaps tell the host that QoS 0 dropped
+  // something, which is the whole reason telemetry carries one.
+  uint32 sequence = 2;
+
+  // Milliseconds since boot. Wraps after ~49.7 days; the host must treat a
+  // decrease as a reboot rather than assuming monotonicity.
+  uint32 uptime_ms = 3;
+
+  uint32 co2_ppm = 4;
+  float temperature_c = 5;
+  float humidity_rh = 6;
+
+  SensorStatus sensor_status = 7;
+}
+
+// ---------------------------------------------------------------------------
+// Command: host -> node, published on node/<id>/command at QoS 1.
+// ---------------------------------------------------------------------------
+
+message SetInterval {
+  uint32 interval_ms = 1;
+}
+
+// Deliberately empty: the message's presence in the oneof IS the instruction.
+// Empty messages are cheap (zero bytes of payload) and leave room to add
+// parameters later without changing the command's identity.
+message TriggerMeasurement {}
+
+message GetDeviceInfo {}
+
+message Command {
+  uint32 schema_version = 1;
+
+  // Echoed back in Ack.sequence. QoS 1 is "at least once", so the node WILL
+  // see duplicates after a lost PUBACK; this is what it dedupes on.
+  uint32 sequence = 2;
+
+  // A oneof is a tagged union: exactly one member is set, and nanopb generates
+  // a `which_payload` discriminator alongside the union. Numbers start at 10 to
+  // leave 3-9 free for future header-ish fields that apply to every command.
+  oneof payload {
+    SetInterval set_interval = 10;
+    TriggerMeasurement trigger_measurement = 11;
+    GetDeviceInfo get_device_info = 12;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Ack: node -> host, published on node/<id>/ack at QoS 1.
+// ---------------------------------------------------------------------------
+
+enum AckStatus {
+  ACK_STATUS_UNSPECIFIED = 0;
+  ACK_STATUS_OK = 1;
+  // The command decoded, but its arguments were out of range.
+  ACK_STATUS_INVALID_ARGUMENT = 2;
+  // The command decoded, but this firmware has no handler for it — the
+  // expected outcome when the host is newer than the node.
+  ACK_STATUS_UNSUPPORTED = 3;
+  // The command was understood and attempted, but failed.
+  ACK_STATUS_FAILED = 4;
+  // The payload did not decode as a Command at all.
+  ACK_STATUS_MALFORMED = 5;
+}
+
+message DeviceInfo {
+  string firmware_version = 1;
+  string board = 2;
+  string client_id = 3;
+}
+
+message Ack {
+  uint32 schema_version = 1;
+
+  // Copied from the Command being acknowledged, so the host can correlate.
+  uint32 sequence = 2;
+
+  AckStatus status = 3;
+
+  // Human-readable context for a failure. Diagnostics only — hosts must
+  // branch on `status`, never on this text.
+  string detail = 4;
+
+  // Populated only in response to GetDeviceInfo. In proto3 a message field is
+  // genuinely optional: absence is distinguishable from an empty message.
+  DeviceInfo device_info = 5;
+}

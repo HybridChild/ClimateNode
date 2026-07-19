@@ -36,6 +36,12 @@
 #include <stdio.h>
 #include <string.h>
 
+/* Generated from proto/node.proto at build time into the build directory.
+ * It is C, with extern "C" guards, so it includes cleanly here. */
+#include <node.pb.h>
+#include <pb_decode.h>
+#include <pb_encode.h>
+
 LOG_MODULE_REGISTER(node, LOG_LEVEL_INF);
 
 namespace {
@@ -48,7 +54,15 @@ constexpr uint16_t kBrokerPort = 1883;
 constexpr const char *kClientId = "nucleo-1";
 constexpr const char *kTopicTelemetry = "node/1/telemetry";
 constexpr const char *kTopicCommand = "node/1/command";
+constexpr const char *kTopicAck = "node/1/ack";
 constexpr const char *kTopicStatus = "node/1/status";
+
+/* Bumped only when a change to proto/node.proto breaks old readers. Additive
+ * field changes do not touch it — protobuf handles those on its own. */
+constexpr uint32_t kSchemaVersion = 1;
+
+constexpr const char *kFirmwareVersion = "0.4.0";
+constexpr const char *kBoardName = CONFIG_BOARD;
 
 /* Keepalive bounds how long the broker waits before declaring us dead
  * (1.5x keepalive) and firing the will. We publish every 5 s, so PINGREQ rarely
@@ -56,7 +70,14 @@ constexpr const char *kTopicStatus = "node/1/status";
  * Lower it temporarily (e.g. 10 s) when testing the will by hand; see
  * "Testing the Last Will" in docs/mqtt-design.md. */
 constexpr uint16_t kKeepaliveSec = 60;
-constexpr k_timeout_t kSamplePeriod = K_SECONDS(5);
+
+/* Plain milliseconds rather than a k_timeout_t: this value is only ever used in
+ * arithmetic against k_uptime_get(), never handed to a kernel API, and it is
+ * now runtime-adjustable via the SetInterval command. The bounds keep a bad
+ * command from either flooding the broker or stalling telemetry entirely. */
+constexpr uint32_t kSamplePeriodDefaultMs = 5000;
+constexpr uint32_t kSamplePeriodMinMs = 1000;
+constexpr uint32_t kSamplePeriodMaxMs = 300000;
 
 /* Reconnect backoff: start at 1 s, double up to 30 s, so a broker that is down
  * (or a cable left unplugged) is retried patiently instead of in a hot loop. */
@@ -76,9 +97,99 @@ volatile bool connect_failed;
 
 uint32_t sequence;
 
+/* Adjustable by SetInterval; survives reconnects deliberately, since the host's
+ * last instruction should outlive a dropped TCP connection. */
+uint32_t sample_period_ms = kSamplePeriodDefaultMs;
+
+/* Set by TriggerMeasurement to force a publish on the next loop pass. */
+bool sample_now;
+
+/* QoS 1 is at-least-once, so a redelivered command must not be executed twice.
+ * We ack duplicates (the broker needs the PUBACK) but skip the side effect. */
+bool have_last_command;
+uint32_t last_command_sequence;
+
 /* ---- MQTT plumbing -------------------------------------------------------- */
 
-/* Read a PUBLISH payload out of the socket and log it. The MQTT_EVT_PUBLISH
+/* Defined below, after the client struct it operates on. */
+int publish(const char *topic, const uint8_t *payload, size_t payload_len,
+	    mqtt_qos qos, bool retain);
+
+/* Encode and publish an Ack. Best effort: a failure here is logged, not
+ * propagated, because the command itself may already have taken effect. */
+void send_ack(uint32_t seq, node_AckStatus status, const char *detail,
+	      const node_DeviceInfo *info)
+{
+	node_Ack ack = node_Ack_init_zero;
+	uint8_t buf[node_Ack_size];
+
+	ack.schema_version = kSchemaVersion;
+	ack.sequence = seq;
+	ack.status = status;
+
+	if (detail != nullptr) {
+		/* Bounded by max_size:48 in node.options. Truncating the
+		 * diagnostic is fine; hosts branch on `status`, not this text. */
+		strncpy(ack.detail, detail, sizeof(ack.detail) - 1);
+	}
+	if (info != nullptr) {
+		ack.has_device_info = true;
+		ack.device_info = *info;
+	}
+
+	pb_ostream_t stream = pb_ostream_from_buffer(buf, sizeof(buf));
+
+	if (!pb_encode(&stream, node_Ack_fields, &ack)) {
+		LOG_ERR("ack encode failed: %s", PB_GET_ERROR(&stream));
+		return;
+	}
+	publish(kTopicAck, buf, stream.bytes_written, MQTT_QOS_1_AT_LEAST_ONCE, false);
+}
+
+/* Execute a decoded command. Returns the status to report, and may fill
+ * `detail` and `info` for the Ack. */
+node_AckStatus apply_command(const node_Command &cmd, char *detail, size_t detail_len,
+			     node_DeviceInfo *info, bool *has_info)
+{
+	switch (cmd.which_payload) {
+	case node_Command_set_interval_tag: {
+		uint32_t ms = cmd.payload.set_interval.interval_ms;
+
+		if (ms < kSamplePeriodMinMs || ms > kSamplePeriodMaxMs) {
+			snprintf(detail, detail_len, "interval %u outside [%u,%u]", ms,
+				 kSamplePeriodMinMs, kSamplePeriodMaxMs);
+			return node_AckStatus_ACK_STATUS_INVALID_ARGUMENT;
+		}
+		sample_period_ms = ms;
+		LOG_INF("sample period set to %u ms", ms);
+		return node_AckStatus_ACK_STATUS_OK;
+	}
+
+	case node_Command_trigger_measurement_tag:
+		sample_now = true;
+		LOG_INF("single-shot measurement requested");
+		return node_AckStatus_ACK_STATUS_OK;
+
+	case node_Command_get_device_info_tag:
+		*info = node_DeviceInfo_init_zero;
+		strncpy(info->firmware_version, kFirmwareVersion,
+			sizeof(info->firmware_version) - 1);
+		strncpy(info->board, kBoardName, sizeof(info->board) - 1);
+		strncpy(info->client_id, kClientId, sizeof(info->client_id) - 1);
+		*has_info = true;
+		return node_AckStatus_ACK_STATUS_OK;
+
+	default:
+		/* A oneof member this firmware does not know: the host is newer
+		 * than the node. Protobuf decoded it fine — the gap is in our
+		 * handlers, which is exactly what UNSUPPORTED reports. */
+		snprintf(detail, detail_len, "unknown command tag %u",
+			 static_cast<unsigned>(cmd.which_payload));
+		return node_AckStatus_ACK_STATUS_UNSUPPORTED;
+	}
+}
+
+/* Read a PUBLISH payload out of the socket and decode it. The MQTT_EVT_PUBLISH
  * event carries only the *length*; the bytes must be read explicitly.
  *
  * Every byte of the payload MUST leave the socket, even the ones we do not want.
@@ -89,26 +200,26 @@ uint32_t sequence;
 void handle_incoming_publish(struct mqtt_client *c,
 			     const struct mqtt_publish_param *pub)
 {
-	char payload[128];
+	uint8_t payload[128];
 	uint8_t discard[64];
 	uint32_t remaining = pub->message.payload.len;
-	uint32_t kept = MIN(remaining, sizeof(payload) - 1);
+	uint32_t kept = MIN(remaining, sizeof(payload));
 
-	int rc = mqtt_readall_publish_payload(c, reinterpret_cast<uint8_t *>(payload), kept);
+	int rc = mqtt_readall_publish_payload(c, payload, kept);
 
 	if (rc < 0) {
 		LOG_ERR("failed reading publish payload: %d", rc);
 		return;
 	}
-	payload[kept] = '\0';
 	remaining -= kept;
 
-	if (remaining > 0) {
-		LOG_WRN("command payload truncated: %u bytes dropped",
-			remaining);
+	bool oversized = (remaining > 0);
+
+	if (oversized) {
+		LOG_WRN("command payload too large: %u bytes dropped", remaining);
 	}
 	/* Drain into a separate buffer: reusing `payload` would overwrite the
-	 * bytes we just kept, terminator included. */
+	 * bytes we just kept. */
 	while (remaining > 0) {
 		uint32_t chunk = MIN(remaining, sizeof(discard));
 
@@ -120,18 +231,58 @@ void handle_incoming_publish(struct mqtt_client *c,
 		remaining -= chunk;
 	}
 
-	LOG_INF("command received: \"%s\"", payload);
-
 	/* Commands are QoS 1, so the broker expects a PUBACK from us. Without it
-	 * the broker redelivers (with DUP set) until it gets one. */
+	 * the broker redelivers (with DUP set) until it gets one. Send it before
+	 * doing any work: the PUBACK is a transport-level "I have the bytes", not
+	 * an application-level "I executed it" — that is what the Ack is for. */
 	if (pub->message.topic.qos == MQTT_QOS_1_AT_LEAST_ONCE) {
-		struct mqtt_puback_param ack = {};
+		struct mqtt_puback_param puback = {};
 
-		ack.message_id = pub->message_id;
-		mqtt_publish_qos1_ack(c, &ack);
+		puback.message_id = pub->message_id;
+		mqtt_publish_qos1_ack(c, &puback);
 	}
 
-	/* Phase 4 decodes this as a Protobuf Command and answers on node/1/ack. */
+	node_Command cmd = node_Command_init_zero;
+	pb_istream_t stream = pb_istream_from_buffer(payload, kept);
+
+	/* A truncated payload might still decode into something plausible, so
+	 * reject oversize outright rather than acting on a partial command. */
+	if (oversized || !pb_decode(&stream, node_Command_fields, &cmd)) {
+		LOG_ERR("command decode failed: %s",
+			oversized ? "payload too large" : PB_GET_ERROR(&stream));
+		/* sequence 0: we could not read one, so there is nothing to
+		 * correlate against. The host learns the message was garbage. */
+		send_ack(0, node_AckStatus_ACK_STATUS_MALFORMED,
+			 oversized ? "payload too large" : "decode failed", nullptr);
+		return;
+	}
+
+	LOG_INF("command seq=%u tag=%u schema=%u", cmd.sequence,
+		static_cast<unsigned>(cmd.which_payload), cmd.schema_version);
+
+	/* Duplicate suppression. QoS 1 redelivers after a lost PUBACK, so the
+	 * same command can arrive twice; re-running "set interval" is harmless
+	 * but "trigger measurement" is not. Ack again so the host still gets a
+	 * reply, but skip the side effect. */
+	if (have_last_command && cmd.sequence == last_command_sequence) {
+		LOG_WRN("duplicate command seq=%u ignored", cmd.sequence);
+		send_ack(cmd.sequence, node_AckStatus_ACK_STATUS_OK,
+			 "duplicate ignored", nullptr);
+		return;
+	}
+
+	char detail[48] = {};
+	node_DeviceInfo info = node_DeviceInfo_init_zero;
+	bool has_info = false;
+
+	node_AckStatus status =
+		apply_command(cmd, detail, sizeof(detail), &info, &has_info);
+
+	have_last_command = true;
+	last_command_sequence = cmd.sequence;
+
+	send_ack(cmd.sequence, status, detail[0] != '\0' ? detail : nullptr,
+		 has_info ? &info : nullptr);
 }
 
 void mqtt_evt_handler(struct mqtt_client *const c, const struct mqtt_evt *evt)
@@ -217,15 +368,18 @@ void client_setup(void)
 	client.will_retain = 1;
 }
 
-int publish(const char *topic, const char *payload, mqtt_qos qos, bool retain)
+/* Payload is a length-delimited byte range, not a C string: protobuf output is
+ * binary and routinely contains NUL bytes, so strlen() would truncate it. */
+int publish(const char *topic, const uint8_t *payload, size_t payload_len,
+	    mqtt_qos qos, bool retain)
 {
 	struct mqtt_publish_param param = {};
 
 	param.message.topic.topic.utf8 = reinterpret_cast<uint8_t *>(const_cast<char *>(topic));
 	param.message.topic.topic.size = strlen(topic);
 	param.message.topic.qos = qos;
-	param.message.payload.data = reinterpret_cast<uint8_t *>(const_cast<char *>(payload));
-	param.message.payload.len = strlen(payload);
+	param.message.payload.data = const_cast<uint8_t *>(payload);
+	param.message.payload.len = payload_len;
 	/* message_id is only meaningful for QoS 1/2 — at QoS 0 there is no PUBACK
 	 * to correlate, and the field is not even put on the wire. A counter is
 	 * enough here: it only has to be non-zero and distinct among *in-flight*
@@ -245,6 +399,14 @@ int publish(const char *topic, const char *payload, mqtt_qos qos, bool retain)
 	param.retain_flag = retain ? 1 : 0;
 
 	return mqtt_publish(&client, &param);
+}
+
+/* Convenience for the one topic that stays plain ASCII: `status` is also written
+ * by the broker as our Last Will, so it cannot be protobuf (docs/mqtt-design.md). */
+int publish_text(const char *topic, const char *text, mqtt_qos qos, bool retain)
+{
+	return publish(topic, reinterpret_cast<const uint8_t *>(text), strlen(text),
+		       qos, retain);
 }
 
 int subscribe_to_commands(void)
@@ -284,25 +446,54 @@ int wait_for_input(int timeout_ms)
 
 const struct device *scd40;
 
-/* Format the current reading. Returns false if the sensor read failed. */
-bool format_telemetry(char *out, size_t out_len)
+/* Encode the current reading as a node.Telemetry message.
+ *
+ * A failed sensor read is still published, with sensor_status = ERROR and the
+ * measurement fields left at zero. Silence would be ambiguous — the host cannot
+ * tell a broken sensor from a dead node — whereas an explicit ERROR is a fact
+ * the host can act on. This is why the status enum exists.
+ *
+ * Returns the encoded length, or 0 on encode failure. */
+size_t encode_telemetry(uint8_t *out, size_t out_len)
 {
+	node_Telemetry msg = node_Telemetry_init_zero;
 	struct sensor_value co2, temp, hum;
+
+	msg.schema_version = kSchemaVersion;
+	msg.sequence = sequence;
+	msg.uptime_ms = static_cast<uint32_t>(k_uptime_get());
+
 	int rc = sensor_sample_fetch(scd40);
 
 	if (rc != 0) {
 		LOG_ERR("sample_fetch failed: %d", rc);
-		return false;
+		msg.sensor_status = node_SensorStatus_SENSOR_STATUS_ERROR;
+	} else {
+		sensor_channel_get(scd40, SENSOR_CHAN_CO2, &co2);
+		sensor_channel_get(scd40, SENSOR_CHAN_AMBIENT_TEMP, &temp);
+		sensor_channel_get(scd40, SENSOR_CHAN_HUMIDITY, &hum);
+
+		msg.co2_ppm = static_cast<uint32_t>(sensor_value_to_double(&co2));
+		msg.temperature_c = static_cast<float>(sensor_value_to_double(&temp));
+		msg.humidity_rh = static_cast<float>(sensor_value_to_double(&hum));
+
+		/* The SCD-40 reports 0 ppm until its first conversion completes. */
+		msg.sensor_status = (msg.co2_ppm == 0)
+					    ? node_SensorStatus_SENSOR_STATUS_WARMING_UP
+					    : node_SensorStatus_SENSOR_STATUS_OK;
 	}
 
-	sensor_channel_get(scd40, SENSOR_CHAN_CO2, &co2);
-	sensor_channel_get(scd40, SENSOR_CHAN_AMBIENT_TEMP, &temp);
-	sensor_channel_get(scd40, SENSOR_CHAN_HUMIDITY, &hum);
+	/* An output stream writing into a caller-supplied buffer. nanopb never
+	 * allocates: if the message does not fit, encoding fails rather than
+	 * growing anything. node_Telemetry_size (36) is the generated upper
+	 * bound, so a 256-byte buffer cannot overflow here. */
+	pb_ostream_t stream = pb_ostream_from_buffer(out, out_len);
 
-	snprintf(out, out_len, "seq=%u co2=%.0f temp=%.2f rh=%.1f", sequence,
-		 sensor_value_to_double(&co2), sensor_value_to_double(&temp),
-		 sensor_value_to_double(&hum));
-	return true;
+	if (!pb_encode(&stream, node_Telemetry_fields, &msg)) {
+		LOG_ERR("telemetry encode failed: %s", PB_GET_ERROR(&stream));
+		return 0;
+	}
+	return stream.bytes_written;
 }
 
 /* ---- the session ---------------------------------------------------------- */
@@ -343,7 +534,7 @@ bool run_session(void)
 
 	/* Announce ourselves. Retained, so a harness starting later immediately
 	 * learns we are up; the will (also retained) overwrites it if we die. */
-	publish(kTopicStatus, "online", MQTT_QOS_1_AT_LEAST_ONCE, true);
+	publish_text(kTopicStatus, "online", MQTT_QOS_1_AT_LEAST_ONCE, true);
 	subscribe_to_commands();
 
 	int64_t next_sample = k_uptime_get();
@@ -371,20 +562,24 @@ bool run_session(void)
 			break;
 		}
 
-		if (k_uptime_get() >= next_sample) {
-			char payload[96];
+		if (sample_now || k_uptime_get() >= next_sample) {
+			uint8_t payload[node_Telemetry_size];
+			size_t len = encode_telemetry(payload, sizeof(payload));
 
-			if (format_telemetry(payload, sizeof(payload))) {
-				rc = publish(kTopicTelemetry, payload,
+			sample_now = false;
+
+			if (len > 0) {
+				rc = publish(kTopicTelemetry, payload, len,
 					     MQTT_QOS_0_AT_MOST_ONCE, false);
 				if (rc != 0) {
 					LOG_ERR("publish: %d", rc);
 					break;
 				}
-				LOG_INF("published: %s", payload);
+				LOG_INF("published telemetry seq=%u (%zu bytes)",
+					sequence, len);
 				sequence++;
 			}
-			next_sample = k_uptime_get() + k_ticks_to_ms_floor64(kSamplePeriod.ticks);
+			next_sample = k_uptime_get() + sample_period_ms;
 		}
 	}
 

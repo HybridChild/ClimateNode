@@ -1,0 +1,21 @@
+# nanopb generator options — the target-specific half of the contract.
+#
+# node.proto says WHAT is on the wire; this file says how much room the C
+# structs reserve for it. Without a max_size, nanopb cannot know how large a
+# `string` may get, so it falls back to a pointer field plus callbacks or
+# malloc. Giving every variable-length field a bound makes the generated
+# structs plain fixed-size C, with no allocation anywhere -- which is what
+# "no dynamic allocation" in the README actually requires.
+#
+# max_size counts the NUL terminator, so `max_size:16` stores 15 characters.
+# Oversized input fails to encode; it is not silently truncated.
+#
+# This file is nanopb-only. The host generator (protoc + the standard Python
+# runtime) ignores it entirely and has no fixed limits -- so the node is always
+# the side that constrains the contract.
+
+node.DeviceInfo.firmware_version    max_size:16
+node.DeviceInfo.board               max_size:32
+node.DeviceInfo.client_id           max_size:24
+
+node.Ack.detail                     max_size:48
