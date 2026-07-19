@@ -3,14 +3,19 @@
  *
  * Implements the design in docs/mqtt-design.md:
  *
- *   node/1/telemetry   node -> host, QoS 0, ~every 5 s
+ *   node/1/telemetry   node -> host, QoS 0, every 5 s by default (SetInterval retunes)
  *   node/1/command     host -> node, QoS 1   (subscribed)
+ *   node/1/ack         node -> host, QoS 1, one per Command received
  *   node/1/status      node -> host, QoS 1, RETAINED — "online" on connect,
  *                      "offline" published by the BROKER via the Last Will if we
  *                      drop without a clean DISCONNECT
  *
- * Payload is plain text for now; nanopb-encoded Protobuf replaces it in Phase 4,
- * and a zbus channel decouples sensor from publisher in Phase 5.
+ * Telemetry, Command and Ack payloads are nanopb-encoded Protobuf, generated from
+ * proto/node.proto at build time. `status` stays plain ASCII: the broker itself
+ * writes it as the will, so firmware cannot encode it.
+ *
+ * Still to come: a zbus channel decoupling the sensor read from the publish, which
+ * today share one loop.
  *
  * Structure: main() owns a forever loop of "connect, serve until dropped, back
  * off, retry". Reconnect is not error handling bolted on the side — it is the

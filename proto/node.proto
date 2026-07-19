@@ -1,13 +1,14 @@
 // Wire contract between the sensor node and the host harness.
 //
 // THIS FILE IS THE SINGLE SOURCE OF TRUTH. Firmware and host both generate from
-// it; never hand-edit generated code. See docs/proto-design.md for the design
-// decisions and docs/protobuf-guide.md for the concepts.
+// it; never hand-edit generated code. Firmware generates node.pb.c/.h at build
+// time (firmware/CMakeLists.txt); the host runs host/generate.sh. For how the
+// payload sits under MQTT, see docs/communication-guide.md.
 //
 // Field numbers 1-15 encode their tag in a single byte, 16+ take two. Telemetry
 // is the high-rate message, so its fields are kept inside that range.
 //
-// Evolution rules (see docs/proto-design.md):
+// Evolution rules:
 //   - NEVER change or reuse a field number.
 //   - Deleting a field means `reserved`-ing its number, not freeing it.
 //   - Adding a field is always safe; old readers skip what they do not know.
@@ -32,7 +33,7 @@ enum SensorStatus {
 
 message Telemetry {
   // Bumped only on a BREAKING change. Additive changes do not touch it —
-  // protobuf already handles those. See docs/proto-design.md.
+  // protobuf already handles those, per the evolution rules above.
   uint32 schema_version = 1;
 
   // Monotonic per-message counter. Gaps tell the host that QoS 0 dropped
