@@ -281,17 +281,27 @@ So the code keeps what fits and explicitly drains the rest:
 ```c
 uint32_t kept = MIN(remaining, sizeof(payload) - 1);
 mqtt_readall_publish_payload(c, payload, kept);
+payload[kept] = '\0';
 remaining -= kept;
 
 while (remaining > 0) {
-    uint32_t chunk = MIN(remaining, sizeof(payload));
-    mqtt_readall_publish_payload(c, payload, chunk);   /* discard */
+    uint32_t chunk = MIN(remaining, sizeof(discard));
+    mqtt_readall_publish_payload(c, discard, chunk);   /* thrown away */
     remaining -= chunk;
 }
 ```
 
-Reusing `payload` as the drain buffer is intentional — the bytes are being thrown away, so
-no additional storage is needed.
+The drain deliberately targets a **separate** `discard` buffer. Reusing `payload` looks
+like a free optimisation — the bytes are being thrown away, so why allocate more stack? —
+but it overwrites the prefix that was just kept, terminator included, and the subsequent
+`%s` then runs off the end of the array.
+
+That bug is unusually well camouflaged: when the oversized payload is uniform (a test
+string of repeated characters, say) the overwritten data is identical to what it replaced,
+so the only visible symptom is a few bytes of stack garbage after the missing `'\0'`. With
+a real command the log would silently show the *discarded tail* instead of the kept
+prefix. Worth remembering whenever a scratch buffer is shared between "keep" and "discard"
+paths.
 
 ### The QoS 1 obligation
 

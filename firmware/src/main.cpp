@@ -90,6 +90,7 @@ void handle_incoming_publish(struct mqtt_client *c,
 			     const struct mqtt_publish_param *pub)
 {
 	char payload[128];
+	uint8_t discard[64];
 	uint32_t remaining = pub->message.payload.len;
 	uint32_t kept = MIN(remaining, sizeof(payload) - 1);
 
@@ -106,11 +107,12 @@ void handle_incoming_publish(struct mqtt_client *c,
 		LOG_WRN("command payload truncated: %u bytes dropped",
 			remaining);
 	}
+	/* Drain into a separate buffer: reusing `payload` would overwrite the
+	 * bytes we just kept, terminator included. */
 	while (remaining > 0) {
-		uint32_t chunk = MIN(remaining, sizeof(payload));
+		uint32_t chunk = MIN(remaining, sizeof(discard));
 
-		rc = mqtt_readall_publish_payload(
-			c, reinterpret_cast<uint8_t *>(payload), chunk);
+		rc = mqtt_readall_publish_payload(c, discard, chunk);
 		if (rc < 0) {
 			LOG_ERR("failed draining publish payload: %d", rc);
 			return;
