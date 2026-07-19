@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status & operating constraints
 
-- **Implementation has begun.** `firmware/` is a working Zephyr **C++** app (see `docs/language-cpp.md`): it reads the SCD-40 over I²C via the sensor API and brings up an IPv4 stack on the on-board Ethernet. `proto/` and `host/` do **not** exist yet — create them when that work starts, not up front.
+- **The core path is implemented; the Protobuf half is not yet verified.** `firmware/` is a working Zephyr **C++** app (see `docs/language-cpp.md`): it reads the SCD-40 over I²C via the sensor API, brings up IPv4 on the on-board Ethernet, and runs an MQTT client that publishes nanopb-encoded `Telemetry` and answers `Command`s with `Ack`s. `proto/` holds the schema; `host/` holds the Python paho harness (`monitor.py`, `command.py`). **The MQTT layer is hardware-verified; the nanopb encode/decode path and `host/` are not** — the board has not been flashed since nanopb was wired in, and the harness has never run (no venv, no generated bindings, never installed on the Pi). Do not treat encode/decode as proven. What remains after that is **zbus** (splitting the sensor read from the publish, which today share one loop) and the **schema-versioning exercise**.
 - **Build / flash / console via the wrapper scripts**, not raw `west` — they source the workspace venv and pass `-s`/`-d` correctly:
   ```sh
   ./scripts/build.sh      # incremental; -p forces pristine (required after devicetree/Kconfig edits)
@@ -16,8 +16,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   The app is **freestanding**: it builds against a shared global west workspace at `~/zephyr-workspace` (**Zephyr v4.4.1**, shared with `../ImpulseZephyr`, so both are pinned to that version). Details in `docs/toolchain.md`.
 - **No test/lint tooling exists.** Verification is build → flash → observe on hardware (console, `net` shell commands, or the Pi).
 - **Networking is up:** static IPv4 `192.168.10.2/24`, no gateway, on a direct cable to the Pi at `192.168.10.1`. It is configured *entirely* in `firmware/prj.conf` via `CONFIG_NET_CONFIG_SETTINGS` — `net_config` applies it at boot, so no app code touches interface bring-up. Ping is verified both ways.
-- **Three of the README's open decisions are resolved.** In `docs/toolchain.md`: nanopb integration = the **in-tree module**; sensor driver = the **upstream in-tree `sensirion,scd40`**. In `docs/mqtt-design.md`: **QoS per topic + the topic hierarchy** (`node/<id>/{telemetry,command,ack,status}`; telemetry QoS 0, command/ack QoS 1, retained-will status). Still open: **telemetry trigger** (5 s poll vs. data-ready). Record new decisions and their rationale in `docs/`.
-- `notes/learning-roadmap.md` sequences the concepts as Phases 1–5. Phases 1 (Ethernet/IP) and 2 (TCP) are **done**; **Phase 3 (MQTT) is next** — no MQTT/TCP/socket configs are in `prj.conf` yet. (`notes/` is personal learning material; `docs/` is project documentation.)
+- **Decisions already made** (don't reopen without reason). In `docs/toolchain.md`: nanopb integration = the **in-tree module**; sensor driver = the **upstream in-tree `sensirion,scd40`**. In `docs/mqtt-design.md`: **QoS per topic + the topic hierarchy** (`node/<id>/{telemetry,command,ack,status}`; telemetry QoS 0, command/ack QoS 1, retained-will status). Still open: **telemetry trigger** — currently a timed poll (default 5 s, retunable via `SetInterval`); the SCD-40 data-ready signal is the alternative. Record new decisions and their rationale in `docs/`.
+- `notes/learning-roadmap.md` sequences the concepts as Phases 1–5. Phases 1–3 (Ethernet/IP, TCP, MQTT) are **done and verified on hardware**. Phase 4 (Protobuf/nanopb) is **written but unverified** — verifying it is the next task, ahead of **Phase 5 (zbus)**. (`notes/` is personal learning material; `docs/` is project documentation.)
 
 ## Working principles
 
