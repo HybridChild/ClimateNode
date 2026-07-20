@@ -2,7 +2,7 @@
 
 Decisions and verified setup for the Nucleo ↔ Pi MQTT link. Terse by intent — for the
 concepts behind any of it, see the companion teaching guide,
-[`communication-guide.md`](communication-guide.md). For how these decisions are expressed
+[`communication-guide.md`](../notes/communication-guide.md). For how these decisions are expressed
 in code, see [`firmware-mqtt-walkthrough.md`](firmware-mqtt-walkthrough.md).
 
 Resolves the README's open decisions **"decide QoS per topic"** and **"the topic

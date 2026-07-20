@@ -2,10 +2,10 @@
 
 A guided reading of `firmware/src/main.cpp`, written to teach the patterns rather than
 document the file. For the *concepts* underneath (what a broker is, what QoS means, how
-topics work) see [`communication-guide.md`](communication-guide.md); for the *decisions*
+topics work) see [`communication-guide.md`](../notes/communication-guide.md); for the *decisions*
 this code implements (which topic, which QoS, and why) see
 [`mqtt-design.md`](mqtt-design.md). For how the payloads themselves are encoded, see
-[`protobuf-guide.md`](protobuf-guide.md).
+[`protobuf-guide.md`](../notes/protobuf-guide.md).
 
 The file is ~400 lines and touches every layer of the stack: Zephyr's device model, its
 socket API, the MQTT library, and the sensor API. Read it as a stack of ideas, not
@@ -367,7 +367,7 @@ though it were the message. Worth remembering whenever one scratch buffer serves
 Now that payloads are Protobuf, `payload` is a `uint8_t` array with no terminator, and
 `oversized` is carried forward so the message can be **rejected outright** rather than
 decoded from a truncated buffer — a partial message can decode into something plausible.
-See [`protobuf-guide.md`](protobuf-guide.md) §7.
+See [`protobuf-guide.md`](../notes/protobuf-guide.md) §7.
 
 ### The QoS 1 obligation
 

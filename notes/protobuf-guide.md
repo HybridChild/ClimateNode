@@ -8,9 +8,9 @@ the running example. Every byte sequence below is real: taken from packets this 
 actually sent, and re-verified with `protoc --decode_raw`.
 
 For how those bytes get carried, see [`communication-guide.md`](communication-guide.md)
-(MQTT concepts) and [`mqtt-design.md`](mqtt-design.md) (this project's topic and QoS
+(MQTT concepts) and [`mqtt-design.md`](../docs/mqtt-design.md) (this project's topic and QoS
 decisions). For the surrounding firmware, see
-[`firmware-mqtt-walkthrough.md`](firmware-mqtt-walkthrough.md).
+[`firmware-mqtt-walkthrough.md`](../docs/firmware-mqtt-walkthrough.md).
 
 ---
 

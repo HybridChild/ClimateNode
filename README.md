@@ -20,7 +20,7 @@ To make the telemetry *real* (rather than a hard-coded counter), the node reads 
 - **Host:** Raspberry Pi 5 (Linux) — native Gigabit Ethernet, wired **direct-cable** to the Nucleo (no switch). Static IPs on both ends in one subnet: Pi `192.168.10.1` / Nucleo `192.168.10.2`, mask `255.255.255.0`, no gateway. On the firmware side this is configured entirely in `firmware/prj.conf` via `CONFIG_NET_CONFIG_SETTINGS` — `net_config` applies it at boot, so **no application code touches interface bring-up**. The Nucleo's LAN8742 PHY has Auto-MDIX, so a normal straight-through cable works. Runs a **Mosquitto MQTT broker** plus the Python test harness (a paho-mqtt client that subscribes to telemetry and publishes commands); can stay permanently wired as a dedicated bench host.
 
 ## Scope and status
-A Zephyr app on the Nucleo — written in **C++ (C++17)** to match how production firmware of this kind is written; see [`docs/language-cpp.md`](docs/language-cpp.md).
+A Zephyr app on the Nucleo — written in **C++ (C++17)** to match how production firmware of this kind is written; see [`notes/language-cpp.md`](notes/language-cpp.md).
 
 **Implemented** (`firmware/src/main.cpp`, walked through in [`docs/firmware-mqtt-walkthrough.md`](docs/firmware-mqtt-walkthrough.md)):
 1. Brings up the network interface and connects as an **MQTT client** to the broker on the Pi. Reconnect is the shape of the program, not error handling bolted on: a forever loop of connect → serve until dropped → back off (1 s doubling to 30 s) → retry, so a cable pull or a downed broker is survivable.
@@ -61,12 +61,12 @@ All three carry a `schema_version`, bumped only on a *breaking* change — addit
 Topics are `node/<id>/{telemetry,command,ack,status}` — telemetry at QoS 0, command/ack at QoS 1, and `status` a retained last-will carrying plain ASCII `online`/`offline`. The SCD-40's ~5 s sample rate defines the natural telemetry period; the command path lets the host change or force it. See [`docs/mqtt-design.md`](docs/mqtt-design.md) for the QoS rationale and the session/keepalive/will settings.
 
 ## Repository layout
-- `proto/` — the `.proto` schema (shared contract) + nanopb `.options`. **The single source of truth for the wire format**; firmware and host both generate from it. Generated `*.pb.c/.h` are **C** and stay C even though the firmware is C++ (they're included across the C↔C++ boundary; see [`docs/language-cpp.md`](docs/language-cpp.md)).
+- `proto/` — the `.proto` schema (shared contract) + nanopb `.options`. **The single source of truth for the wire format**; firmware and host both generate from it. Generated `*.pb.c/.h` are **C** and stay C even though the firmware is C++ (they're included across the C↔C++ boundary; see [`notes/language-cpp.md`](notes/language-cpp.md)).
 - `firmware/` — Zephyr application in **C++17** (`prj.conf` with `CONFIG_CPP=y`, `CMakeLists.txt`, `src/*.cpp`, and a **board overlay** defining the I²C bus + `sensirion,scd40` node). Generates `node.pb.c/.h` at build time so it can't drift from the schema.
 - `host/` — host test harness on the Pi: a Python **paho-mqtt** monitor and command client that encode/decode Protobuf, plus `generate.sh` for the Python bindings.
 - `scripts/` — the build/flash/console wrappers. Use these rather than raw `west`; they source the workspace venv and pass the right source/build directories.
-- `docs/` — project documentation: each topic pairs a from-first-principles guide with a terse reference (e.g. `communication-guide.md` + `mqtt-design.md`).
-- `notes/` — personal learning material, including the phased roadmap.
+- `docs/` — terse project references: decisions, rationale, and verified facts (e.g. `mqtt-design.md`).
+- `notes/` — from-first-principles teaching guides for the concepts behind those decisions (e.g. `communication-guide.md`), plus the phased roadmap.
 
 ## Getting started
 
@@ -94,14 +94,20 @@ host/.venv/bin/python host/command.py interval 2000 # retune the publish period 
 There is no test or lint tooling: verification is build → flash → observe, via the console, Zephyr's `net` shell commands, or the host harness.
 
 ## Documentation
-`docs/` pairs a from-first-principles **guide** with a terse **reference** per topic — concepts in the guide, decisions and verified facts in the reference.
+Split by *kind*, not by topic: **`notes/`** holds from-first-principles teaching guides — general concepts, largely portable beyond this repo. **`docs/`** holds terse project references — decisions, verified facts, and what was actually built here. Most topics have one of each.
 
-| Topic | Guide | Reference |
+| Topic | Guide (`notes/`) | Reference (`docs/`) |
 |---|---|---|
-| Communication (MQTT, QoS, topics) | [`communication-guide.md`](docs/communication-guide.md) | [`mqtt-design.md`](docs/mqtt-design.md) |
-| Zephyr build system | [`zephyr-build-system-guide.md`](docs/zephyr-build-system-guide.md) | [`build-system-overview.md`](docs/build-system-overview.md) |
+| Communication (MQTT, QoS, topics) | [`communication-guide.md`](notes/communication-guide.md) | [`mqtt-design.md`](docs/mqtt-design.md) |
+| Zephyr build system | [`zephyr-build-system-guide.md`](notes/zephyr-build-system-guide.md) | [`build-system-overview.md`](docs/build-system-overview.md) |
+| Sensor API + shell | [`sensor-api-guide.md`](notes/sensor-api-guide.md) | [`sensor-bringup.md`](docs/sensor-bringup.md) |
+| Protobuf / nanopb | [`protobuf-guide.md`](notes/protobuf-guide.md) | [`proto/node.proto`](proto/node.proto) (decisions inline) |
 
-Standalone: [`firmware-mqtt-walkthrough.md`](docs/firmware-mqtt-walkthrough.md) — a guided reading of `firmware/src/main.cpp` connecting the two · [`language-cpp.md`](docs/language-cpp.md) — why C++17, and the C↔C++ boundary · [`toolchain.md`](docs/toolchain.md) — workspace layout, build/flash workflow, verified facts · [`sensor-bringup.md`](docs/sensor-bringup.md) — SCD-40 wiring and devicetree overlay · [`out-of-tree-hardware-overview.md`](docs/out-of-tree-hardware-overview.md).
+Guides without a reference half: [`language-cpp.md`](notes/language-cpp.md) — why C++17, and the C↔C++ boundary · [`learning-roadmap.md`](notes/learning-roadmap.md) — the concepts sequenced as Phases 1–5.
+
+References without a guide half: [`toolchain.md`](docs/toolchain.md) — workspace layout, build/flash workflow · [`out-of-tree-hardware-overview.md`](docs/out-of-tree-hardware-overview.md) — porting to a board Zephyr doesn't ship.
+
+Neither, and deliberately so: [`firmware-mqtt-walkthrough.md`](docs/firmware-mqtt-walkthrough.md) — a guided reading of `firmware/src/main.cpp` that connects the others. It teaches, but it tracks this repo's code, so it lives with the references and must stay in sync when the client changes.
 
 ## References
 Local PDFs live in [`../../Datasheets/sensor/Adafruit_SCD40/`](../../Datasheets/sensor/Adafruit_SCD40/).

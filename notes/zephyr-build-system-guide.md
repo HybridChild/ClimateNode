@@ -7,7 +7,7 @@ components, and flow of the Zephyr build system in the order that makes them eas
 learn. It uses this repository — a CO₂ sensor node on an ST Nucleo-H753ZI — only as a
 running example to keep the ideas concrete. For the project-specific details (exact file
 paths, verified line numbers, the artifact-by-artifact table), see its companion,
-[`build-system-overview.md`](build-system-overview.md).
+[`build-system-overview.md`](../docs/build-system-overview.md).
 
 ---
 

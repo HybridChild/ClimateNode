@@ -6,8 +6,8 @@ This is a teaching document, not project documentation. It explains the concepts
 flow in the order that makes them easiest to learn, using this repository — a CO₂ sensor
 node on an ST Nucleo-H753ZI talking to a Raspberry Pi — as the running example. For the
 project's actual decisions (topic table, QoS per topic, broker config), see its companion,
-[`mqtt-design.md`](mqtt-design.md). Once these concepts make sense,
-[`firmware-mqtt-walkthrough.md`](firmware-mqtt-walkthrough.md) reads the firmware that
+[`mqtt-design.md`](../docs/mqtt-design.md). Once these concepts make sense,
+[`firmware-mqtt-walkthrough.md`](../docs/firmware-mqtt-walkthrough.md) reads the firmware that
 implements them, line by line.
 
 ---
@@ -549,7 +549,7 @@ LISTEN 0  100  192.168.10.1:1883  0.0.0.0:*
 > NetworkManager, failing with `Cannot assign requested address` before `eth0` is configured.
 > It is a direct consequence of "a listening socket is IP + port" (§3.4). The fix is a
 > systemd drop-in ordering mosquitto after `network-online.target` plus a relaxed restart
-> limiter; see **Boot ordering** in [`mqtt-design.md`](mqtt-design.md) for the exact file.
+> limiter; see **Boot ordering** in [`mqtt-design.md`](../docs/mqtt-design.md) for the exact file.
 
 ### 8.2 The two tools, decoded
 
