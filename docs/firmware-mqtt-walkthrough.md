@@ -4,7 +4,8 @@ A guided reading of `firmware/src/main.cpp`, written to teach the patterns rathe
 document the file. For the *concepts* underneath (what a broker is, what QoS means, how
 topics work) see [`communication-guide.md`](communication-guide.md); for the *decisions*
 this code implements (which topic, which QoS, and why) see
-[`mqtt-design.md`](mqtt-design.md).
+[`mqtt-design.md`](mqtt-design.md). For how the payloads themselves are encoded, see
+[`protobuf-guide.md`](protobuf-guide.md).
 
 The file is ~400 lines and touches every layer of the stack: Zephyr's device model, its
 socket API, the MQTT library, and the sensor API. Read it as a stack of ideas, not
@@ -339,10 +340,11 @@ afterwards.
 So the code keeps what fits and explicitly drains the rest:
 
 ```c
-uint32_t kept = MIN(remaining, sizeof(payload) - 1);
+uint32_t kept = MIN(remaining, sizeof(payload));
 mqtt_readall_publish_payload(c, payload, kept);
-payload[kept] = '\0';
 remaining -= kept;
+
+bool oversized = (remaining > 0);
 
 while (remaining > 0) {
     uint32_t chunk = MIN(remaining, sizeof(discard));
@@ -353,15 +355,19 @@ while (remaining > 0) {
 
 The drain deliberately targets a **separate** `discard` buffer. Reusing `payload` looks
 like a free optimisation — the bytes are being thrown away, so why allocate more stack? —
-but it overwrites the prefix that was just kept, terminator included, and the subsequent
-`%s` then runs off the end of the array.
+but it overwrites the prefix that was just kept.
 
-That bug is unusually well camouflaged: when the oversized payload is uniform (a test
-string of repeated characters, say) the overwritten data is identical to what it replaced,
-so the only visible symptom is a few bytes of stack garbage after the missing `'\0'`. With
-a real command the log would silently show the *discarded tail* instead of the kept
-prefix. Worth remembering whenever a scratch buffer is shared between "keep" and "discard"
-paths.
+That bug is unusually well camouflaged, and it was caught on hardware rather than by the
+compiler. When the payload is a uniform test string the overwritten data is identical to
+what it replaced, so the only symptom was a few bytes of stack garbage where the string
+terminator had been. With real content the log would have shown the *discarded tail* as
+though it were the message. Worth remembering whenever one scratch buffer serves both a
+"keep" and a "discard" path.
+
+Now that payloads are Protobuf, `payload` is a `uint8_t` array with no terminator, and
+`oversized` is carried forward so the message can be **rejected outright** rather than
+decoded from a truncated buffer — a partial message can decode into something plausible.
+See [`protobuf-guide.md`](protobuf-guide.md) §7.
 
 ### The QoS 1 obligation
 
@@ -457,12 +463,13 @@ non-static member function and therefore has ordinary C calling convention.
 
 ## 11. What is deliberately missing
 
-- **No Protobuf.** Payloads are plain text (`seq=1 co2=812 temp=22.41 rh=41.3`). Phase 4
-  replaces `format_telemetry()` with nanopb encoding against the schema in `proto/`.
-- **No zbus.** `run_session()` reads the sensor directly. Phase 5 introduces a zbus channel
-  so the sensor task publishes readings and the MQTT task consumes them, decoupling
-  acquisition from transport.
+- **No zbus.** `run_session()` reads the sensor inline, so acquisition and transport share
+  one loop and cannot fail independently — a slow I²C read delays the keepalive deadline.
+  Phase 5 splits them across a zbus channel.
 - **No TLS, no credentials.** `MQTT_TRANSPORT_NON_SECURE` and anonymous access — bench
   only. A real deployment uses `MQTT_TRANSPORT_SECURE` plus a credential set.
-- **No `node/<id>/ack` publishing.** The subscribe path logs commands but does not answer
-  yet; that arrives with the Protobuf `Command` / `Ack` pair.
+- **No persistence.** `sample_period_ms` survives reconnects but not reboots; a `SetInterval`
+  is lost on power cycle. Zephyr's settings subsystem is the usual answer.
+- **Single-slot command dedupe.** `last_command_sequence` remembers only the most recent
+  command, so back-to-back duplicates are caught but an interleaved `A, B, A` is not. A
+  deliberate simplification for a node with one command source.
