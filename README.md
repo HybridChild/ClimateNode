@@ -29,14 +29,14 @@ A Zephyr app on the Nucleo — written in **C++ (C++17)** to match how productio
 4. Announces liveness on a **retained `status` topic** — `online` on connect, `offline` published by the broker via the Last Will if the node drops without a clean DISCONNECT.
 5. Talks to a **host-side test harness** on the Raspberry Pi (Python, paho-mqtt) that decodes and logs the telemetry stream and can publish commands.
 
-**Verification status.** Everything through the MQTT layer is confirmed on hardware —
-connect, reconnect with backoff, QoS 0 telemetry, QoS 1 commands, and the retained
-last-will. The **Protobuf path (3) and the host harness (5) are written but have never
-run**: the board has not been flashed since nanopb was wired in, and `host/` has not been
-installed on the Pi. Treat those two as unproven until the bench says otherwise.
+**Verification status.** All of the above is confirmed on the bench (2026-07-20): connect,
+reconnect with backoff, QoS 0 telemetry decoded by the host, QoS 1 commands with every
+branch exercised, an out-of-range `SetInterval` rejected rather than silently clamped, a
+redelivered command acknowledged but not re-executed, and a malformed payload answered
+with `MALFORMED` without desynchronising the MQTT stream. The node also ran ~14 hours
+unattended without a gap in the sequence counter.
 
 **Still to do:**
-- **Verify Phase 4 end to end** — flash, install the harness on the Pi, and exercise every command including duplicate suppression and a malformed payload.
 - **zbus** — the sensor read and the MQTT publish are still in one loop; the point is to split them across a zbus channel (see the learning goals below).
 - **Schema-versioning exercise** — add a field and deliberately run old↔new against each other.
 - *(Optional higher-fidelity pass: re-run the harness in C#/.NET on a Windows box to mirror a Windows-side desktop application.)*

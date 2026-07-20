@@ -98,6 +98,13 @@ enum AckStatus {
   // The command was understood and attempted, but failed.
   ACK_STATUS_FAILED = 4;
   // The payload did not decode as a Command at all.
+  //
+  // Catches corrupt *framing* only. Protobuf has no magic number and no
+  // checksum, so a payload that is well-formed but wrong decodes cleanly into
+  // zeroed fields and looks like a valid command — verified on the bench: the
+  // ASCII "garbage" was rejected only because its first byte encodes wire type
+  // 7, which is invalid. Bytes that happen to be structurally legal would pass.
+  // That gap is what schema_version is for; MALFORMED cannot cover it.
   ACK_STATUS_MALFORMED = 5;
 }
 
