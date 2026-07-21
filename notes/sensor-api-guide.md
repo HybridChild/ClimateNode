@@ -834,26 +834,20 @@ failed. Check power and wiring: there is no retry (§2.4).
 
 ## 12. The model in one paragraph
 
-Zephyr wraps every chip in a **device-class abstraction**, so an application asks for "the
-CO₂ channel" and a driver — written once by whoever read the datasheet — turns that into
-command words, CRCs and conversion constants. The plumbing underneath is resolved at build
-time: your overlay declares the node, a for-each macro instantiates one `struct device`
-per matching node, and `DEVICE_DT_GET` becomes a pointer with no runtime lookup. What is
-*not* resolved for you is initialisation — a failed init latches permanently, with no
-retry available, so `zephyr,deferred-init` exists to let the application control the
-*timing* of the one attempt it gets. Reading is deliberately **two calls**:
-`sample_fetch` does the bus traffic and latches raw values, `channel_get` converts them
-without touching the bus, which is what makes all three of the SCD-40's readings describe
-the same instant and what made it safe to move acquisition onto its own thread. Values
-arrive as `struct sensor_value` — two `int32_t`s, integer part and millionths — because
-most Zephyr targets have no FPU, and **both fields carry the sign**. The API's real
-boundary is its channel list: units are fixed by the subsystem, not the driver, but a
-chip's capabilities and a driver's exposed surface are different lists, and only the
-second is callable — `scd4x` has no `trigger_set`, so data-ready interrupts are off the
-table and a timed poll is the only option. That leaves the sharpest edge in the path:
-`sample_fetch` returns **0 for success without new data** when the sensor has not
-converted yet, so a fast poll silently republishes the previous reading. Check the driver's
-API table and read its `sample_fetch` before designing around a datasheet feature.
+Zephyr wraps every chip in a **device-class abstraction**: the application asks for "the
+CO₂ channel" and a driver turns that into command words, CRCs and conversion constants.
+The plumbing resolves at build time — your overlay declares the node, a macro instantiates
+one `struct device` per match, and `DEVICE_DT_GET` is a pointer with no runtime lookup.
+Initialisation is the exception: a failed init latches permanently with no retry, so
+`zephyr,deferred-init` exists to control the *timing* of the single attempt you get.
+Reading is deliberately **two calls** — `sample_fetch` does the bus traffic and latches raw
+values, `channel_get` only converts — which is what makes all three readings describe the
+same instant, and what made it safe to move acquisition onto its own thread. Values arrive
+as `struct sensor_value`, two `int32_t`s, because most Zephyr targets have no FPU; **both
+fields carry the sign**. The habit to take away: a chip's capabilities and a driver's
+exposed surface are different lists, and only the second is callable. `scd4x` has no
+`trigger_set`, so a timed poll is the only option — and `sample_fetch` returns **0 for
+success without new data**, which is the sharpest edge in the path.
 
 ## 13. Where to go next
 

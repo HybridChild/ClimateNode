@@ -39,8 +39,16 @@ while (connected) {
 }
 ```
 
-That works, and for a long time it is the right amount of structure. But look at what is
-entangled:
+One call in there does the waiting, and the whole guide turns on it, so it is worth being
+precise about. **`poll()` sleeps until one of a set of things is ready to be read, or until
+a timeout expires** — whichever happens first. You hand it a list and it hands back which
+entries woke it. The things in that list are **file descriptors**: small integers the
+kernel uses to name anything you can read from or write to — a socket, a serial port, a
+file. That is the whole idea, and §7 is about the fact that a zbus channel is *not* one of
+them.
+
+The loop above therefore blocks efficiently — no busy-waiting, no fixed tick. It works, and
+for a long time it is the right amount of structure. But look at what is entangled:
 
 - **The sensor cannot sample unless the network loop is running.** During a reconnect
   backoff — up to 30 s on this bench — nothing is read at all. The sensor's cadence is
@@ -68,6 +76,10 @@ The naive answer is a shared global plus a mutex:
 ```c
 struct reading latest;      /* guarded by latest_mutex */
 ```
+
+(A **mutex** is a lock exactly one thread can hold at a time. It exists because a struct
+this size is not written atomically: without one, a reader can catch `latest` half-updated
+— a new CO₂ value beside a stale timestamp — and nothing in the language warns you.)
 
 This works and is genuinely fine for small systems. What it does not give you:
 
@@ -291,10 +303,8 @@ Two channels, deliberately observed in the two different ways §4 distinguishes:
 | Semantics | **state** — latest wins, loss is fine and accounted | **events** — every one must arrive, none may collapse |
 | Same argument on the wire | telemetry at QoS 0 | command/ack at QoS 1 |
 
-That last row is §4's punchline made concrete: the reasoning that picks an observer kind
-inside the chip is the reasoning that picks a QoS level across the cable. Neither decision
-was copied from the other; they arrive at the same answer because the data has the same
-shape at both scales.
+The last row is there because the two columns were decided independently and landed in the
+same place — see §4.
 
 Two details worth noticing in the code:
 
@@ -399,20 +409,17 @@ non-thread-safe `mqtt_client` at once.
 ## 11. The model in one paragraph
 
 A zbus channel is **one message of a fixed type, a lock, and a list of observers**,
-declared statically — shared storage plus notification plus a registry, which is exactly
-the three things a bare global-plus-mutex leaves you to build by hand. Publishing copies
-the message in and runs the observers; because a channel is not a queue, publishing
-overwrites, and that latest-wins behaviour is a feature for state and a defect for events
-— which is why the choice of **observer kind** is the real design decision, and why it
-lands on the same reasoning as MQTT's QoS levels one layer out. A **listener** runs
-synchronously on the publisher's thread, so it may only signal; a **message subscriber**
-gets a private copy on its own thread, so nothing is collapsed. A **validator** puts the
-rule that guards a channel next to the data it guards and makes rejection atomic. And when
-a consumer must wait on the bus *and* a socket, the answer is not a polling timeout but an
-**eventfd** in the poll set — the old self-pipe trick, whose counter doubles as a free
-measurement of how much the channel coalesced. The cost is RAM, a copy per publish, and
-indirection; the payoff arrives at the *next* consumer, which is a line in an observers
-list rather than an edit to the producer.
+declared statically — shared storage, notification, and a registry of who cares, which are
+exactly the three things a bare global-plus-mutex leaves you to build by hand. Publishing
+copies the message in and runs the observers. Because a channel is not a queue, publishing
+**overwrites**: right for state, wrong for events, which is why picking the observer kind
+is the real design decision (§4). A **listener** runs synchronously on the publisher's
+thread and may only signal; a **message subscriber** gets a private copy on its own thread,
+so nothing is collapsed. A **validator** puts the rule next to the data it guards and makes
+rejection atomic. When a consumer must wait on the bus *and* a socket, the answer is an
+**eventfd** in the poll set rather than a polling timeout. The cost is RAM, a copy per
+publish, and indirection; the payoff arrives at the *next* consumer, which is a line in an
+observers list instead of an edit to the producer.
 
 ## 12. Where to go next
 

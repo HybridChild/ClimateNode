@@ -431,7 +431,7 @@ though it were the message. Worth remembering whenever one scratch buffer serves
 Now that payloads are Protobuf, `payload` is a `uint8_t` array with no terminator, and
 `oversized` is carried forward so the message can be **rejected outright** rather than
 decoded from a truncated buffer — a partial message can decode into something plausible.
-See [`protobuf-guide.md`](../notes/protobuf-guide.md) §8.
+See [`protobuf-guide.md`](../notes/protobuf-guide.md) §10.
 
 ### The QoS 1 obligation
 

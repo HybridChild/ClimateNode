@@ -96,6 +96,8 @@ There is no test or lint tooling: verification is build → flash → observe, v
 ## Documentation
 Split by *kind*, not by topic: **`notes/`** holds from-first-principles teaching guides — general concepts, largely portable beyond this repo. **`docs/`** holds terse project references — decisions, verified facts, and what was actually built here. Most topics have one of each.
 
+**[`notes/README.md`](notes/README.md) is the index for the guides** — a suggested reading order, what each one assumes you already know, and which depend on which. Start there rather than with the table below if you are reading the material rather than looking a topic up.
+
 | Topic | Guide (`notes/`) | Reference (`docs/`) |
 |---|---|---|
 | Communication (MQTT, QoS, topics) | [`communication-guide.md`](notes/communication-guide.md) | [`mqtt-design.md`](docs/mqtt-design.md) |

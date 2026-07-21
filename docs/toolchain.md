@@ -103,7 +103,7 @@ Two constraints worth knowing before changing anything here:
 The firmware side is immune to that whole class of problem, which is worth understanding: nanopb
 has `protoc` emit a *descriptor set* and generates C from that with its own Python generator. It
 never imports `protoc`'s generated Python, so the version check never runs. More in
-[`protobuf-guide.md`](../notes/protobuf-guide.md) §9.
+[`protobuf-guide.md`](../notes/protobuf-guide.md) §11.
 
 Generated artifacts — `node.pb.c/.h` on the firmware side, `node_pb2.py` on the host — are
 gitignored and never hand-edited. Both regenerate from `proto/node.proto`, which is what makes
