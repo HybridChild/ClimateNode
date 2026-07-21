@@ -35,6 +35,27 @@ constexpr int kSensorPriority = 7;
 
 const struct device *const scd40 = DEVICE_DT_GET(DT_NODELABEL(scd40));
 
+/* How long to wait before initialising the sensor.
+ *
+ * The SCD-40 needs up to 30 ms after VDD crosses its threshold before it will
+ * answer on I2C at all (`timing_specifications.power_up_time` in
+ * ../../shared_refs/sensor/SCD4x.yaml). The board and the sensor share a rail,
+ * so on a cold plug-in the MCU can reach the driver's POST_KERNEL init while the
+ * chip is still powering up. Every one of scd4x_init()'s four transfers would
+ * then NACK.
+ *
+ * That failure is unrecoverable, which is why it is worth avoiding rather than
+ * detecting: do_device_init() sets `initialized` even when init returns an
+ * error, so device_is_ready() latches false; device_init() then answers
+ * -EALREADY, and device_deinit() answers -ENOTSUP because the scd4x driver
+ * registers no deinit op. There is no second attempt to be had.
+ *
+ * So the devicetree marks the node `zephyr,deferred-init`, the boot sweep skips
+ * it (kernel/init.c), and we initialise it here instead — late enough that the
+ * one attempt we get is one that can succeed. 100 ms is a wide margin on 30 ms
+ * and costs nothing: the first conversion is ~5 s away regardless. */
+constexpr int kSensorPowerUpMs = 100;
+
 /* Reject a command before it ever reaches the channel. zbus_chan_pub() returns
  * -ENOMSG when this returns false, and the message is not stored or delivered —
  * so the bounds cannot be bypassed, whoever publishes. */
@@ -88,6 +109,19 @@ void read_scd40(bool device_ok, struct sensor_reading *out)
 
 void sensor_thread(void *, void *, void *)
 {
+	/* Deferred init: the boot sweep left this device alone, so we own the one
+	 * attempt. Wait out the power-up window first — see kSensorPowerUpMs. */
+	k_msleep(kSensorPowerUpMs);
+
+	int init_rc = device_init(scd40);
+
+	if (init_rc != 0) {
+		LOG_ERR("SCD-40 init failed: %d", init_rc);
+	}
+
+	/* Deliberately read once and kept const. Re-reading it per cycle would look
+	 * like resilience and provide none: readiness is latched at the first init
+	 * attempt and nothing in the driver can clear it (see kSensorPowerUpMs). */
 	const bool device_ok = device_is_ready(scd40);
 
 	if (!device_ok) {

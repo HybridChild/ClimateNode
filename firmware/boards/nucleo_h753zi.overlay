@@ -5,5 +5,14 @@
 		compatible = "sensirion,scd40";
 		reg = <0x62>;
 		status = "okay";
+
+		/* Skip the boot-time init sweep; src/sensor.cpp calls device_init()
+		 * itself once the sensor's 30 ms power-up window has passed. The
+		 * board and the sensor share a rail, so on a cold plug-in the MCU
+		 * can otherwise reach the driver's POST_KERNEL init while the chip
+		 * is still coming up -- and a failed init latches permanently. The
+		 * reasoning is in src/sensor.cpp; do not remove one without the
+		 * other. */
+		zephyr,deferred-init;
 	};
 };
