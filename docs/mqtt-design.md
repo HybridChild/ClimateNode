@@ -169,5 +169,13 @@ mosquitto_pub -h 192.168.10.1 -t 'node/1/command' -m x -q 1 -d  # -d shows the p
   last reading instantly; revisit if that friction shows up.
 - **`<id>` source** — hardcoded `1`, or derived from the STM32 unique ID (the same source
   the Ethernet MAC `02:80:E1:9C:A7:DE` is hashed from). Only matters with a second node.
-- **Payload schema** — `proto/` does not exist yet; `Telemetry` / `Command` / `Ack` are
-  specified only in the README. That file becomes the contract once written.
+
+## Settled since
+
+- **Payload schema** — [`proto/node.proto`](../proto/node.proto) is the contract, verified
+  end to end 2026-07-20. Concepts in [`protobuf-guide.md`](../notes/protobuf-guide.md).
+- **Reconnect latency vs. backoff** — the backoff caps at 30 s, so a broker that comes back
+  early still waits out the current delay. Observed on the bench 2026-07-21: the broker was
+  restarted within seconds, and the node reconnected 30 s later. That is the intended
+  trade — patience over hammering — but it means "broker downtime" and "node downtime" are
+  not the same number, and a 5 s telemetry cadence can lose ~6 samples to a 1 s outage.

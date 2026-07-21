@@ -5,40 +5,57 @@ document the file. For the *concepts* underneath (what a broker is, what QoS mea
 topics work) see [`communication-guide.md`](../notes/communication-guide.md); for the *decisions*
 this code implements (which topic, which QoS, and why) see
 [`mqtt-design.md`](mqtt-design.md). For how the payloads themselves are encoded, see
-[`protobuf-guide.md`](../notes/protobuf-guide.md).
+[`protobuf-guide.md`](../notes/protobuf-guide.md). For channels, observers and why the
+sensor is a separate thread, see [`zbus-guide.md`](../notes/zbus-guide.md).
 
-The file is ~400 lines and touches every layer of the stack: Zephyr's device model, its
-socket API, the MQTT library, and the sensor API. Read it as a stack of ideas, not
-top to bottom.
+`main.cpp` owns the network half only. The sensor lives in `sensor.cpp` and the two meet
+on the zbus channels in `app_channels.h` — §11 reads that boundary. Together they touch
+every layer of the stack: Zephyr's device model, its socket API, the MQTT library, the
+sensor API, and an in-process message bus. Read them as a stack of ideas, not top to
+bottom.
 
 ---
 
 ## 1. The shape of the program
 
-Three loops nested inside each other. Recognising them makes the rest fall into place.
+**Two threads.** Each owns one clock and one job:
 
 ```
-main()                     forever: run a session, back off, retry
- └─ run_session()          connect, then serve until the connection drops
-     └─ while (connected)  wake, handle I/O, maybe publish, sleep again
+sensor.cpp   K_THREAD_DEFINE(sensor_tid, …)
+  └─ forever: read the SCD-40, publish to chan_telemetry,
+              wait out the sample period (or wake early for a command)
+
+main.cpp     main()
+  └─ forever: run a session, back off, retry          ← survives disconnection
+      └─ run_session()      connect, then serve until the connection drops
+          └─ while (connected)  wake on socket OR bus, handle it, repeat
 ```
 
-The outer loop is the one that matters. Most introductory MQTT code is written as
-"connect once, then loop publishing", with reconnection bolted on afterwards as an
-`if (error) ...`. Here **disconnection is the expected control flow**. `run_session()`
+Two things are worth noticing before anything else.
+
+**The outer loop in `main()` is the one that matters.** Most introductory MQTT code is
+written as "connect once, then loop publishing", with reconnection bolted on afterwards as
+an `if (error) ...`. Here **disconnection is the expected control flow**. `run_session()`
 has no success path to fall through to — it always ends by returning, and the only
 question the caller asks is how long to wait before trying again.
 
-That inversion is deliberate. A node that cannot survive a cable pull, a broker restart,
-or a Wi-Fi hiccup is not finished, so the retry structure is designed in from the start
-instead of patched on.
+**The sensor thread does not participate in any of that.** It has never heard of MQTT. It
+keeps sampling at its own cadence through a connect, a disconnect, and a 30-second
+backoff, and the readings it takes meanwhile simply pile up as a gap in the `sequence`
+field. This is what Phase 5 bought: before the split, one loop owned both the sample clock
+and the socket, so a reconnect backoff also stopped the sensor.
+
+Both inversions are deliberate. A node that cannot survive a cable pull is not finished,
+and a sensor whose cadence depends on the network's mood is not a sensor.
 
 ## 2. Zephyr fundamentals used here
 
 ### The device model
 
+This one now lives in `sensor.cpp`, but it is the same pattern wherever you meet it:
+
 ```c
-scd40 = DEVICE_DT_GET(DT_NODELABEL(scd40));
+const struct device *const scd40 = DEVICE_DT_GET(DT_NODELABEL(scd40));
 if (!device_is_ready(scd40)) { ... }
 ```
 
@@ -50,6 +67,13 @@ it. `DT_NODELABEL(scd40)` refers to the `scd40:` label in the devicetree overlay
 `device_is_ready()` is the runtime half: it reports whether the driver's init function
 succeeded during boot. The pattern is always these two steps — **get the handle
 statically, verify it dynamically**.
+
+What the code does when that check *fails* is worth a moment. It does not abort. The
+sensor thread keeps running and publishes a reading with `SENSOR_READING_ERROR` every
+period, which crosses the bus and reaches the host as `SENSOR_STATUS_ERROR`. Going silent
+would be the easier code and the worse behaviour: from the host's side, a node with a dead
+sensor and a node that fell off the network look identical. An explicit error is a fact
+the host can act on — and you can still reach the node over MQTT to ask it what is wrong.
 
 ### Logging
 
@@ -96,7 +120,7 @@ people coming from Berkeley-sockets examples.
 `client.broker`, and sends the MQTT `CONNECT` packet. **The library owns the file
 descriptor.**
 
-You touch it in exactly one place:
+You touch it only to wait on it:
 
 ```c
 fds[0].fd = client.transport.tcp.sock;
@@ -105,7 +129,9 @@ int rc = zsock_poll(fds, 1, timeout_ms);
 ```
 
 You borrow the descriptor purely so `zsock_poll()` can tell you *"there are bytes
-waiting."* You never read those bytes — `mqtt_input()` does that. The division of
+waiting."* You never read those bytes — `mqtt_input()` does that. (This is
+`wait_for_input()`, used while waiting for CONNACK. The serve loop waits on the same
+descriptor plus one more — §6.) The division of
 responsibility is worth stating plainly:
 
 > **You decide when to wait and for how long. The library performs the actual I/O.**
@@ -276,35 +302,63 @@ caching a value in a register; it says nothing about atomicity or memory orderin
 CPUs. Genuine cross-thread sharing in Zephyr wants `atomic_t`, a mutex, or a message
 queue.
 
-## 6. The heart: computing the poll timeout
+## 6. The heart: one wait, two descriptors
 
-This is the most instructive part of the file.
+This is the most instructive part of the file, and the part Phase 5 changed most.
 
 ```c
-int64_t until_sample = next_sample - k_uptime_get();
-int keepalive_ms = mqtt_keepalive_time_left(&client);
-int timeout = MIN(MAX(until_sample, 0), keepalive_ms);
+struct zsock_pollfd fds[2] = {};
+
+fds[0].fd = client.transport.tcp.sock;   /* bytes from the broker  */
+fds[1].fd = telemetry_evt_fd;            /* a reading from the bus */
+fds[0].events = fds[1].events = ZSOCK_POLLIN;
+
+zsock_poll(fds, 2, mqtt_keepalive_time_left(&client));
 ```
 
-The thread has **three** reasons to wake up:
+The thread has three reasons to wake up:
 
 1. Bytes arrived from the broker (an incoming command)
-2. It is time to publish the next telemetry sample
+2. The sensor thread produced a reading
 3. Keepalive is due — a `PINGREQ` must go out or the broker will declare us dead
 
-Reason 1 is handled by `zsock_poll()` returning early. Reasons 2 and 3 are **deadlines**,
-and the sleep must not overshoot *either* of them — so the timeout is the minimum of the
-two. Sleeping past the sample deadline stalls telemetry; sleeping past the keepalive
-deadline gets the connection torn down by the broker.
+Reasons 1 and 2 are **descriptors**; reason 3 is a **deadline**. Because the sample clock
+now belongs to the sensor thread, exactly one deadline is left, and the timeout is simply
+`mqtt_keepalive_time_left()` — no minimum to compute, no clamp to get wrong.
 
-`MAX(until_sample, 0)` clamps the sample deadline at zero. Without it, an already-expired
-deadline yields a negative number, which `poll()` interprets as **block forever** — a
-subtle and total hang.
+### What this replaced, and why it is better
 
-This "sleep until the nearest deadline, then work out which one fired" pattern is how
-every single-threaded event loop operates, from `select()`-based network servers to
-embedded superloops. The alternative — one thread per concern plus synchronisation —
-buys complexity that a constrained target does not need.
+The previous version owned both clocks and had to reconcile them by hand:
+
+```c
+/* the old code */
+int64_t until_sample = next_sample - k_uptime_get();
+int timeout = MIN(MAX(until_sample, 0), mqtt_keepalive_time_left(&client));
+```
+
+That `MAX(until_sample, 0)` was not decoration. An already-expired deadline yields a
+negative number, and `poll()` reads a negative timeout as **block forever** — a subtle and
+total hang. Every additional deadline folded into one loop adds another such edge. Moving
+the sample clock out removed the whole class.
+
+### Why the bus needs a file descriptor at all
+
+`zsock_poll()` understands file descriptors and nothing else. A zbus channel is not one,
+so on its own it cannot be waited for alongside a socket. The options are then:
+
+| Approach | Cost |
+|---|---|
+| Poll the bus on a short timeout | Wakes the thread constantly to usually find nothing; adds latency equal to the tick |
+| Publish MQTT directly from the zbus callback | Runs on the sensor thread, so two threads touch a non-thread-safe `mqtt_client` |
+| **Signal an eventfd from the callback** | One extra descriptor; the loop stays fully blocking |
+
+The third is what the code does, and it is the standard answer to "wait on a socket and an
+internal event at once" — the same trick as the self-pipe in Unix servers. §12 covers the
+mechanics.
+
+This "block until any source is ready, then work out which fired" pattern is how every
+event loop operates, from `select()`-based network servers to embedded superloops. The
+difference from the classic single-threaded version is only *where the deadlines live*.
 
 ### `mqtt_live()`
 
@@ -367,7 +421,7 @@ though it were the message. Worth remembering whenever one scratch buffer serves
 Now that payloads are Protobuf, `payload` is a `uint8_t` array with no terminator, and
 `oversized` is carried forward so the message can be **rejected outright** rather than
 decoded from a truncated buffer — a partial message can decode into something plausible.
-See [`protobuf-guide.md`](../notes/protobuf-guide.md) §7.
+See [`protobuf-guide.md`](../notes/protobuf-guide.md) §8.
 
 ### The QoS 1 obligation
 
@@ -461,15 +515,105 @@ Related: `main` is never name-mangled, so it needs no `extern "C"`. The event ha
 plain `static` function used as a C function pointer, which works because it is not a
 non-static member function and therefore has ordinary C calling convention.
 
-## 11. What is deliberately missing
+## 11. The seam between the two threads
 
-- **No zbus.** `run_session()` reads the sensor inline, so acquisition and transport share
-  one loop and cannot fail independently — a slow I²C read delays the keepalive deadline.
-  Phase 5 splits them across a zbus channel.
+Everything above concerns one file. This section reads the join. For channels and
+observers from first principles, see [`zbus-guide.md`](../notes/zbus-guide.md).
+
+### Going out: a reading becomes a publish
+
+`sensor.cpp` calls `zbus_chan_pub(&chan_telemetry, &reading, …)`. That copies the reading
+into the channel and synchronously runs its observers — of which there is one:
+
+```cpp
+void on_telemetry(const struct zbus_channel *chan)
+{
+    if (telemetry_evt_fd >= 0) {
+        zvfs_eventfd_write(telemetry_evt_fd, 1);
+    }
+}
+```
+
+Three things are packed into those two lines.
+
+**It runs on the sensor thread.** A zbus *listener* callback executes in the publisher's
+context, inside `zbus_chan_pub()`, with the channel locked. So it must not block and must
+not do work — anything slow here stalls the sensor thread and holds the channel lock
+against the reader. Bumping a counter is about the most it should ever do.
+
+**The signal and the value travel separately.** The eventfd carries "something happened";
+the reading stays in the channel. The MQTT thread picks it up with `zbus_chan_read()`,
+which always returns the channel's *current* contents. A channel stores exactly one
+message, so if two readings are produced before the reader gets there, the reader sees the
+newer one and the older is simply gone. That is the intended semantics for telemetry — a
+stale reading is worse than a missing one — and it is the same argument that makes
+telemetry QoS 0 on the wire.
+
+**The `>= 0` guard is not defensive padding.** `K_THREAD_DEFINE` starts the sensor thread
+at boot, before `main()` has created the descriptor, so the first reading can genuinely
+arrive with no fd to signal. Losing a reading taken before the network exists costs
+nothing.
+
+### The counter is free instrumentation
+
+```cpp
+zvfs_eventfd_read(telemetry_evt_fd, &signalled);   /* non-blocking; resets to 0 */
+if (signalled > 1) {
+    LOG_WRN("%llu readings coalesced into one publish", signalled - 1);
+}
+```
+
+An eventfd holds a 64-bit counter, and reading it returns the accumulated total and clears
+it. So the value is exactly "how many readings happened since I last looked", and anything
+above 1 means the channel overwrote some. The node reports its own data loss, for free,
+with no extra state.
+
+On the bench this closed the loop precisely. A 66 s broker outage at a 5 s cadence
+produced `12 readings coalesced into one publish` and a jump from `seq=56` to `seq=69` —
+12 discarded plus 1 published equals the 13 the wall clock predicts.
+
+### Coming back: a command becomes a bus message
+
+`apply_command()` no longer changes anything itself. It fills a `struct sensor_cmd` and
+hands it over:
+
+```cpp
+int rc = zbus_chan_pub(&chan_sensor_cmd, &sc, K_MSEC(100));
+```
+
+The interesting part is the error mapping. `chan_sensor_cmd` is defined with a
+**validator**, and when a validator rejects a message `zbus_chan_pub()` returns `-ENOMSG`
+and the message is never stored or delivered. So `-ENOMSG` means precisely "out of range,
+and nothing changed" — which is exactly `ACK_STATUS_INVALID_ARGUMENT`:
+
+```cpp
+case -ENOMSG:
+    snprintf(detail, detail_len, "interval %u outside [%u,%u]", …);
+    return node_AckStatus_ACK_STATUS_INVALID_ARGUMENT;
+```
+
+Before this, `main.cpp` range-checked the interval itself. Now the bounds live in
+`sensor.cpp`, next to the thread that actually obeys them, and the wire layer cannot drift
+from them — it only reports what the bus told it. `interval 100` still comes back
+`ACK_STATUS_INVALID_ARGUMENT` with `detail: interval 100 outside [1000,300000]`; the
+difference is that the rule now has one home.
+
+Note also that `chan_sensor_cmd` uses a **message subscriber**, not a listener: it
+delivers a private copy of every message, in order, and collapses nothing. Commands have
+no next one coming, so none may be dropped — the QoS 1 argument, applied internally.
+
+## 12. What is deliberately missing
+
 - **No TLS, no credentials.** `MQTT_TRANSPORT_NON_SECURE` and anonymous access — bench
   only. A real deployment uses `MQTT_TRANSPORT_SECURE` plus a credential set.
-- **No persistence.** `sample_period_ms` survives reconnects but not reboots; a `SetInterval`
-  is lost on power cycle. Zephyr's settings subsystem is the usual answer.
+- **No persistence.** The sample period survives reconnects but not reboots; a
+  `SetInterval` is lost on power cycle. Zephyr's settings subsystem is the usual answer.
 - **Single-slot command dedupe.** `last_command_sequence` remembers only the most recent
   command, so back-to-back duplicates are caught but an interleaved `A, B, A` is not. A
   deliberate simplification for a node with one command source.
+- **No backpressure from the bus.** The sensor thread publishes regardless of whether the
+  MQTT thread is keeping up, and never learns that a reading was discarded — only the
+  reader sees the coalesce count. Fine for latest-wins telemetry; wrong for anything that
+  must not be lost.
+- **The backoff can outlast the outage.** A broker that returns after 2 s may still wait
+  out a 30 s delay. See *Settled since* in [`mqtt-design.md`](mqtt-design.md).

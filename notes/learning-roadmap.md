@@ -4,8 +4,10 @@ A study order for the concepts in `README.md`, sorted by *layer* and by *how muc
 you actually have to implement*. The point: the pile is smaller than it looks once
 you separate what Zephyr implements for you from what you write yourself.
 
-**Status (2026-07-20):** Phase 1 ✅ · Phase 2 ✅ · Phase 3 (MQTT) ✅ ·
-Phase 4 (Protobuf/nanopb) ✅ · **Phase 5 (zbus) ← next**
+**Status (2026-07-21):** Phase 1 ✅ · Phase 2 ✅ · Phase 3 (MQTT) ✅ ·
+Phase 4 (Protobuf/nanopb) ✅ · Phase 5 (zbus) ✅ — **all five verified on hardware.**
+Remaining: the schema-versioning exercise in Phase 4's checkpoint (add a field, prove old
+readers still parse).
 
 ## The reframe
 
@@ -88,6 +90,19 @@ here too (add a field, decode old↔new).
 Channels, observers, publish/subscribe *between threads*. Smallest of the five.
 - **Checkpoint:** a producer thread publishes a struct to a channel, an observer
   thread logs it — no networking involved.
+- **Done 2026-07-21.** `sensor.cpp` and `main.cpp` now hold one thread each, joined by
+  the two channels in `app_channels.h`. Concepts in [`zbus-guide.md`](zbus-guide.md);
+  the code read line by line in
+  [`firmware-mqtt-walkthrough.md`](../docs/firmware-mqtt-walkthrough.md) §11.
+
+  The checkpoint understates it. The interesting part turned out not to be "publish a
+  struct, log it" but three things the naive version hides:
+  1. **Choosing an observer type is the design decision** — latest-wins for telemetry,
+     every-message for commands, which is the QoS argument applied inside the chip.
+  2. **A consumer that must also wait on a socket needs a file descriptor**, because
+     `poll()` speaks nothing else. An eventfd bridges the bus into the poll set.
+  3. **Losing data can be correct** if the loss is accounted for — the sequence gap is
+     what makes overwriting a design rather than a bug.
 
 Implementation then just *assembles* these:
 `sensor → zbus channel → nanopb encode → MQTT publish`.
