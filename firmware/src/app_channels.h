@@ -40,6 +40,13 @@
 #define SAMPLE_PERIOD_MIN_MS 1000U
 #define SAMPLE_PERIOD_MAX_MS 300000U
 
+/* Note on the minimum: the SCD-40 produces one conversion per ~5 s, and
+ * sensor_sample_fetch() returns 0 without updating anything when none is ready.
+ * Polling faster than the sensor converts therefore republishes the previous
+ * measurements under a fresh sequence and uptime. Known and deliberately not
+ * fixed -- see "Accepted limitation" in docs/sensor-bringup.md before changing
+ * this value or reading anything into a 1 s cadence. */
+
 /* Deliberately NOT the generated node_Telemetry struct. zbus is internal, the
  * protobuf types are the wire format, and keeping them separate means a schema
  * change stops at the one function in main.cpp that maps between them instead

@@ -74,12 +74,22 @@ Port. `printf` reaches it at **115200 8N1** on `/dev/cu.usbmodem202144403`.
 
 ## Driver behaviour worth knowing
 
-- **Auto-start.** `scd4x_init` issues `START_PERIODIC_MEASUREMENT` at boot (POST_KERNEL). The app
-  does *not* have to trigger measurement — the sensor free-runs at ~5 s.
+- **Auto-start.** `scd4x_init` issues `START_PERIODIC_MEASUREMENT`. The app does *not* have to
+  trigger measurement — the sensor free-runs at ~5 s.
+- **Init is deferred to the app** (decided 2026-07-21). The node carries `zephyr,deferred-init`, so
+  the boot sweep skips it (`kernel/init.c`) and `src/sensor.cpp` calls `device_init()` itself after
+  a 100 ms wait. Reason: the chip needs up to **30 ms** after VDD to answer on I²C at all
+  (`power_up_time`), it shares a rail with the board, and a failed init is **permanent** —
+  `do_device_init()` sets `initialized` even on error, so `device_is_ready()` latches false;
+  `device_init()` then returns `-EALREADY` and `device_deinit()` `-ENOTSUP` (the driver registers no
+  deinit op). Only the *timing* of the single attempt is controllable, so we control it.
+  Side effect: `scd4x_init` takes ~530 ms (datasheet waits after `stop_periodic_measurement` and
+  `reinit`), now spent off the boot path — but `sensor get scd40@62` fails for the first ~600 ms.
 - **Data-ready / no-block.** In periodic mode `sensor_sample_fetch()` is non-blocking and **returns 0
-  without updating the values when no fresh sample is ready yet**. So the first read(s) after boot
-  may show stale/zero data until the sensor's first ~5 s sample lands. We just poll on a 5 s cadence
-  to match. (Guarding the first print until a real sample arrives is a noted future refinement.)
+  without updating the values when no fresh sample is ready yet** (`scd4x.c`: `if (!is_data_ready)
+  return 0;`, skipping `scd4x_read_sample()`). So the first read(s) after boot may show stale/zero
+  data until the sensor's first ~5 s sample lands. See *Accepted limitation* below — `SetInterval`
+  has since made this reachable at runtime, not just at boot.
 - **Mode.** The `sensirion,scd40` binding has no `mode` property → always normal periodic (~5 s).
   Low-power (30 s) or single-shot would require the register-compatible `sensirion,scd41` compatible
   with a `mode = <...>` property.
@@ -116,9 +126,34 @@ reading is fresh air, ~400 ppm). Temperature and RH track inversely as expected.
 temperature drift right after start is the sensor's **self-heating** settling — it reads slightly
 high initially; the temperature-offset attribute exists to correct this if accuracy matters later.
 
-## Next
+## Accepted limitation: a fast poll republishes the last conversion
 
-- Bring up the network interface + a TCP listener on the Nucleo.
-- Define the `proto/` schema (the shared node↔host contract) and stream these readings as a
-  length-prefixed Protobuf `Telemetry` message via nanopb — the real point of the project. The
-  `struct sensor_value` fields read here become the telemetry payload.
+**Decided 2026-07-21: known, documented, not fixed.**
+
+The sensor free-runs at one conversion per ~5 s, and `sensor_sample_fetch()` returns **0** when no
+new one is ready, leaving the driver's cached values in place. `sensor_channel_get()` then hands
+back the *previous* reading with no indication that it is old.
+
+At bring-up this only affected the first few seconds, so "poll at 5 s to match" was enough. The
+`SetInterval` command changed that: `SAMPLE_PERIOD_MIN_MS` is **1000 ms**, so
+`command.py interval 1000` makes roughly four in five publishes silent repeats of the last
+conversion — a fresh `sequence` and `uptime_ms` wrapped around stale measurements, reported as
+`SENSOR_STATUS_OK`. Even at exactly 5000 ms the two clocks are independent and will drift into each
+other periodically. `TriggerMeasurement` has the same shape: it republishes the newest conversion
+rather than forcing a new one.
+
+Why it stands:
+
+- **Single-shot is not available on this part.** `SCD4x.yaml` lists `single_shot: unavailable` for
+  the SCD40 (SCD41/SCD43 only), which is why the `sensirion,scd40` binding has no `mode` property.
+  There is no way to command a conversion on demand.
+- **The driver reports no staleness**, and the sensor API exposes no data-ready channel. The only
+  in-API detection is comparing the three raw `sensor_value`s against the previous fetch and
+  treating an identical triple as "no new data" — a heuristic, since a genuinely repeated reading
+  is possible.
+- **It is a device quirk, not one of this repo's learning objectives** (MQTT lifecycle, schema
+  evolution, zbus). Carrying a heuristic through the sensor path would obscure those without
+  teaching anything transferable.
+
+If it ever matters: raise `SAMPLE_PERIOD_MIN_MS` to 5000 to shrink the window, or move to an
+SCD41/SCD43 and set `mode = <2>` for genuine single-shot.
