@@ -23,3 +23,15 @@ CompileFlags:
     - -fno-defer-pop
     - -mtp=*
     - --param=*
+
+# Zephyr's LOG_* macros allocate the message package on the stack with
+# Z_LOG_MSG_ON_STACK_ALLOC (log_msg.h), whose length argument folds to a
+# constant but is not a syntactic constant expression — so clang parses it as a
+# VLA and flags every LOG_* call that carries a runtime string. GCC, the actual
+# build compiler, folds it silently and Zephyr never passes -Wvla. Suppressing
+# it here removes an IDE-only diagnostic; the alternative, CONFIG_LOG_USE_VLA=n,
+# would change the firmware's stack usage to fix an editor squiggle.
+Diagnostics:
+  Suppress:
+    - vla-cxx-extension
+    - vla-extension
