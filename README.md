@@ -103,7 +103,7 @@ Split by *kind*, not by topic: **`notes/`** holds from-first-principles teaching
 | Sensor API + shell | [`sensor-api-guide.md`](notes/sensor-api-guide.md) | [`sensor-bringup.md`](docs/sensor-bringup.md) |
 | Protobuf / nanopb | [`protobuf-guide.md`](notes/protobuf-guide.md) | [`proto/node.proto`](proto/node.proto) (decisions inline) |
 
-Guides without a reference half: [`language-cpp.md`](notes/language-cpp.md) — why C++17, and the C↔C++ boundary · [`learning-roadmap.md`](notes/learning-roadmap.md) — the concepts sequenced as Phases 1–5.
+Guides without a reference half: [`language-cpp.md`](notes/language-cpp.md) — why C++17, and the C↔C++ boundary.
 
 References without a guide half: [`toolchain.md`](docs/toolchain.md) — workspace layout, build/flash workflow · [`out-of-tree-hardware-overview.md`](docs/out-of-tree-hardware-overview.md) — porting to a board Zephyr doesn't ship.
 

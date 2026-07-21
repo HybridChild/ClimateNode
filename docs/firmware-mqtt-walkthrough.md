@@ -42,7 +42,7 @@ question the caller asks is how long to wait before trying again.
 **The sensor thread does not participate in any of that.** It has never heard of MQTT. It
 keeps sampling at its own cadence through a connect, a disconnect, and a 30-second
 backoff, and the readings it takes meanwhile simply pile up as a gap in the `sequence`
-field. This is what Phase 5 bought: before the split, one loop owned both the sample clock
+field. This is what the zbus split bought: before it, one loop owned both the sample clock
 and the socket, so a reconnect backoff also stopped the sensor.
 
 Both inversions are deliberate. A node that cannot survive a cable pull is not finished,
@@ -131,8 +131,7 @@ int rc = zsock_poll(fds, 1, timeout_ms);
 You borrow the descriptor purely so `zsock_poll()` can tell you *"there are bytes
 waiting."* You never read those bytes — `mqtt_input()` does that. (This is
 `wait_for_input()`, used while waiting for CONNACK. The serve loop waits on the same
-descriptor plus one more — §6.) The division of
-responsibility is worth stating plainly:
+descriptor plus one more — §6.) The division of responsibility is worth stating plainly:
 
 > **You decide when to wait and for how long. The library performs the actual I/O.**
 
@@ -304,7 +303,7 @@ queue.
 
 ## 6. The heart: one wait, two descriptors
 
-This is the most instructive part of the file, and the part Phase 5 changed most.
+This is the most instructive part of the file, and the part the zbus split changed most.
 
 ```c
 struct zsock_pollfd fds[2] = {};

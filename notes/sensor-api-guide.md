@@ -252,7 +252,7 @@ either do three bus round-trips — three different moments — or need a specia
 
 **Cost visibility.** One function is slow and can fail on the bus; the other is a few
 integer operations. Keeping them separate makes it obvious where the I²C traffic is —
-useful when the sensor read moves onto its own thread in Phase 5.
+which is what made it safe to move the sensor read onto its own thread.
 
 **Selective reads.** `sensor_sample_fetch_chan()` lets a driver fetch only one channel
 when the hardware supports partial reads, without changing how you retrieve values.
@@ -484,9 +484,10 @@ uart:~$ sensor get scd40@62 co2 ambient_temp humidity
 Plausible reading → sensor and I²C are fine, so the bug is downstream: protobuf encode,
 MQTT publish, or host decode. Error or nonsense → the fault is at or below the driver.
 
-One command bisects the entire pipeline. That's worth the flash, and it gets *more*
-valuable in Phase 5, when zbus inserts another hop between the sensor read and the
-publish.
+One command bisects the entire pipeline. That's worth the flash, and it became *more*
+valuable once zbus inserted another hop between the sensor read and the publish: the
+shell reads the driver directly, bypassing the bus, so a healthy `sensor get` alongside
+absent telemetry points at the channel rather than the chip.
 
 ---
 
@@ -643,5 +644,6 @@ sensor info                                      # needs CONFIG_SENSOR_INFO
   formulas, CRC-8 parameters. Reach for it when debugging the sensor path.
 - **[`protobuf-guide.md`](protobuf-guide.md)** — what happens to the reading
   after `sensor_value_to_double`.
-- **[`learning-roadmap.md`](learning-roadmap.md)** — Phase 5 (zbus) splits the sensor read
-  from the publish. §4's fetch/get separation is exactly the seam that split runs along.
+- **[`zbus-guide.md`](zbus-guide.md)** — the sensor read now lives on its own thread and
+  reaches the publisher over a channel. §4's fetch/get separation is exactly the seam
+  that split runs along.
