@@ -12,6 +12,11 @@ __pycache__/
 host/node_pb2.py
 host/*_pb2.pyi
 
+# Serial console captures (scripts/console.sh, or `screen -X hardcopy`). Useful
+# while debugging, never worth keeping — paste the interesting lines into a
+# commit message or a doc instead, where they carry their context.
+console*.txt
+
 # Editor / OS
 # Share project-mechanics config (clangd wiring, extension picks); ignore the rest
 # (per-user files like launch.json with local debugger paths).
