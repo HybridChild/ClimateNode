@@ -114,7 +114,7 @@ All under `firmware/build/zephyr/` unless noted.
 The last row is the one generator this *app* adds; everything above it is Zephyr's own.
 It follows the same rule as the rest — the input is `proto/node.proto`, the output lives in
 `build/` and is never checked in or hand-edited. Concepts in
-[`zephyr-build-system-guide.md`](../notes/zephyr-build-system-guide.md) §7.
+[`zephyr-build-system-guide.md`](../notes/zephyr-build-system-guide.md) §8.
 
 `autoconf.h` is force-included into every translation unit — confirmed in
 `firmware/build/compile_commands.json`: `-imacros …/autoconf.h`. That is why any `.c` can

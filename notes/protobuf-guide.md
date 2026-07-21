@@ -13,11 +13,14 @@ reading, and reproduces the exact length the node reported on the console.
 
 Roughly, the shape of the document:
 
-- **§1–§2** — what a schema buys you, and what the encoding actually looks like.
-- **§3–§6** — the four things that surprise people: absent defaults, `oneof`, evolution,
-  and what the format deliberately does *not* protect you from.
+- **§1–§2** — what a schema buys you, and what the encoding actually looks like. §2 ends
+  on the fact that surprises people most: *nothing on the wire says which message this
+  is*, which §6 later turns into a real failure mode.
+- **§3–§6** — the four things that surprise people next: absent defaults, `oneof`,
+  evolution, and what the format deliberately does *not* protect you from.
 - **§7–§9** — nanopb, this firmware, and the two generators that share the contract.
 - **§10** — exercises: most of it reproducible from a terminal alone, the rest on the node.
+- **§11–§12** — the whole model in a paragraph, and where to go next.
 
 For how those bytes get carried, see [`communication-guide.md`](communication-guide.md)
 (MQTT concepts) and [`mqtt-design.md`](../docs/mqtt-design.md) (this project's topic and QoS
@@ -49,7 +52,7 @@ Protobuf adds three things beyond "an agreed format":
 
 1. **Compactness.** A real reading — with a five-digit sequence number, an uptime, a
    schema version and a status, none of which the text line above carried — encodes to
-   **26 bytes** (§2). That text line, with the same sequence number substituted in, is 36
+   **26 bytes** (§3). That text line, with the same sequence number substituted in, is 36
    characters, and it says less; the equivalent JSON object is 149 bytes. Useful, but the
    least interesting of the three.
 2. **Typed fields.** `float` vs `uint32` is decided once, in one place, rather than
@@ -301,35 +304,6 @@ The catch is that this makes routing load-bearing. Anything that publishes to
 claim — it decodes whatever arrives as a `Command` and acts on it. That is the failure §6
 comes back to.
 
-### Where a 26-byte `Telemetry` goes
-
-The console logs `published telemetry seq=26404 (26 bytes)`. Reconstructing that message
-field by field:
-
-```
-08 01 10 a4 ce 01 18 9b b9 88 41 20 ac 06 2d ae 47 b3 41 35 33 33 25 42 38 01
-```
-
-| Field | # | Wire type | Bytes | Encoding |
-|---|---|---|---|---|
-| `schema_version = 1` | 1 | varint | 2 | `08 01` |
-| `sequence = 26404` | 2 | varint | 4 | `10 a4 ce 01` |
-| `uptime_ms = 136453275` | 3 | varint | 5 | `18 9b b9 88 41` |
-| `co2_ppm = 812` | 4 | varint | 3 | `20 ac 06` |
-| `temperature_c = 22.41` | 5 | 32-bit | 5 | `2d ae 47 b3 41` |
-| `humidity_rh = 41.3` | 6 | 32-bit | 5 | `35 33 33 25 42` |
-| `sensor_status = OK` | 7 | varint | 2 | `38 01` |
-| | | | **26** | |
-
-Every tag is one byte, because every field number is ≤ 15. The message is not fixed-size:
-an early publish, with `sequence = 1` and about six seconds of uptime, is **22 bytes**, and
-it grows as those two counters do. nanopb's `node_Telemetry_size` is **36** — the worst
-case, with every varint at its maximum width (§7). The gap between 26 and 36 is the
-compression the format gives you for free on typical values.
-
-A warming-up reading is smaller still, because §3's rule bites hard: with `co2_ppm`,
-`temperature_c` and `humidity_rh` all at zero, none of the three is transmitted at all.
-
 ---
 
 ## 3. What is not on the wire
@@ -354,7 +328,8 @@ you get from a message that never mentioned it. Give it a meaning that is safe a
 default, and never assign 0 to a real state.
 
 **Message fields are different.** A nested message *can* distinguish absence, because
-presence is encoded by the tag existing at all — even a zero-length one (§2). That is why
+presence is encoded by the tag existing at all — even a zero-length one (§2, *Decoding a
+real `Command`*). That is why
 `Ack.device_info` gets a real presence flag in the generated C:
 
 ```c
@@ -366,6 +341,37 @@ and why `command.py` can ask `ack.HasField("device_info")`. Scalars have no `Has
 proto3 unless explicitly marked `optional`, which re-adds a presence bit at the cost of a
 generated `has_` field on both sides. Nothing here needs one — but if a future field must
 distinguish "0" from "not reported", that is the tool.
+
+### Both rules at once: where a 26-byte `Telemetry` goes
+
+The console logs `published telemetry seq=26404 (26 bytes)`. Reconstructing that message
+field by field puts §2's tags and this section's absent-defaults rule side by side:
+
+```
+08 01 10 a4 ce 01 18 9b b9 88 41 20 ac 06 2d ae 47 b3 41 35 33 33 25 42 38 01
+```
+
+| Field | # | Wire type | Bytes | Encoding |
+|---|---|---|---|---|
+| `schema_version = 1` | 1 | varint | 2 | `08 01` |
+| `sequence = 26404` | 2 | varint | 4 | `10 a4 ce 01` |
+| `uptime_ms = 136453275` | 3 | varint | 5 | `18 9b b9 88 41` |
+| `co2_ppm = 812` | 4 | varint | 3 | `20 ac 06` |
+| `temperature_c = 22.41` | 5 | 32-bit | 5 | `2d ae 47 b3 41` |
+| `humidity_rh = 41.3` | 6 | 32-bit | 5 | `35 33 33 25 42` |
+| `sensor_status = OK` | 7 | varint | 2 | `38 01` |
+| | | | **26** | |
+
+Every tag is one byte, because every field number is ≤ 15. The message is not fixed-size:
+an early publish, with `sequence = 1` and about six seconds of uptime, is **22 bytes**, and
+it grows as those two counters do. nanopb's `node_Telemetry_size` is **36** — the worst
+case, with every varint at its maximum width (§7). The gap between 26 and 36 is the
+compression varints give you for free on typical values.
+
+And a warming-up reading is smaller still, because the absent-defaults rule bites hard:
+with `co2_ppm`, `temperature_c` and `humidity_rh` all at zero, none of the three is
+transmitted at all — a telemetry message can be *shorter* precisely when it has least to
+say.
 
 ---
 
@@ -418,7 +424,8 @@ to *every* command, without disturbing the arms.
 ## 5. Evolution: the actual point of Protobuf
 
 Decoders skip fields they do not recognise. Because the wire type is embedded in every tag
-(§2), a decoder that meets unknown field 47 still knows how many bytes to step over — so an
+(§2, *The tag*), a decoder that meets unknown field 47 still knows how many bytes to step
+over — so an
 old reader can parse a new message without being updated.
 
 That single property produces the rules at the top of `node.proto`:
@@ -494,7 +501,8 @@ The bench's malformed test published the ASCII string `garbage`:
 ```
 
 The first byte decides it: `0x67 >> 3 = 12`, `0x67 & 7 = 7` — and wire type 7 is invalid
-(§2). The decoder rejects the message before reading anything else, and the firmware
+(§2, *The tag*). The decoder rejects the message before reading anything else, and the
+firmware
 answers `ACK_STATUS_MALFORMED`.
 
 **But that was luck, not protection.** Two ASCII bytes are enough to make a perfectly valid
@@ -522,7 +530,7 @@ no magic number and no checksum, so:
 | What went wrong | Caught by | How |
 |---|---|---|
 | Corrupt or truncated bytes | the decoder | invalid wire type, or a length running past the buffer |
-| A different message type, structurally legal | nothing | the type is never on the wire (§2); it decodes to defaults and unknown fields |
+| A different message type, structurally legal | nothing | the type is never on the wire (§2, *Nothing on the wire says which message this is*); it decodes to defaults and unknown fields |
 | Right message, incompatible schema version | `schema_version` | only if the receiver checks it |
 | Right message, unimplemented command | `which_payload` dispatch | the `default:` arm → `UNSUPPORTED` |
 
@@ -794,7 +802,8 @@ status 0 — and they mean something entirely different. Nothing anywhere report
 That is the single most important property of the format to internalise, and it takes
 about thirty seconds to prove. Revert afterwards.
 
-**Exercise B — confirm the type is not on the wire (§2).** Decode the same six bytes as
+**Exercise B — confirm the type is not on the wire** (§2, *Nothing on the wire says which
+message this is*)**.** Decode the same six bytes as
 each of the three message types:
 
 ```sh
@@ -844,3 +853,42 @@ byte encodes wire type 7, which is invalid; `hi` decodes into field 13 as an unk
 and yields a `Command` with everything defaulted. The node survives it by construction —
 `which_payload == 0` hits the `default:` arm — not by detection. That gap is exactly what
 `schema_version` exists to cover.
+
+---
+
+## 11. The model in one paragraph
+
+A Protobuf message is **fields back to back, each preceded by a tag** that packs a field
+number and a wire type into one varint — no header, no length, no checksum, and no type
+name. That single layout explains almost everything else. The wire type is what lets a
+decoder step over a field it has never heard of, which is the mechanism behind every
+evolution rule: **adding a field is always safe, a field number is permanent, and a
+deleted number must be reserved.** Fields equal to their default are simply not
+transmitted, so absence and zero are indistinguishable for scalars — hence
+`SENSOR_STATUS_UNSPECIFIED = 0` — while nested messages can express presence and so get a
+real `has_` flag. A `oneof` is nothing special on the wire, just whichever arm is set; the
+union is an API guarantee, and it costs the size of the largest arm rather than the sum.
+What the format does **not** give you is semantics: it enforces structure, so a wrong
+message type or a redefined unit decodes perfectly and means something else — which is why
+`schema_version` carries breaking changes, `UNSUPPORTED` reports capability skew, and the
+**MQTT topic is the type discriminator** and therefore part of the contract. nanopb takes
+that format and adds one constraint, no allocation: `.options` bounds turn strings into
+plain arrays and let the generator emit a worst-case size per message, so the firmware
+sizes its buffers from `node_Telemetry_size` and the schema cannot outgrow them unnoticed.
+Both toolchains generate from the same `.proto` on every build, which is what makes
+"single source of truth" mechanical rather than aspirational.
+
+## 12. Where to go next
+
+- **[`proto/node.proto`](../proto/node.proto)** — the reference half of this guide. The
+  schema decisions and their rationale live inline in its comments.
+- **The schema-versioning exercise**, the one thing this repo still has outstanding: add a
+  field, regenerate both sides, and prove an old reader still parses a new message and
+  vice versa. §5 says it is safe; doing it is how you believe it.
+- **[`firmware-mqtt-walkthrough.md`](../docs/firmware-mqtt-walkthrough.md)** — the
+  surrounding MQTT client, including where `encode_telemetry()` and
+  `handle_incoming_publish()` sit in the event loop.
+- **[`zbus-guide.md`](zbus-guide.md)** — the internal channel a reading crosses *before*
+  it reaches the encoder, and why the wire type deliberately stops there.
+- **nanopb's own docs** — `concepts.md` and `reference.md` in the module source, for
+  callbacks, `FT_POINTER` fields, and the options this project did not need.

@@ -12,6 +12,17 @@ publish, subscribe, channels, observers — but it never touches a wire. It is t
 inside one MCU talking to each other. Getting that straight early saves a lot of
 confusion.
 
+**The shape of this document:**
+
+- **§1–§2** — the problem a bus solves, and why the obvious fixes fall short.
+- **§3–§4** — the vocabulary, and the one design decision that actually matters:
+  which kind of observer.
+- **§5–§7** — the three consequences that surprise people: latest-wins, validators,
+  and waiting on a bus and a socket at the same time.
+- **§8–§9** — what it costs, and what this project wired up with it.
+- **§10** — exercises on the running node.
+- **§11–§12** — the whole model in a paragraph, and where to go next.
+
 ---
 
 ## 1. The problem it solves
@@ -238,7 +249,68 @@ observers list, with no edit to the producer at all. Whether that trade is worth
 depends on whether you expect a third participant. In a learning project, building it
 once and feeling the shape is the point.
 
-## 9. Exercising the bus
+## 9. What this project wires up
+
+Everything above is general. Here is the whole of this firmware's bus, which is small
+enough to hold in your head and exercises both halves of §4's argument:
+
+```
+                sensor.cpp                          main.cpp
+                ──────────                          ────────
+   SCD-40 ──▶ sensor_thread()
+                    │
+                    │  zbus_chan_pub()
+                    ▼
+             ┌──────────────────┐   LISTENER    ┌──────────────────┐
+             │ chan_telemetry   │──────────────▶│ on_telemetry()   │
+             │ sensor_reading   │  telemetry_   │ bumps an eventfd │
+             │ no validator     │  listener     └────────┬─────────┘
+             │                  │                        │
+             │                  │◀───────────────────────┘
+             └──────────────────┘  zbus_chan_read()   MQTT thread wakes,
+                                                      encodes, publishes
+
+             ┌──────────────────┐  MSG SUBSCRIBER
+             │ chan_sensor_cmd  │◀───────────────  zbus_chan_pub() from
+             │ sensor_cmd       │                  main.cpp, on a Command
+             │ sensor_cmd_valid │                  arriving off the wire
+             └────────┬─────────┘
+                      │  sensor_cmd_sub — a queue of private copies
+                      ▼
+             sensor_thread() wakes early from zbus_sub_wait_msg()
+```
+
+Two channels, deliberately observed in the two different ways §4 distinguishes:
+
+| | `chan_telemetry` | `chan_sensor_cmd` |
+|---|---|---|
+| Direction | sensor → MQTT | MQTT → sensor |
+| Message | `struct sensor_reading` | `struct sensor_cmd` |
+| Observer | **listener** (`telemetry_listener`) | **message subscriber** (`sensor_cmd_sub`) |
+| Validator | none — any reading is legal | `sensor_cmd_valid` (§6) |
+| Semantics | **state** — latest wins, loss is fine and accounted | **events** — every one must arrive, none may collapse |
+| Same argument on the wire | telemetry at QoS 0 | command/ack at QoS 1 |
+
+That last row is §4's punchline made concrete: the reasoning that picks an observer kind
+inside the chip is the reasoning that picks a QoS level across the cable. Neither decision
+was copied from the other; they arrive at the same answer because the data has the same
+shape at both scales.
+
+Two details worth noticing in the code:
+
+- **Both channels are defined in `sensor.cpp`, not in a bus-owning module of their own.**
+  The sensor module owns the readings it produces *and* the sample period the commands
+  adjust, so the bounds and the validator live with the code they constrain — §6's
+  argument about where a rule belongs.
+- **The definitions sit at global scope, outside the file's anonymous namespace.**
+  `ZBUS_CHAN_DEFINE` emits symbols that `ZBUS_CHAN_DECLARE` in `app_channels.h` names from
+  the other translation unit; internal linkage would break the match. See
+  [`language-cpp.md`](language-cpp.md) §6.
+
+The header comment in `firmware/src/app_channels.h` is the reference half of this section
+— it records the decisions; this guide explains the concepts behind them.
+
+## 10. Exercising the bus
 
 Every claim above is observable on the running node. Three exercises, each isolating one
 property. You need the console on the Mac (`./scripts/console.sh`, quit with **Ctrl-A**
@@ -324,7 +396,25 @@ MQTT thread been polling the bus on a short timeout instead, this would have sho
 tick of latency; had the listener published MQTT directly, two threads would be inside a
 non-thread-safe `mqtt_client` at once.
 
-## 10. Where to go next
+## 11. The model in one paragraph
+
+A zbus channel is **one message of a fixed type, a lock, and a list of observers**,
+declared statically — shared storage plus notification plus a registry, which is exactly
+the three things a bare global-plus-mutex leaves you to build by hand. Publishing copies
+the message in and runs the observers; because a channel is not a queue, publishing
+overwrites, and that latest-wins behaviour is a feature for state and a defect for events
+— which is why the choice of **observer kind** is the real design decision, and why it
+lands on the same reasoning as MQTT's QoS levels one layer out. A **listener** runs
+synchronously on the publisher's thread, so it may only signal; a **message subscriber**
+gets a private copy on its own thread, so nothing is collapsed. A **validator** puts the
+rule that guards a channel next to the data it guards and makes rejection atomic. And when
+a consumer must wait on the bus *and* a socket, the answer is not a polling timeout but an
+**eventfd** in the poll set — the old self-pipe trick, whose counter doubles as a free
+measurement of how much the channel coalesced. The cost is RAM, a copy per publish, and
+indirection; the payoff arrives at the *next* consumer, which is a line in an observers
+list rather than an edit to the producer.
+
+## 12. Where to go next
 
 - **A third observer.** Add a listener to `chan_telemetry` that keeps a running min/max,
   and notice that `sensor.cpp` does not change. That is the whole argument for a bus, in

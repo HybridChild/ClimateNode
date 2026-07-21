@@ -10,6 +10,18 @@ project's actual decisions (topic table, QoS per topic, broker config), see its 
 [`firmware-mqtt-walkthrough.md`](../docs/firmware-mqtt-walkthrough.md) reads the firmware that
 implements them, line by line.
 
+**The shape of this document:**
+
+- **§1–§2** — the stack as a chain of "…and therefore we also need…", and what each layer
+  refuses to do for you.
+- **§3** — the broker, and the shift in responsibility that is the conceptual jump of the
+  whole architecture. The longest section, and the one worth slowing down for.
+- **§4–§7** — the four things MQTT adds on top of "deliver bytes": topics, QoS, sessions
+  and keepalive, then retain and the Last Will.
+- **§8** — the whole path, end to end, with every piece in place.
+- **§9** — a runnable lab: six exercises, five of them needing nothing but two CLI tools.
+- **§10–§11** — the whole model in a paragraph, and where to go next.
+
 ---
 
 ## 1. Why this feels like a lot of moving parts
@@ -87,31 +99,30 @@ Ethernet  frame:     │ dst/src MAC│  <the IP packet>    │CRC│
 
 The Pi unwraps it in exactly the reverse order and hands your ~20 bytes to the harness.
 
-### What's in that `hdr`?
+### What's in that `hdr`? The part that matters here
 
 The `hdr+topic` box above is MQTT's **fixed header** followed by its **variable header**.
-For a `PUBLISH` packet:
+Most of its fields belong to concepts that arrive later — the flag bits are QoS (§5) and
+retain (§7), and §5 takes the header apart again once those mean something. One field,
+though, is the whole reason §2's table says MQTT is where framing gets solved:
 
 ```
 Fixed header
-   byte 1      packet type (= PUBLISH) + the DUP / QoS / RETAIN flag bits
-   1–4 bytes   Remaining Length — how many bytes follow in this packet
+   byte 1      packet type (= PUBLISH) + four flag bits         → §5, §7
+   1–4 bytes   Remaining Length — how many bytes follow         ← the framing answer
 Variable header
    2 bytes     length of the topic string
-   N bytes     the topic itself, e.g. "node/1/telemetry"
-   2 bytes     packet identifier — present ONLY for QoS 1 and 2
+   N bytes     the topic itself, e.g. "node/1/telemetry"        → §4
+   2 bytes     packet identifier — QoS 1 and 2 only             → §5
 Payload
    N bytes     your Protobuf, carried verbatim and never inspected
 ```
 
-**`Remaining Length` is how MQTT solves the framing problem** claimed above. It states
-exactly how many bytes this message occupies, so the receiver knows precisely where this
-message ends and the next begins — it is the length prefix you would otherwise have had to
-design, implement, and debug yourself on top of raw TCP.
-
-The rest of the header is machinery you will meet again: the DUP / QoS / RETAIN flag bits
-and the packet identifier are literally the `d0, q1, r0, m1` printed in the `-d` traces in
-§8, and the packet identifier's absence at QoS 0 is why nothing can be acked at that level.
+**`Remaining Length` is how MQTT solves the framing problem.** It states exactly how many
+bytes this message occupies, so the receiver knows precisely where this message ends and
+the next begins — it is the length prefix you would otherwise have had to design,
+implement, and debug yourself on top of raw TCP. Everything else in that header is
+machinery for concepts you have not met yet, and the arrows say where each is picked up.
 
 ---
 
@@ -158,7 +169,7 @@ broker**: a middleman that every participant connects to.
 each other; they may not even know the other exists. The broker is the only thing any of
 them talks to.
 
-**Exercise 1 in §8 demonstrates this directly:** `mosquitto_pub` publishes happily whether or
+**Exercise 1 in §9 demonstrates this directly:** `mosquitto_pub` publishes happily whether or
 not a `mosquitto_sub` is running — it hands its message to the broker and exits, never
 knowing whether anyone was there to receive it.
 
@@ -339,7 +350,7 @@ QoS is the most misunderstood part of MQTT, largely because the obvious guess is
 | **1** | at least once | `PUBLISH` → `PUBACK` | arrives, but **maybe twice** |
 | **2** | exactly once | `PUBLISH` → `PUBREC` → `PUBREL` → `PUBCOMP` | arrives exactly once |
 
-**Exercise 4 in §8 shows this on the wire** with `-d`: QoS 0 sends `PUBLISH` and stops;
+**Exercise 4 in §9 shows this on the wire** with `-d`: QoS 0 sends `PUBLISH` and stops;
 QoS 1 sends `PUBLISH` and waits for a `PUBACK` before moving on. One extra round trip —
 that's the entire difference.
 
@@ -362,16 +373,24 @@ retransmissions handle that). It is the **reconnect gap**: if the link drops mid
 TCP retries with exponential backoff for a while and then gives up, and the message is
 simply gone — with nobody, on either end, ever knowing it existed.
 
-### The DUP flag, and why QoS 1 costs you something
+### Back to the header: the flag bits, now that they mean something
 
-In the trace, `PUBLISH (d0, q1, r0, m1, ...)`:
+§2 deferred four fields of the `PUBLISH` header. Three of them are this section's, and
+they are literally what the `-d` traces print as `PUBLISH (d0, q1, r0, m1, ...)`:
 
 ```
 d0  DUP flag    — 1 if this is a REDELIVERY of a message already sent
-q1  QoS level
-r0  RETAIN flag
+q1  QoS level   — the three levels above
+r0  RETAIN flag — §7
 m1  packet identifier — what the PUBACK correlates back to
 ```
+
+The packet identifier is the one worth pausing on: **it exists on the wire only for QoS 1
+and 2.** A QoS 0 `PUBLISH` carries none, because nothing will ever be acked and so there is
+nothing to correlate — the absence of two bytes in the header is the entire difference in
+guarantee, made physical.
+
+### The DUP flag, and why QoS 1 costs you something
 
 If a `PUBACK` is lost in flight, the sender cannot tell "the broker never got it" from
 "the broker got it, and the ack was lost." So it redelivers with `d1` — and the broker,
@@ -379,52 +398,12 @@ which *did* already have it, may deliver it to subscribers **twice**.
 
 This is what "at least once" literally means, and it has a direct design consequence:
 **anything you send at QoS 1 must be idempotent, or must carry an identifier you can
-deduplicate on.** That is precisely why the README's `Command` message has a `sequence`
-field. It isn't decoration — QoS 1 forces it.
-
-The packet identifier only exists on the wire for QoS 1 and 2. A QoS 0 `PUBLISH` carries
-none, because nothing will ever be acked and so there is nothing to correlate.
+deduplicate on.** That is precisely why the `Command` message has a `sequence` field. It
+isn't decoration — QoS 1 forces it.
 
 ---
 
-## 6. Retained messages and the Last Will
-
-### Retain: last known state
-
-Normal pub/sub is strictly **live**: publish to a topic nobody is subscribed to and the
-message is gone forever. The broker is a router, not a database.
-
-The `retain` flag makes one exception. The broker keeps **the most recent retained message
-per topic**, and delivers it immediately to any client that subscribes *later* —
-**Exercise 3 in §8** shows a subscriber started *after* the publish receiving it instantly.
-
-It is a **last-known-value cache**, not a history — exactly one message per topic, the
-newest. Publishing a retained *empty* payload clears it.
-
-Why it matters here: a harness that starts up mid-flight gets the last reading instantly
-instead of waiting up to 5 s for the next sample.
-
-### Last Will and Testament: speaking after you die
-
-A node can crash, or its cable can be pulled. It never gets to say "I'm going offline."
-
-So MQTT lets a client register a **will** at `CONNECT` time: a topic, a payload, a QoS, a
-retain flag. The broker holds it. If the client ever disconnects **without** a clean
-`DISCONNECT` packet — crash, cable pull, keepalive timeout — **the broker publishes the
-will on the client's behalf.**
-
-The idiom, which `mqtt-design.md` adopts:
-
-- Will = `node/1/status` → `offline`, retained.
-- On connect, the node immediately publishes `node/1/status` → `online`, retained.
-
-Now `node/1/status` is *always* correct, permanently, for anyone who subscribes — and the
-node needed no code for the failure case. The broker covers it. This is the cheapest and
-most instructive piece of MQTT's lifecycle machinery.
-
----
-
-## 7. Sessions, keepalive, and why reconnect is real work
+## 6. Sessions, keepalive, and why reconnect is real work
 
 ### Keepalive: TCP fails slowly and silently
 
@@ -439,7 +418,7 @@ sit on a dead connection indefinitely, cheerfully believing it is connected.
 So MQTT layers **its own** liveness check on top: at `CONNECT` the client declares a
 **keepalive** interval (say 60 s). If it hasn't sent anything for that long, it must send a
 `PINGREQ` and get a `PINGRESP`. If the broker hears nothing within 1.5× keepalive, it
-declares the client dead and **fires the will**.
+declares the client dead — and acts on that, which is what §7's Last Will is for.
 
 **This is the answer to "why does MQTT reinvent something TCP already does?"** It doesn't —
 TCP has no application-level liveness signal at all, and its failure detection is too slow
@@ -463,22 +442,115 @@ not one global setting.
 
 ---
 
-## 8. Hands-on: prove all of it with the CLI
+## 7. Retained messages and the Last Will
+
+### Retain: last known state
+
+Normal pub/sub is strictly **live**: publish to a topic nobody is subscribed to and the
+message is gone forever. The broker is a router, not a database.
+
+The `retain` flag makes one exception. The broker keeps **the most recent retained message
+per topic**, and delivers it immediately to any client that subscribes *later* —
+**Exercise 3 in §9** shows a subscriber started *after* the publish receiving it instantly.
+
+It is a **last-known-value cache**, not a history — exactly one message per topic, the
+newest. Publishing a retained *empty* payload clears it.
+
+Why it matters here: a harness that starts up mid-flight gets the last reading instantly
+instead of waiting up to 5 s for the next sample.
+
+### Last Will and Testament: speaking after you die
+
+A node can crash, or its cable can be pulled. It never gets to say "I'm going offline."
+
+So MQTT lets a client register a **will** at `CONNECT` time: a topic, a payload, a QoS, a
+retain flag. The broker holds it. If the client ever disconnects **without** a clean
+`DISCONNECT` packet — crash, cable pull, or the keepalive deadline of §6 expiring — **the
+broker publishes the will on the client's behalf.**
+
+Note how those two sections fit together: §6 gives the broker a *deadline* by which it can
+conclude a silent client is dead, and this section gives it something to *do* about it.
+Neither is much use alone.
+
+The idiom, which `mqtt-design.md` adopts:
+
+- Will = `node/1/status` → `offline`, retained.
+- On connect, the node immediately publishes `node/1/status` → `online`, retained.
+
+Now `node/1/status` is *always* correct, permanently, for anyone who subscribes — and the
+node needed no code for the failure case. The broker covers it. This is the cheapest and
+most instructive piece of MQTT's lifecycle machinery.
+
+---
+
+## 8. The whole path, end to end
+
+Where every piece finally sits:
+
+```
+┌─ NUCLEO ─────────────────────────────────┐      ┌─ RASPBERRY PI ──────────────┐
+│                                          │      │                             │
+│  SCD-40 ──I²C──▶ sensor thread           │      │   Mosquitto (broker)        │
+│                  (sensor.cpp)            │      │   192.168.10.1:1883         │
+│                       │                  │      │        │                    │
+│                       ▼ zbus_chan_pub()  │      │        │ routes by topic    │
+│                  zbus channel            │      │        ▼                    │
+│                    │      │              │      │   paho-mqtt harness         │
+│        the value   │      │ listener     │      │        │                    │
+│        stays here  │      ▼ bumps it     │      │        ▼                    │
+│                    │   eventfd           │      │   protobuf decode → log     │
+│                    │      │              │      │                             │
+│                    ▼      ▼              │      └─────────────────────────────┘
+│           MQTT thread (main.cpp)         │                    ▲
+│           poll(socket, eventfd)          │                    │
+│                       │                  │                    │
+│                       ▼ nanopb encode    │                    │
+│                 [26 opaque bytes]        │                    │
+│                       │                  │                    │
+│                       ▼ mqtt_publish()   │                    │
+│              TCP ▸ IP ▸ Ethernet         │                    │
+└───────────────────────┼──────────────────┘                    │
+                        └─── RJ45, 100 Mbit full-duplex ────────┘
+                              192.168.10.2 → 192.168.10.1
+```
+
+Note that the eventfd never leaves the chip — both it and the channel are in-process. The
+signal and the value travel **separately**: the eventfd says *something happened*, the
+channel holds *what it was*. That is why the MQTT thread has two inbound arrows.
+
+Two boundaries in that diagram are the actual learning goals:
+
+- **sensor thread → MQTT thread.** The sensor thread never mentions MQTT; it publishes a
+  struct to an in-process channel and moves on. A zbus *listener* — which runs on the
+  sensor thread, so it does nothing but bump an eventfd — is what lets the MQTT thread
+  wait on the socket and the bus in a single `poll()`. Sensing and transport are decoupled
+  *inside* the firmware, exactly as pub/sub decouples the node from the host *outside* it.
+  Same idea, two scales; see [`zbus-guide.md`](zbus-guide.md).
+- **nanopb → MQTT.** MQTT carries opaque bytes. Protobuf decides what they mean. Both ends
+  derive from the same `.proto`, which is why that file — not the firmware — is the
+  contract. See [`protobuf-guide.md`](protobuf-guide.md).
+
+---
+
+## 9. Hands-on: prove all of it with the CLI
 
 Everything above is theory until you watch it happen. This section is a **runnable lab**:
-set the broker up once, then work through five exercises that each demonstrate one concept
+set the broker up once, then work through six exercises that each demonstrate one concept
 from the preceding sections — with the commands explained, the expected output shown, and a
 note on what it proves.
 
-Do this **before** writing any firmware. `mosquitto_pub` and `mosquitto_sub` are ordinary
-MQTT clients — nothing privileged about them. Anything they do, the Nucleo will also do, so
-ten minutes here makes the Zephyr API obvious instead of mysterious.
+Five of the six use nothing but the CLI tools, and that is deliberate rather than a
+limitation. `mosquitto_pub` and `mosquitto_sub` are ordinary MQTT clients — nothing
+privileged about them, and nothing the Nucleo does that they cannot (§3.3). Isolating each
+concept in two commands is far easier than isolating it inside a running firmware, so the
+concepts come first and the node arrives last: **Exercise 6 points the same tools at the
+real node** and shows that nothing changes.
 
 Everything runs on the Pi. Several exercises need **two terminals**, so open a second SSH
 session (`ssh pi@pi5.local`) alongside the first. They're referred to as **A** (subscriber)
 and **B** (publisher).
 
-### 8.1 Setup: install and expose the broker
+### 9.1 Setup: install and expose the broker
 
 ```sh
 sudo apt update
@@ -551,7 +623,7 @@ LISTEN 0  100  192.168.10.1:1883  0.0.0.0:*
 > systemd drop-in ordering mosquitto after `network-online.target` plus a relaxed restart
 > limiter; see **Boot ordering** in [`mqtt-design.md`](../docs/mqtt-design.md) for the exact file.
 
-### 8.2 The two tools, decoded
+### 9.2 The two tools, decoded
 
 **Subscribe:**
 
@@ -645,7 +717,7 @@ must be last.)
 
 ### Exercise 3 — Retained messages
 
-*Demonstrates §6: the broker caches the last retained message per topic.*
+*Demonstrates §7: the broker caches the last retained message per topic.*
 
 First show the normal case. With **no subscriber running**, publish without `-r`:
 ```sh
@@ -679,7 +751,7 @@ instantly instead of waiting for the next 5 s sample.
 
 ### Exercise 4 — QoS on the wire
 
-*Demonstrates §5: the QoS 1 acknowledgement, and the header fields from §2.*
+*Demonstrates §5: the QoS 1 acknowledgement, and the header flag bits it explains.*
 
 QoS is nearly impossible to *observe* on a healthy local cable — which is itself the lesson.
 So inspect the packets instead, with `-d`:
@@ -705,7 +777,7 @@ Client (null) sending DISCONNECT
 ```
 
 `Client (null)` just means no client id was set, so libmosquitto generated one. The
-`d0,q1,r0,m1` flags are literally the `PUBLISH` header fields from §2, and `PUBACK (Mid: 1)`
+`d0,q1,r0,m1` flags are literally the `PUBLISH` header fields decoded in §5, and `PUBACK (Mid: 1)`
 correlates back to that `m1`.
 
 **Proves:** QoS 1 costs exactly one extra round trip, in which the **broker application**
@@ -719,7 +791,8 @@ keepalive and reconnect become your problem in firmware and never came up here.
 
 ### Exercise 5 — Last Will and Testament
 
-*Demonstrates §6/§7: the broker speaks for a client that dies without a clean disconnect.*
+*Demonstrates §7, with §6's keepalive as the other way a client gets declared dead:
+the broker speaks for a client that dies without a clean disconnect.*
 
 This version uses two CLI clients, so it needs no firmware and proves the mechanism in
 isolation. Testing the **node's** will is a harder problem — the obvious methods take the
@@ -764,7 +837,7 @@ mosquitto_sub -h 192.168.10.1 -t 'node/#' -v
 You will see three things at once, and each is a concept from earlier made concrete:
 
 ```
-node/1/status online                          ← retained (§6), delivered instantly on subscribe
+node/1/status online                          ← retained (§7), delivered instantly on subscribe
 node/1/telemetry <binary>                     ← QoS 0, every ~5 s
 node/1/telemetry <binary>
 ```
@@ -793,7 +866,7 @@ payload MQTT carried verbatim and never inspected.
 both are clients of the same protocol (§3.3) — and the one thing the CLI tools cannot do
 is the one thing that lives *above* MQTT.
 
-### 8.3 Quick reference
+### 9.3 Quick reference
 
 | Command | What it does |
 |---|---|
@@ -814,55 +887,6 @@ Config lives in `/etc/mosquitto/conf.d/bench.conf`; the broker is bound to
 
 ---
 
-## 9. The whole path, end to end
-
-Where every piece finally sits:
-
-```
-┌─ NUCLEO ─────────────────────────────────┐      ┌─ RASPBERRY PI ──────────────┐
-│                                          │      │                             │
-│  SCD-40 ──I²C──▶ sensor thread           │      │   Mosquitto (broker)        │
-│                  (sensor.cpp)            │      │   192.168.10.1:1883         │
-│                       │                  │      │        │                    │
-│                       ▼ zbus_chan_pub()  │      │        │ routes by topic    │
-│                  zbus channel            │      │        ▼                    │
-│                    │      │              │      │   paho-mqtt harness         │
-│        the value   │      │ listener     │      │        │                    │
-│        stays here  │      ▼ bumps it     │      │        ▼                    │
-│                    │   eventfd           │      │   protobuf decode → log     │
-│                    │      │              │      │                             │
-│                    ▼      ▼              │      └─────────────────────────────┘
-│           MQTT thread (main.cpp)         │                    ▲
-│           poll(socket, eventfd)          │                    │
-│                       │                  │                    │
-│                       ▼ nanopb encode    │                    │
-│                 [26 opaque bytes]        │                    │
-│                       │                  │                    │
-│                       ▼ mqtt_publish()   │                    │
-│              TCP ▸ IP ▸ Ethernet         │                    │
-└───────────────────────┼──────────────────┘                    │
-                        └─── RJ45, 100 Mbit full-duplex ────────┘
-                              192.168.10.2 → 192.168.10.1
-```
-
-Note that the eventfd never leaves the chip — both it and the channel are in-process. The
-signal and the value travel **separately**: the eventfd says *something happened*, the
-channel holds *what it was*. That is why the MQTT thread has two inbound arrows.
-
-Two boundaries in that diagram are the actual learning goals:
-
-- **sensor thread → MQTT thread.** The sensor thread never mentions MQTT; it publishes a
-  struct to an in-process channel and moves on. A zbus *listener* — which runs on the
-  sensor thread, so it does nothing but bump an eventfd — is what lets the MQTT thread
-  wait on the socket and the bus in a single `poll()`. Sensing and transport are decoupled
-  *inside* the firmware, exactly as pub/sub decouples the node from the host *outside* it.
-  Same idea, two scales; see [`zbus-guide.md`](zbus-guide.md).
-- **nanopb → MQTT.** MQTT carries opaque bytes. Protobuf decides what they mean. Both ends
-  derive from the same `.proto`, which is why that file — not the firmware — is the
-  contract. See [`protobuf-guide.md`](protobuf-guide.md).
-
----
-
 ## 10. The model in one paragraph
 
 Ethernet moves frames across one cable; IP addresses machines; TCP turns that into a
@@ -876,3 +900,19 @@ value; the **will** lets the broker announce your death; **keepalive** exists be
 notices death far too slowly and silently. Everything up to and including TCP, Zephyr
 implements; MQTT lifecycle and above is your work — and Protobuf, riding inside the payload
 as bytes MQTT never inspects, is what makes those bytes mean `co2 = 812 ppm`.
+
+## 11. Where to go next
+
+- **[`mqtt-design.md`](../docs/mqtt-design.md)** — the reference half of this guide: the
+  topic table, the QoS decision per topic and its rationale, the broker config, and the
+  packet-filter procedure for testing the *node's* will rather than a CLI client's.
+- **[`firmware-mqtt-walkthrough.md`](../docs/firmware-mqtt-walkthrough.md)** — the same
+  concepts as running code: the connect/keepalive/reconnect state machine, the single
+  `poll()` with its two deadlines, and where each MQTT event is handled.
+- **[`protobuf-guide.md`](protobuf-guide.md)** — the layer above, and the one thing
+  `mosquitto_sub` could not show you in Exercise 6.
+- **[`zbus-guide.md`](zbus-guide.md)** — the same publish/subscribe idea applied *inside*
+  the chip, which is the other decoupling boundary in §8's diagram.
+- **The MQTT 3.1.1 specification** — short, readable, and the authority for anything this
+  guide simplified. Sections 3.1 (`CONNECT`) and 3.3 (`PUBLISH`) cover most of what the
+  firmware touches.

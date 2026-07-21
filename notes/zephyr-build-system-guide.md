@@ -9,6 +9,17 @@ running example to keep the ideas concrete. For the project-specific details (ex
 paths, verified line numbers, the artifact-by-artifact table), see its companion,
 [`build-system-overview.md`](../docs/build-system-overview.md).
 
+**The shape of this document:**
+
+- **§1–§3** — why the build feels strange, the two questions it answers, and the three
+  tools that answer them.
+- **§4–§6** — devicetree (the hardware facts), Kconfig (the software policy), and the
+  bridge that lets the first decide the second. §6 is the heart of the system.
+- **§7–§9** — the build start to finish, how your own generators hook into it, and a
+  worked example following one sensor and one schema all the way through.
+- **§10–§11** — daily habits, and exercises that make the invisible pipeline visible.
+- **§12–§13** — the whole model in a paragraph, and where to go next.
+
 ---
 
 ## 1. Why the Zephyr build feels strange at first
@@ -19,7 +30,7 @@ least interesting step.
 
 The reason is that Zephyr targets *thousands* of different circuit boards and
 microcontrollers from one shared source tree, and it lets you compile in or leave out
-hundreds of independent features. Before a single line of your `main.c` can be compiled,
+hundreds of independent features. Before a single line of your `main.cpp` can be compiled,
 the build system has to answer two questions that an application programmer never thinks
 about:
 
@@ -343,17 +354,23 @@ act.
 6. **Ninja** runs the compile and link commands, and you get a firmware image.
 
 A detail from step 3 that surprises newcomers: your `CMakeLists.txt` says
-`target_sources(app PRIVATE src/main.c)`, yet you never created an `app` target. Zephyr's
+`target_sources(app PRIVATE src/main.cpp)`, yet you never created an `app` target. Zephyr's
 kernel module created it for you. You are not defining an executable; you are contributing
 your source into Zephyr's pre-existing application target, which is then linked against the
 kernel.
 
-### Generating your own sources
+---
 
-Step 5 said CMake decides which sources are in the build. It can also decide to *create*
-some first, and this is where a project's own code generation hooks in. This repo needs C
-structs for its wire format, generated from a `.proto` schema, so `firmware/CMakeLists.txt`
-adds one line before its `target_sources`:
+## 8. Generating your own sources
+
+Step 5 of §7 said CMake decides which sources are in the build. It can also decide to
+*create* some first — and this is the one place where the machinery described so far stops
+being purely Zephyr's and becomes something your project extends. Everything generated up
+to now (`devicetree_generated.h`, `autoconf.h`, the driver Kconfig) came from Zephyr's own
+scripts. This is your own generator, hooked into the same pipeline.
+
+This repo needs C structs for its wire format, generated from a `.proto` schema, so
+`firmware/CMakeLists.txt` adds one line before its `target_sources`:
 
 ```cmake
 list(APPEND CMAKE_MODULE_PATH ${ZEPHYR_BASE}/modules/nanopb)
@@ -382,7 +399,7 @@ Two things generalise from this:
 
 ---
 
-## 8. Worked example: from a node in the tree to bytes on the wire
+## 9. Worked example: from a node in the tree to bytes on the wire
 
 Let us follow this project's sensor all the way through, because it exercises every concept
 above. The theme to watch for is the **compile-time / runtime boundary** — almost everything
@@ -418,9 +435,37 @@ Everything to this point happened during the build. Only the final step is runti
 The arrow from "`&i2c1`" to "the SCD40 driver talking to address `0x62`" was drawn entirely
 by macros during compilation. By the time the firmware runs, there is nothing to discover.
 
+### The same trip for a source you generate
+
+The sensor path is Zephyr's own machinery. Run the §8 generator alongside it and the two
+are the same shape — which is the point of the module system:
+
+1. **You describe the contract.** `proto/node.proto` is the input, and it lives outside
+   `firmware/` because the host tooling generates from it too.
+2. **CMake registers a rule**, not an output. `zephyr_nanopb_sources(app …)` tells the
+   build *how* to produce `node.pb.c`/`node.pb.h` and that the `.c` belongs to `app`.
+   Nothing has been generated yet — this is still the "CMake thinks" half of §3.
+3. **Ninja runs the generator** when it notices `node.proto` is newer than its outputs,
+   exactly as it would re-run a compiler. The outputs land in `firmware/build/`.
+4. **The generated `.c` compiles like any other source** — as **C**, even though the two
+   app sources beside it are C++, because that is the language it was written in:
+
+   ```
+   [18/333] Building C object CMakeFiles/app.dir/node.pb.c.obj
+   [29/333] Building CXX object CMakeFiles/app.dir/src/sensor.cpp.obj
+   [50/333] Building CXX object CMakeFiles/app.dir/src/main.cpp.obj
+   ```
+
+5. **Your code includes the generated header** — `#include <node.pb.h>` resolves because
+   the rule added the build directory to the include path.
+
+Same discipline as steps 2–3 above: the input is versioned, the output is not, and the
+only way to change the output is to change the input and rebuild. §11 has you prove that
+by touching the file and watching what ninja does.
+
 ---
 
-## 9. Working with the system day to day
+## 10. Working with the system day to day
 
 A few practical habits follow directly from the model:
 
@@ -440,7 +485,130 @@ A few practical habits follow directly from the model:
 
 ---
 
-## 10. The model in one paragraph
+## 11. Exercising the build system
+
+Everything above is claims about a pipeline you cannot see. All four exercises below make
+one part of it visible, and none of them needs the board — only the Mac and a build:
+
+```sh
+./scripts/build.sh          # incremental; -p forces pristine
+```
+
+### Exercise 1 — Prove your overlay actually applied
+
+*Demonstrates §4.4: `zephyr.dts` is the fully-merged tree.*
+
+```sh
+grep -A6 'scd40@62' firmware/build/zephyr/zephyr.dts
+```
+
+```
+/* node '/soc/i2c@40005400/scd40@62' defined in .../firmware/boards/nucleo_h753zi.overlay:4 */
+scd40: scd40@62 {
+        compatible = "sensirion,scd40"; /* in .../nucleo_h753zi.overlay:5 */
+        reg = < 0x62 >;                 /* in .../nucleo_h753zi.overlay:6 */
+        status = "okay";                /* in .../nucleo_h753zi.overlay:7 */
+        zephyr,deferred-init;           /* in .../nucleo_h753zi.overlay:16 */
+};
+```
+
+Read the path in the first line: your node was grafted under `/soc/i2c@40005400`, the
+board's own I²C1 controller, which you never declared. Every property is annotated with
+**the file and line it came from** — so when three layers disagree, this file tells you
+which one won.
+
+**Proves:** the overlay merged into the board and SoC layers of §4.2, and the parent/child
+relationship that will hand the driver its bus is real. This is the first thing to check
+when a device does not come up, *before* suspecting any driver code.
+
+### Exercise 2 — Watch the devicetree→Kconfig bridge fire
+
+*Demonstrates §6, the most elegant part of the system and the least visible.*
+
+You never wrote `CONFIG_SCD4X` anywhere — confirm that first, then look at what the build
+decided:
+
+```sh
+grep -rn 'CONFIG_SCD4X' firmware/prj.conf          # no matches: you never asked for it
+grep -n 'SENSIRION_SCD40\|CONFIG_SCD4X\|CONFIG_CRC=\|CONFIG_I2C=' firmware/build/zephyr/.config
+```
+
+```
+CONFIG_DT_HAS_SENSIRION_SCD40_ENABLED=y
+CONFIG_I2C=y
+CONFIG_SCD4X=y
+CONFIG_CRC=y
+```
+
+Four symbols, none of them requested. The first is `dt_compat_enabled` having read
+`edt.pickle` and found an `"okay"` node with that compatible; the second and fourth are the
+`select`s the driver's Kconfig pulled in behind it.
+
+**Proves:** describing hardware turned on software. Delete the node from the overlay,
+rebuild pristine, and all four go away — which is also the answer to "why is my driver not
+being compiled?"
+
+### Exercise 3 — Ninja rebuilds only what changed
+
+*Demonstrates §3 (CMake thinks, Ninja executes) and §8 (the generator is just another
+build rule).*
+
+Touch the schema — change nothing in it — and rebuild:
+
+```sh
+touch proto/node.proto
+./scripts/build.sh
+```
+
+```
+[1/9] Running C++ protocol buffer compiler using nanopb plugin on .../proto/node.proto
+[2/9] Building C object CMakeFiles/app.dir/node.pb.c.obj
+[3/9] Building CXX object CMakeFiles/app.dir/src/main.cpp.obj
+[4/9] Linking CXX static library app/libapp.a
+...
+[9/9] Linking CXX executable zephyr/zephyr.elf
+```
+
+Nine steps out of the 333 a pristine build runs. Note carefully what is **absent**:
+CMake never re-ran (no configuration changed), and `sensor.cpp` was not rebuilt — only
+`main.cpp` includes `node.pb.h`, so only `main.cpp` depends on the generated header.
+
+**Proves:** the generator is an ordinary build rule with ordinary dependency tracking, and
+the schema genuinely cannot go stale — the only way to get `node.pb.c` is to run the
+generator on the current `.proto`. It also shows the acquisition/transport boundary from a
+completely different angle: `sensor.cpp` does not rebuild because it has never heard of the
+wire format.
+
+### Exercise 4 — Make CMake re-run, and feel the difference
+
+*Demonstrates §3's practical consequence: configuration changes are not source changes.*
+
+Append a Kconfig line to `firmware/prj.conf` and rebuild:
+
+```sh
+echo 'CONFIG_ASSERT=y' >> firmware/prj.conf
+./scripts/build.sh
+```
+
+The build re-runs CMake and Kconfig, regenerates `.config` and `autoconf.h`, and then
+rebuilds essentially the entire tree — **325 steps**, against nine in Exercise 3. Remove
+the line and rebuild to restore.
+
+The reason is §5.3's second route: `autoconf.h` is force-included into *every* translation
+unit via `-imacros`, so changing one symbol invalidates all of them. Pick your symbol
+deliberately when trying this — many are already at the value you would set. Adding
+`CONFIG_THREAD_NAME=y`, for instance, changes nothing at all, because the board's defconfig
+already turned it on; the build correctly does almost nothing, which proves the same point
+from the other side.
+
+**Proves:** editing a `.cpp` is a Ninja-only event while editing `prj.conf` is a
+configuration event that re-runs the whole front half of §7. That asymmetry is the daily,
+felt consequence of "CMake thinks, Ninja executes", and it is why the pristine-build advice
+attaches to devicetree and Kconfig changes specifically.
+
+---
+
+## 12. The model in one paragraph
 
 A Zephyr build is a configuration system that generates code and then compiles it. Two
 independent systems answer two independent questions: **devicetree** describes the hardware
@@ -448,6 +616,24 @@ independent systems answer two independent questions: **devicetree** describes t
 devicetree is parsed into `edt.pickle`, which becomes both the C macros your code reads and
 the values that decide which drivers Kconfig turns on — that shared parsed tree is the bridge
 between the two halves. CMake runs this entire reconciliation up front and hands a static
-build plan to Ninja, which does the actual compiling. And because it all resolves before the
-target boots, your hardware arrives in `main()` already described, already configured, and
-already bound to its driver.
+build plan to Ninja, which does the actual compiling. Your own generators plug into the same
+seam — a build rule producing sources into `build/`, tracked like any other dependency. And
+because it all resolves before the target boots, your hardware arrives in `main()` already
+described, already configured, and already bound to its driver.
+
+## 13. Where to go next
+
+- **[`build-system-overview.md`](../docs/build-system-overview.md)** — the reference half
+  of this guide: the artifact-by-artifact table for *this* build, with real paths and
+  sizes, including the nanopb row §8 describes.
+- **`firmware/build/zephyr/zephyr.dts` and `.config`** — the two files Exercises 1 and 2
+  read. Skimming them once, in full, is worth more than another page of prose about what
+  they contain.
+- **[`out-of-tree-hardware-overview.md`](../docs/out-of-tree-hardware-overview.md)** — what
+  changes when the *board* is not in the Zephyr tree either, and you supply the board
+  definition as well as the overlay.
+- **[`language-cpp.md`](language-cpp.md)** — the other half of what `target_sources` does
+  here, and why one of this app's three compiled sources is C while two are C++.
+- **Zephyr's own build documentation** — the `west build` reference and the
+  *Application Development* chapter, for `CMakeLists.txt` options this project never
+  needed (`SHIELD`, `EXTRA_CONF_FILE`, sysbuild).

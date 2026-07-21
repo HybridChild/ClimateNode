@@ -10,6 +10,18 @@ C++ translation units, `sensor.cpp` and `main.cpp` — only as a running example
 ideas concrete. For how the build system underneath works at all, see its companion,
 [`zephyr-build-system-guide.md`](zephyr-build-system-guide.md).
 
+**The shape of this document:**
+
+- **§1–§2** — the two facts everything else follows from, and how to switch C++ on.
+- **§3–§5** — *freestanding*: the runtime ladder, what exceptions and RTTI cost, and the
+  header breakage that is usually the first thing you hit.
+- **§6–§8** — *the boundary*: name mangling and `extern "C"`, static constructors at boot,
+  and where Zephyr's macros stop being C++-safe.
+- **§9–§11** — what C++ is actually worth on an MCU, mixing the two languages in one
+  image, and a field guide to the daily quirks.
+- **§12** — exercises: four things to break on purpose, all on the Mac, no board needed.
+- **§13–§14** — the whole model in a paragraph, and where to go next.
+
 ---
 
 ## 1. The mental model: a C++ guest in a C house
@@ -19,17 +31,19 @@ the MQTT library, the net stack — is written in C and compiled by a C compiler
 woven through Zephyr; it is an *application* language bolted onto the top, and everything
 strange about using it follows from two facts:
 
-1. **You live on a C/C++ boundary.** Every Zephyr API you call was compiled as C. Your code
-   has to speak to it across the line where C++'s extra machinery (name mangling, member
-   functions, lambdas) meets C's flat world of plain functions and structs.
-2. **You get *freestanding* C++, not hosted C++.** The C++ you know on a desktop assumes an
+1. **You get *freestanding* C++, not hosted C++.** The C++ you know on a desktop assumes an
    operating system underneath it — a heap, `<vector>`, `<string>`, `<iostream>`,
    exceptions that unwind the stack. On a microcontroller none of that is free, and Zephyr
    gives you almost none of it by default.
+2. **You live on a C/C++ boundary.** Every Zephyr API you call was compiled as C. Your code
+   has to speak to it across the line where C++'s extra machinery (name mangling, member
+   functions, lambdas) meets C's flat world of plain functions and structs.
 
 Hold those two ideas and the rest of this document is just their consequences. Nearly every
-"why doesn't this compile?" and "why is this the pattern?" traces back to *boundary* or
-*freestanding*.
+"why doesn't this compile?" and "why is this the pattern?" traces back to *freestanding* or
+*boundary* — and the document takes them in that order, because the freestanding
+consequences are the ones you hit within the first hour (§3–§5), while the boundary only
+bites once you start handing functions to C subsystems (§6–§8).
 
 ---
 
@@ -58,15 +72,29 @@ the same way you would a `.c` file, and Zephyr compiles them with `g++`:
 target_sources(app PRIVATE src/main.cpp src/sensor.cpp)
 ```
 
-In the build log you will see the payoff — the app's translation units built as CXX, and the
-final image linked as a C++ executable, everything else still C:
+In the build log you will see the payoff. These are the C++-relevant lines out of a
+333-step pristine build of this app:
 
 ```
-[39/185] Building CXX object CMakeFiles/app.dir/src/main.cpp.obj
-[40/185] Building CXX object CMakeFiles/app.dir/src/sensor.cpp.obj
-[146/185] Linking CXX static library app/libapp.a
-[185/185] Linking CXX executable zephyr/zephyr.elf
+[16/333] Building CXX object zephyr/CMakeFiles/zephyr.dir/lib/cpp/minimal/cpp_vtable.cpp.obj
+[18/333] Building C   object CMakeFiles/app.dir/node.pb.c.obj
+[19/333] Building CXX object zephyr/CMakeFiles/zephyr.dir/lib/cpp/minimal/cpp_new.cpp.obj
+[29/333] Building CXX object CMakeFiles/app.dir/src/sensor.cpp.obj
+[50/333] Building CXX object CMakeFiles/app.dir/src/main.cpp.obj
+[283/333] Linking CXX static library app/libapp.a
+[333/333] Linking CXX executable zephyr/zephyr.elf
 ```
+
+Seven lines out of 333 — the other 326 are C. Three details in there are the whole of this
+document in miniature:
+
+- **`lib/cpp/minimal/…`** is Zephyr's C++ runtime compiling itself into your image. Two
+  files: vtable support and `operator new`. That is very nearly the entire runtime you get,
+  and §3 is about what it does and does not contain.
+- **`node.pb.c` is built as a C object inside the app target.** Generated nanopb code is C
+  and stays C, sitting in the same target as two C++ files. §10 returns to this.
+- **Only your two sources are CXX.** C++ here is an application language grafted onto a C
+  system, which is §1's founding claim, visible in the build log.
 
 Because `CONFIG_CPP` is a Kconfig change, it ripples through generated configuration — do a
 pristine build (`-p`) the first time you add it.
@@ -277,10 +305,12 @@ target — not through the hosted conveniences you've had to give up.
 - **`constexpr` for compile-time constants**, e.g. this project's `constexpr uint16_t
   kKeepaliveSec = 60;` and `constexpr size_t kSensorStackSize = 2048;` — typed constants
   with no storage and no macro, where C would reach for `#define`.
-- **Anonymous namespaces** for internal linkage, in place of file-`static`.
-- **Static allocation, fixed-size types, no standard containers on the hot path** — hold the
-  same determinism contract C gave you: no hidden allocation, no `throw`, nothing that can
-  block unexpectedly.
+- **Anonymous namespaces** for internal linkage, in place of file-`static` — with the one
+  exception §6 ends on: symbols another translation unit names, such as the `ZBUS_*`
+  definitions, must stay at global scope.
+- **Static allocation over the heap**, for the reasons §7 gives — and note that the minimal
+  runtime helps you here by making the alternative inconvenient rather than by forbidding
+  it.
 
 Use C++ for *structure and safety*, not to import a desktop programming style onto a 512 KB
 part.
@@ -305,30 +335,171 @@ alongside dozens of C archives. Two rules keep the mix clean:
 
 ## 11. Day-to-day quirks
 
-A short field guide to things that will otherwise cost you ten confused minutes:
+A short field guide, in the order you are likely to meet them. The first two are the
+sections above compressed to one line each; the rest appear nowhere else in this document:
 
-- **`<cstdio>` and friends don't exist** under the minimal runtime — use the C header
-  (`<stdio.h>`). See §5.
-- **Set `CONFIG_STD_CPP17` explicitly** — the default is C++11 (§2).
+- **`<cstdio>` and friends don't exist** — use the C header (§5). **Set `CONFIG_STD_CPP17`
+  explicitly** — the default is C++11, and pristine-build after changing it (§2).
 - **Your IDE will show false errors.** clangd reads the GCC ARM compile flags
   (`-mfp16-format=ieee`, `-fno-reorder-functions`) and Zephyr macros (`K_SECONDS`) it can't
   parse, and flags them red — while the GCC build is clean. **The GCC build is the source of
   truth.** A `.clangd` file that removes the offending flags silences the noise.
-- **Pristine-build after `CONFIG_CPP` or standard changes** — they're Kconfig changes and
-  ripple through generated files.
+- **A link error naming a symbol you can see defined** is almost always linkage, not a
+  missing file: check whether the definition drifted into an anonymous namespace (§6).
+- **Link errors are where mangling becomes visible.** An undefined symbol reported as
+  `_Z11on_telemetryPK13zbus_channel` rather than `on_telemetry` is telling you which side
+  of the boundary the reference came from — pipe it through `c++filt` to read it.
+- **Compiler diagnostics point at the `.cpp`, not the macro** when a Zephyr initialiser
+  macro expands to C-only syntax (§8). Build with `-save-temps` or read the expansion in
+  `build/` before assuming your own code is wrong.
 
 ---
 
-## 12. The model in one paragraph
+## 12. Exercising the C++ layer
+
+Four exercises, all on the Mac with no board attached. Three of them work by **breaking
+something on purpose** — which is the fastest way to believe a rule you have only read.
+Each says what to revert; revert it before moving on.
+
+```sh
+./scripts/build.sh          # incremental; -p forces pristine
+```
+
+### Exercise 1 — Find the C++ in a C image
+
+*Demonstrates §1: C++ is an application language grafted onto a C system.*
+
+```sh
+./scripts/build.sh -p 2>&1 | grep -E 'CXX|cpp/minimal|node\.pb\.c'
+```
+
+You get the seven lines quoted in §2 and no more. Count them against the 333 total, then
+look at *which* files they are: two from `zephyr/lib/cpp/minimal`, two of your own, and one
+C object — `node.pb.c` — compiled as C inside the same `app` target as the C++ files.
+
+**Proves:** the runtime you depend on is two translation units, your code is the only C++
+in the application, and language is chosen per file rather than per project (§10).
+
+### Exercise 2 — Watch the freestanding runtime refuse a header
+
+*Demonstrates §3 and §5: no `<cXXX>` wrappers, and `-nostdinc++` means they are not merely
+empty but absent.*
+
+Add the idiomatic C++ spelling to the top of `firmware/src/sensor.cpp`:
+
+```cpp
+#include <cstdio>
+```
+
+```
+firmware/src/sensor.cpp:1:10: fatal error: cstdio: No such file or directory
+```
+
+Change it to `#include <stdio.h>` and the build succeeds. **Revert both** — `sensor.cpp`
+needs neither.
+
+**Proves:** the failure is the *runtime*, not the compiler or a missing package. The same
+compiler compiles `<stdio.h>` from the same file a second later; what changed is only which
+header exists on the include path.
+
+### Exercise 3 — Break the linkage rule and read the error
+
+*Demonstrates §6: `ZBUS_*` definitions must stay at global scope.*
+
+In `firmware/src/main.cpp`, move the `ZBUS_LISTENER_DEFINE(telemetry_listener,
+on_telemetry);` line from below `}  // namespace` to just above it, so it falls inside the
+anonymous namespace. Compilation still succeeds; the **link** does not:
+
+```
+ld.bfd: app/libapp.a(sensor.cpp.obj):(._zbus_channel_observation.static.chan_telemetry00_+0x4):
+        undefined reference to `telemetry_listener'
+```
+
+**Revert it.**
+
+Read that error closely, because it names the whole mechanism. The complaint comes from
+**`sensor.cpp`**, not from the file you edited: `ZBUS_CHAN_DEFINE(chan_telemetry, …,
+ZBUS_OBSERVERS(telemetry_listener), …)` emitted an observation record there that refers to
+the symbol *by name*. Internal linkage renamed the definition, so the two no longer meet.
+
+**Proves:** a macro that emits a symbol another translation unit names is a **linkage**
+decision, not a style one — and that C++'s internal-linkage idiom (§9) has exactly one
+exception in this codebase, which the comment above that line records.
+
+### Exercise 4 — See mangling, and see where it stops
+
+*Demonstrates §6: what `extern "C"` and the reserved status of `main` are actually doing.*
+
+```sh
+NM=~/zephyr-sdk-1.0.1/gnu/arm-zephyr-eabi/bin/arm-zephyr-eabi-nm
+$NM firmware/build/zephyr/zephyr.elf | grep -E ' [A-Za-z] (chan_telemetry|telemetry_listener|main)$'
+$NM firmware/build/zephyr/zephyr.elf | grep _GLOBAL__N_1 | head -4
+```
+
+The first command prints plain, undecorated names:
+
+```
+080292f8 R chan_telemetry
+08029320 R telemetry_listener
+0800295c T main
+```
+
+The second prints the same program's C++ functions, decorated:
+
+```
+080023d4 t _ZN12_GLOBAL__N_112on_telemetryEPK12zbus_channel
+08002888 t _ZN12_GLOBAL__N_116mqtt_evt_handlerEP11mqtt_clientPK8mqtt_evt
+```
+
+Pipe those through `arm-zephyr-eabi-c++filt` to read them:
+
+```
+(anonymous namespace)::on_telemetry(zbus_channel const*)
+(anonymous namespace)::mqtt_evt_handler(mqtt_client*, mqtt_evt const*)
+```
+
+**Proves:** mangling is real and visible, and the boundary runs exactly where §6 says. Note
+the case column — capital `R`/`T` for the global, undecorated symbols; lowercase `t` for
+the mangled, file-local ones. The *records* C code refers to by name (`chan_telemetry`,
+`telemetry_listener`) are global and unmangled; the **callbacks they point to** are
+mangled, file-local, and perfectly happy that way, because nothing ever names them across
+a translation unit — they are reached through a function pointer. That is Exercise 3's
+error explained from the other direction, and it is why §6 says the sharp edge is at the
+callback *registration*, not at the callback itself.
+
+---
+
+## 13. The model in one paragraph
 
 Zephyr is a C system with C++ available as an application language, and everything about using
-it follows from two facts. First, you sit on a **C/C++ boundary**: names mangle on your side
-and not the kernel's, so `extern "C"` reconciles them — automatically for the Zephyr headers
-that wrap themselves in it, and by hand at the callback edge, where only free functions and
-captureless lambdas cross and context travels through `user_data`. Second, you get
-**freestanding** C++: a minimal runtime that provides `new`, vtables, and boot-time
-constructors but no standard library, no exceptions, and no RTTI — so you include C headers,
-return error codes instead of throwing, and allocate statically. Turn it on with `CONFIG_CPP`
-plus an explicit standard, use C++ for RAII and structure rather than for a hosted
-programming style, keep generated C as C, and the language buys you real safety on the target
-without dragging a desktop runtime onto it.
+it follows from two facts. First, you get **freestanding** C++: a minimal runtime that
+provides `new`, vtables, and boot-time constructors but no standard library, no exceptions,
+and no RTTI — so you include C headers, return error codes instead of throwing, and allocate
+statically. Second, you sit on a **C/C++ boundary**: names mangle on your side and not the
+kernel's, so `extern "C"` reconciles them — automatically for the Zephyr headers that wrap
+themselves in it, and by hand at the callback edge, where only free functions and captureless
+lambdas cross, context travels through `user_data`, and any symbol another translation unit
+names must stay at global scope. Turn it on with `CONFIG_CPP` plus an explicit standard, use
+C++ for RAII and structure rather than for a hosted programming style, keep generated C as C,
+and the language buys you real safety on the target without dragging a desktop runtime onto
+it.
+
+## 14. Where to go next
+
+This guide has no reference half — there is no `docs/` counterpart, because the decisions it
+would record are visible in the two source files themselves. So:
+
+- **`firmware/src/sensor.cpp` and `firmware/src/main.cpp`** — read them for the idioms in
+  §9 as they actually appear: the anonymous namespace, the `constexpr` constants, the three
+  callbacks of §6, and the one comment explaining why the `ZBUS_*` definitions sit outside
+  the namespace.
+- **[`zephyr-build-system-guide.md`](zephyr-build-system-guide.md)** — the companion: what
+  `CONFIG_CPP` and `target_sources` are doing inside the build, and why `node.pb.c` is
+  compiled as C beside them.
+- **[`zbus-guide.md`](zbus-guide.md) §9** — the other side of Exercise 3: what those
+  channel and observer symbols *are*, and why the definitions live in `sensor.cpp`.
+- **`zephyr/lib/cpp/minimal/`** in the workspace — the entire runtime, small enough to read
+  in one sitting. `cpp_new.cpp` is where §7's claim that `operator new` is `malloc` in
+  disguise is settled in about ten lines.
+- **`CONFIG_REQUIRES_FULL_LIBCPP`** — try a pristine build with it on and compare the
+  footprint against §3's table, if you ever need to justify staying minimal.

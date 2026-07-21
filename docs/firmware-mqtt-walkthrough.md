@@ -580,7 +580,7 @@ with no extra state.
 
 The two numbers are independently derived — the coalesce count from the eventfd, the gap
 from `sequence` — so they check each other. Stopping the broker for a minute and reading
-both back is Exercise 1 in [`zbus-guide.md`](../notes/zbus-guide.md) §9.
+both back is Exercise 1 in [`zbus-guide.md`](../notes/zbus-guide.md) §10.
 
 ### Coming back: a command becomes a bus message
 
@@ -607,7 +607,7 @@ reports what the bus told it. The rule lives in `sensor.cpp`, next to the thread
 actually obeys it, so the wire layer cannot drift from it — and neither could a second
 publisher, say a shell command, if one were added. `interval 100` comes back
 `ACK_STATUS_INVALID_ARGUMENT` with `detail: interval 100 outside [1000,300000]`; see
-Exercise 2 in [`zbus-guide.md`](../notes/zbus-guide.md) §9 to watch the period stay
+Exercise 2 in [`zbus-guide.md`](../notes/zbus-guide.md) §10 to watch the period stay
 provably unchanged.
 
 Note also that `chan_sensor_cmd` uses a **message subscriber**, not a listener: it
