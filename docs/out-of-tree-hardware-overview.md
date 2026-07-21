@@ -1,8 +1,8 @@
 # Zephyr out-of-tree hardware — project reference
 
-Written 2026-07-09. The companion to [`build-system-overview.md`](build-system-overview.md).
+The companion to [`build-system-overview.md`](build-system-overview.md).
 That doc traces the *easy* hardware case — an in-tree board (`nucleo_h753zi`) plus a
-four-line overlay grafting one sensor onto an existing bus. This doc traces the *hard* case:
+short overlay grafting one sensor onto an existing bus. This doc traces the *hard* case:
 a board Zephyr has never heard of, for an MCU it does not ship, where **you** author the
 entire hardware definition. The reference project is the sibling repo
 [`../ImpulseZephyr`](../../ImpulseZephyr) — a TC Electronic guitar-pedal firmware whose board

@@ -16,7 +16,8 @@ confusion.
 
 ## 1. The problem it solves
 
-Start from the code this project had *before* zbus. One loop did everything:
+Start from the design you reach for first. A node that samples a sensor and publishes the
+result over the network has one obvious shape — a single loop that does both:
 
 ```c
 while (connected) {
@@ -31,8 +32,8 @@ That works, and for a long time it is the right amount of structure. But look at
 entangled:
 
 - **The sensor cannot sample unless the network loop is running.** During a reconnect
-  backoff — up to 30 s here — nothing is read at all. The sensor's cadence is hostage to
-  the broker's availability.
+  backoff — up to 30 s on this bench — nothing is read at all. The sensor's cadence is
+  hostage to the broker's availability.
 - **A slow sensor read delays the keepalive.** The SCD-40 is an I²C device; a fetch takes
   milliseconds, but a device that stretches the clock or a bus that needs a retry could
   eat into the deadline that keeps the MQTT session alive.
@@ -237,23 +238,91 @@ observers list, with no edit to the producer at all. Whether that trade is worth
 depends on whether you expect a third participant. In a learning project, building it
 once and feeling the shape is the point.
 
-## 9. What this project verified on the bench
+## 9. Exercising the bus
 
-2026-07-21, against the real hardware:
+Every claim above is observable on the running node. Three exercises, each isolating one
+property. You need the console on the Mac (`./scripts/console.sh`, quit with **Ctrl-A**
+then **K**) and, on the Pi, the harness:
 
-- **Decoupling holds.** The sensor thread sampled through a 66 s broker outage and a
-  30 s reconnect backoff. Before the split, the same outage would have stopped sampling
-  entirely.
-- **Latest-wins behaves as designed and is observable.** On reconnect the node logged
-  `12 readings coalesced into one publish` and jumped from `seq=56` to `seq=69` —
-  12 discarded plus 1 published equals the 13 readings the wall clock predicts.
-- **The eventfd kept the loop fully blocking.** No timed wakeups to check the bus, and a
-  triggered measurement still appeared immediately, because the descriptor was already
-  readable by the time `poll()` was re-entered.
-- **A validator rejection is atomic and reportable.** `interval 100` returned `-ENOMSG`
-  from `zbus_chan_pub()`, which the MQTT layer mapped straight to
-  `ACK_STATUS_INVALID_ARGUMENT` — the sample period was provably unchanged, because the
-  message never reached the channel.
+```sh
+host/.venv/bin/python host/monitor.py          # terminal A, on the Pi
+```
+
+### Exercise 1 — Decoupling and latest-wins, in one shot
+
+*Demonstrates §1 (the sensor's cadence is not hostage to the network) and §5
+(latest-wins, accounted for).*
+
+Take the broker away for about a minute while watching the **console**, not the Pi:
+
+```sh
+sudo systemctl stop mosquitto
+#   ... wait ~60 s ...
+sudo systemctl start mosquitto
+```
+
+During the outage the console keeps logging sensor activity while the MQTT side backs off
+(`reconnecting in 1000 ms`, doubling to 30000). On reconnect, one line reports the damage:
+
+```
+<wrn> node: 12 readings coalesced into one publish
+```
+
+and `monitor.py` shows `sequence` jumping by that count plus one — e.g. `seq=56` straight
+to `seq=69`, which is 12 discarded plus 1 published, matching what the wall clock predicts
+for a 66 s outage at a 5 s cadence.
+
+**Proves:** the sensor thread sampled straight through an outage *and* a 30 s backoff —
+the single-loop design of §1 would have stopped sampling entirely. It also proves the loss
+is **accounted**, not silent: the eventfd counter (§7) and the sequence number agree, so
+the node reports its own data loss without tracking any extra state.
+
+### Exercise 2 — A validator rejection is atomic
+
+*Demonstrates §6: nothing is stored and no observer runs.*
+
+`SAMPLE_PERIOD_MIN_MS` is 1000, so ask for something below it:
+
+```sh
+host/.venv/bin/python host/command.py interval 100
+```
+
+```
+<- node/1/ack  seq=...  ACK_STATUS_INVALID_ARGUMENT
+   detail: interval 100 outside [1000,300000]
+```
+
+Then watch `monitor.py`: telemetry keeps arriving at the **previous** cadence, unchanged.
+
+**Proves:** `zbus_chan_pub()` returned `-ENOMSG`, which the MQTT layer maps straight to
+`ACK_STATUS_INVALID_ARGUMENT`. The period was provably untouched because the message never
+reached the channel — the rejection is atomic, not a partial application that was rolled
+back. Note also *where* the rule lives: `main.cpp` never range-checks anything, it only
+reports what the bus told it.
+
+Now try a legal one and watch the cadence visibly change:
+
+```sh
+host/.venv/bin/python host/command.py interval 2000
+host/.venv/bin/python host/command.py interval 5000    # restore
+```
+
+### Exercise 3 — The loop really is fully blocking
+
+*Demonstrates §7: an eventfd in the poll set, not a polling timeout.*
+
+```sh
+host/.venv/bin/python host/command.py trigger
+```
+
+A telemetry message appears **immediately**, not on the next 5 s boundary.
+
+**Proves:** the command arrived on the socket, the sensor thread woke early and published,
+the listener bumped the eventfd, and the descriptor was already readable when `poll()` was
+re-entered — so the reading went out with no timed wakeup anywhere in the path. Had the
+MQTT thread been polling the bus on a short timeout instead, this would have shown up to a
+tick of latency; had the listener published MQTT directly, two threads would be inside a
+non-thread-safe `mqtt_client` at once.
 
 ## 10. Where to go next
 

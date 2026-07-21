@@ -17,7 +17,7 @@ Roughly, the shape of the document:
 - **§3–§6** — the four things that surprise people: absent defaults, `oneof`, evolution,
   and what the format deliberately does *not* protect you from.
 - **§7–§9** — nanopb, this firmware, and the two generators that share the contract.
-- **§10** — what the bench proved, and how to reproduce it.
+- **§10** — exercises: most of it reproducible from a terminal alone, the rest on the node.
 
 For how those bytes get carried, see [`communication-guide.md`](communication-guide.md)
 (MQTT concepts) and [`mqtt-design.md`](../docs/mqtt-design.md) (this project's topic and QoS
@@ -28,14 +28,14 @@ decisions). For the surrounding firmware, see
 
 ## 1. Why a schema at all
 
-Before this schema existed, the node published telemetry as text:
+The cheapest thing a node can publish is text:
 
 ```
 seq=1 co2=812 temp=22.41 rh=41.3
 ```
 
-That is readable, debuggable with `mosquitto_sub`, and needs no tooling. It is also a
-contract that exists only in the heads of the people who wrote both ends. Nothing stops
+That is readable, debuggable with `mosquitto_sub`, and needs no tooling at all. It is also
+a contract that exists only in the heads of the people who wrote both ends. Nothing stops
 the host from expecting `co2_ppm=` while the node sends `co2=`. Nothing records that
 `temp` is Celsius. Adding a field means every parser must be updated in lockstep, and a
 typo becomes a runtime surprise rather than a build error.
@@ -763,25 +763,14 @@ specific to Python's generated modules, not to Protobuf itself.
 
 ---
 
-## 10. What the bench verified
+## 10. Exercising the encoding
 
-Running the harness against the node (2026-07-20) exercised the whole path:
+Most of this guide can be re-derived from a terminal, with no board involved. The rest
+needs the node and the harness on the Pi. Both are worth doing.
 
-- Telemetry encoded by nanopb, decoded by Python, fields and enums agreeing
-- All three `oneof` arms dispatched correctly
-- `max_size`-bounded strings surviving the round trip in `DeviceInfo`
-- An out-of-range `SetInterval` rejected with `INVALID_ARGUMENT` rather than clamped
-- A redelivered command acknowledged but not re-executed
-- A malformed payload answered with `MALFORMED` without desynchronising MQTT
+### Without hardware: take the format apart
 
-Re-run against firmware 0.5.0 (2026-07-21), after the sensor read moved onto its own
-thread: telemetry still decoded and all three commands still dispatched, which is the
-result to want — the wire format is not supposed to notice how the firmware is arranged
-internally. The one visible change is on the *other* side of the contract: `sequence` now
-counts readings taken rather than messages published, so a gap is a fact about the node
-rather than about the network. `node.proto`'s comment on the field records that.
-
-Everything in this guide can be re-derived from a terminal, without the board:
+Everything in §2 and §6 is reproducible from any machine with `protoc`:
 
 ```sh
 # take apart any captured payload, no schema needed
@@ -790,9 +779,68 @@ printf '\x08\x01\x10\x2a\x5a\x00' | protoc --decode_raw
 # ... or with the schema, to get names and types back
 printf '\x08\x01\x10\x2a\x5a\x00' | protoc --decode=node.Command --proto_path=proto proto/node.proto
 
-# and the size constants nanopb derived from it
+# and the size constants nanopb derived from it (after a build)
 grep _size firmware/build/node.pb.h
 ```
 
-Changing one field number in `node.proto` and re-running the last two is the fastest way to
-feel §5: the bytes still decode, and they mean something entirely different.
+The last one should print the constants §7 works through by hand — `node_Telemetry_size`
+36, `node_Command_size` 20, `node_Ack_size` 140, `node_DeviceInfo_size` 75. If your
+arithmetic in §7 disagrees with the generator, the generator is right and the interesting
+question is which field's worst case you mis-counted.
+
+**Exercise A — feel why field numbers are permanent (§5).** Change one field number in
+`node.proto`, rebuild, and re-run the decode above. The bytes still decode cleanly, exit
+status 0 — and they mean something entirely different. Nothing anywhere reports an error.
+That is the single most important property of the format to internalise, and it takes
+about thirty seconds to prove. Revert afterwards.
+
+**Exercise B — confirm the type is not on the wire (§2).** Decode the same six bytes as
+each of the three message types:
+
+```sh
+for T in Command Telemetry Ack; do
+  printf '\x08\x01\x10\x2a\x5a\x00' | protoc --decode=node.$T --proto_path=proto proto/node.proto
+done
+```
+
+All three succeed. **Proves:** a serialised message carries no type identity; the topic it
+arrived on is what asserts the type, which is why the topic hierarchy is part of the
+contract and not just housekeeping.
+
+### With the node: the round trip
+
+Start the harness on the Pi (`host/.venv/bin/python host/monitor.py`) and work through:
+
+| Command | Expect | Proves |
+|---|---|---|
+| *(just watch)* | a decoded `Telemetry` every ~5 s | nanopb encode ↔ Python decode agree on field numbers, wire types and enum values |
+| `command.py info` | `ACK_STATUS_OK` + `firmware`, `board`, `clientid` | `max_size`-bounded strings survive the round trip (§7) |
+| `command.py trigger` | `ACK_STATUS_OK`, immediate telemetry | the empty-message `oneof` arm — two bytes on the wire — dispatches (§4) |
+| `command.py interval 2000` | `ACK_STATUS_OK`, cadence changes | the arm that *carries* a field, and the largest one in the union (§7) |
+| `command.py interval 100` | `ACK_STATUS_INVALID_ARGUMENT` + bounds in `detail` | rejected, not clamped — and `detail` is a bounded string |
+| `command.py --sequence 42 trigger`, twice | second says `duplicate ignored`, no second measurement | `sequence` is what makes QoS 1 redelivery safe |
+
+Restore with `command.py interval 5000`.
+
+**Exercise C — the malformed case, and its limits (§6).** Publish something that is not a
+`Command` at all:
+
+```sh
+mosquitto_pub -h 192.168.10.1 -t node/1/command -m garbage -q 1
+```
+
+The node answers `ACK_STATUS_MALFORMED` and **telemetry keeps flowing** — the payload was
+drained from the socket rather than desynchronising the MQTT stream.
+
+Now the important half. Publish two bytes that *are* structurally legal:
+
+```sh
+printf 'hi' | mosquitto_pub -h 192.168.10.1 -t node/1/command -q 1 -s
+```
+
+This one comes back `ACK_STATUS_UNSUPPORTED`, not `MALFORMED`. **Proves:** `MALFORMED`
+catches corrupt framing, not wrong content. `garbage` was rejected only because its first
+byte encodes wire type 7, which is invalid; `hi` decodes into field 13 as an unknown field
+and yields a `Command` with everything defaulted. The node survives it by construction —
+`which_payload == 0` hits the `default:` arm — not by detection. That gap is exactly what
+`schema_version` exists to cover.

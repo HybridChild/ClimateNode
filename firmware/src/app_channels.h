@@ -5,6 +5,11 @@
  * read on its own cadence while the MQTT client is busy connecting, blocked in
  * poll(), or backing off after a dropped link.
  *
+ * This header is the decisions half of the zbus documentation; the concepts
+ * from first principles — channels, the three observer kinds, why latest-wins
+ * is a feature, validators, and waiting on a bus and a socket at once — are in
+ * notes/zbus-guide.md.
+ *
  * The two channels deliberately use different observer styles, for the same
  * reasons the two MQTT topics use different QoS (docs/mqtt-design.md):
  *

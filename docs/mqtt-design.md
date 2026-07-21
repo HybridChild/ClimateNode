@@ -5,9 +5,6 @@ concepts behind any of it, see the companion teaching guide,
 [`communication-guide.md`](../notes/communication-guide.md). For how these decisions are expressed
 in code, see [`firmware-mqtt-walkthrough.md`](firmware-mqtt-walkthrough.md).
 
-Resolves the README's open decisions **"decide QoS per topic"** and **"the topic
-hierarchy"**. Decided 2026-07-17.
-
 ## Transport
 
 | | |
@@ -71,6 +68,18 @@ reconnect gap, not wire corruption.
 - **Reconnect**: on drop, retry the TCP connect + MQTT `CONNECT` with backoff. This is the
   README's headline learning goal — treat it as real work, not error handling.
 
+### Reconnect latency vs. backoff
+
+The backoff starts at 1 s, doubles to a 30 s cap, and resets to the minimum only after a
+session that actually reached CONNACK. Consequence: **a broker that comes back early still
+waits out the current delay.** Restarting Mosquitto takes seconds; the node can reconnect
+30 s later.
+
+That is the intended trade — patience over hammering a dead endpoint — but it means
+"broker downtime" and "node downtime" are not the same number, and a 5 s telemetry cadence
+can lose several samples to a 1 s outage. The sensor keeps sampling throughout (that is
+what the zbus split is for), so the loss is a `sequence` gap, not missing time.
+
 ## Broker config (verified)
 
 Mosquitto 2.0 binds to loopback and denies anonymous **by default**, so an untouched
@@ -94,8 +103,9 @@ allow_anonymous true
 Binding to a *specific* IP means mosquitto cannot start until that address exists. On boot it
 loses the race against NetworkManager: `bind()` fails with `Cannot assign requested address`,
 and systemd's default limiter (5 starts / 10 s) gives up **within one second** —
-`Start request repeated too quickly` — long before `eth0` is configured. Observed after the
-first reboot, 2026-07-18; the service was dead until started by hand.
+`Start request repeated too quickly` — long before `eth0` is configured. This shows up the
+first time the Pi reboots after the listener is bound: the service is simply dead until
+started by hand.
 
 Fix, `/etc/systemd/system/mosquitto.service.d/override.conf` (a drop-in, so package upgrades
 don't clobber it) — then `sudo systemctl daemon-reload`:
@@ -125,7 +135,9 @@ satisfies `network-online.target`; if disabled, the target is inert and the orde
 does nothing. Check with `systemctl is-enabled NetworkManager-wait-online.service`, and
 inspect the merged unit with `systemctl cat mosquitto`.
 
-Verified surviving a reboot, 2026-07-18.
+Check it holds: `sudo reboot`, then once the Pi is back,
+`systemctl is-active mosquitto` should say `active` with no manual start — and
+`ss -tlnp | grep 1883` should show the listener bound to `192.168.10.1`.
 
 ### Testing the Last Will — two obvious methods silently cannot work
 
@@ -150,9 +162,13 @@ sudo nft add rule inet bench input ip saddr 192.168.10.2 drop
 sudo nft delete table inet bench          # node reconnects and republishes "online"
 ```
 
-Lower `kKeepaliveSec` to ~10 s first, or the wait is 90 s. **Verified working 2026-07-18.**
-This also exercises both directions of the failure at once: the broker detects a dead node,
-while the node detects a dead broker (unacked `PINGREQ`) and enters its reconnect backoff.
+Lower `kKeepaliveSec` to ~10 s and reflash first, or the wait is 90 s. Watch
+`node/1/status` from a second terminal on the Pi (`mosquitto_sub -h 192.168.10.1 -t
+'node/1/status' -v`) — `offline` appears without any client having published it.
+
+This exercises both directions of the failure at once: the broker detects a dead node and
+fires the will, while the node detects a dead broker (unacked `PINGREQ`) and enters its
+reconnect backoff, which you can watch on the console.
 
 Verify / exercise:
 
@@ -162,20 +178,24 @@ mosquitto_sub -h 192.168.10.1 -t 'node/#' -v                    # watch everythi
 mosquitto_pub -h 192.168.10.1 -t 'node/1/command' -m x -q 1 -d  # -d shows the packets
 ```
 
+## Payload
+
+[`proto/node.proto`](../proto/node.proto) is the contract, and carries its own field-level
+rationale inline. Concepts in [`protobuf-guide.md`](../notes/protobuf-guide.md).
+
+One consequence belongs here rather than there: **the topic is what says which message
+type a payload is.** Protobuf puts no type identity on the wire, so `node/<id>/command`
+carrying a `Command` is not a convention — it is the half of the wire format the `.proto`
+file does not contain. Never mix message types on one topic.
+
 ## Still open
 
-- **Telemetry trigger** — 5 s poll vs. the SCD-40 data-ready signal (README open decision).
-- **Retain on telemetry** — off for now. Turning it on gives a late-starting harness the
-  last reading instantly; revisit if that friction shows up.
+- **Retain on telemetry** — off. Turning it on gives a late-starting harness the last
+  reading instantly; revisit if that friction shows up. Note the retained `status` topic
+  already covers the "is it alive?" half.
 - **`<id>` source** — hardcoded `1`, or derived from the STM32 unique ID (the same source
   the Ethernet MAC `02:80:E1:9C:A7:DE` is hashed from). Only matters with a second node.
 
-## Settled since
-
-- **Payload schema** — [`proto/node.proto`](../proto/node.proto) is the contract, verified
-  end to end 2026-07-20. Concepts in [`protobuf-guide.md`](../notes/protobuf-guide.md).
-- **Reconnect latency vs. backoff** — the backoff caps at 30 s, so a broker that comes back
-  early still waits out the current delay. Observed on the bench 2026-07-21: the broker was
-  restarted within seconds, and the node reconnected 30 s later. That is the intended
-  trade — patience over hammering — but it means "broker downtime" and "node downtime" are
-  not the same number, and a 5 s telemetry cadence can lose ~6 samples to a 1 s outage.
+Settled elsewhere: the **telemetry trigger** question — a timed poll rather than the
+SCD-40's data-ready signal — is closed, because the in-tree driver never exposes data-ready
+through the sensor API. See *Accepted limitation* in [`sensor-bringup.md`](sensor-bringup.md).

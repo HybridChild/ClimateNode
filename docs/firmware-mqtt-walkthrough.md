@@ -42,8 +42,9 @@ question the caller asks is how long to wait before trying again.
 **The sensor thread does not participate in any of that.** It has never heard of MQTT. It
 keeps sampling at its own cadence through a connect, a disconnect, and a 30-second
 backoff, and the readings it takes meanwhile simply pile up as a gap in the `sequence`
-field. This is what the zbus split bought: before it, one loop owned both the sample clock
-and the socket, so a reconnect backoff also stopped the sensor.
+field. That separation is the whole reason the two threads exist: fold them into one loop
+and the sample clock becomes hostage to the socket, so a reconnect backoff stops the
+sensor too.
 
 Both inversions are deliberate. A node that cannot survive a cable pull is not finished,
 and a sensor whose cadence depends on the network's mood is not a sensor.
@@ -52,11 +53,10 @@ and a sensor whose cadence depends on the network's mood is not a sensor.
 
 ### The device model
 
-This one now lives in `sensor.cpp`, but it is the same pattern wherever you meet it:
+This one lives in `sensor.cpp`, but it is the same pattern wherever you meet it:
 
 ```c
 const struct device *const scd40 = DEVICE_DT_GET(DT_NODELABEL(scd40));
-if (!device_is_ready(scd40)) { ... }
 ```
 
 `DEVICE_DT_GET` resolves **at compile time** to the address of a `struct device` that the
@@ -65,8 +65,15 @@ search, no allocation — the linker places the struct and the macro hands you a
 it. `DT_NODELABEL(scd40)` refers to the `scd40:` label in the devicetree overlay.
 
 `device_is_ready()` is the runtime half: it reports whether the driver's init function
-succeeded during boot. The pattern is always these two steps — **get the handle
-statically, verify it dynamically**.
+succeeded. The pattern is always these two steps — **get the handle statically, verify it
+dynamically**.
+
+The wrinkle here is *when* that init runs. The SCD-40 node carries `zephyr,deferred-init`,
+so the boot sweep skips it and `sensor.cpp` calls `device_init()` itself after waiting out
+the chip's power-up window. It then reads `device_is_ready()` once and keeps the answer
+`const`, because readiness latches at the first attempt and nothing can clear it. The
+reasoning is in [`sensor-bringup.md`](sensor-bringup.md) and
+[`sensor-api-guide.md`](../notes/sensor-api-guide.md) §2.4.
 
 What the code does when that check *fails* is worth a moment. It does not abort. The
 sensor thread keeps running and publishes a reading with `SENSOR_READING_ERROR` every
@@ -303,7 +310,7 @@ queue.
 
 ## 6. The heart: one wait, two descriptors
 
-This is the most instructive part of the file, and the part the zbus split changed most.
+This is the most instructive part of the file.
 
 ```c
 struct zsock_pollfd fds[2] = {};
@@ -322,23 +329,27 @@ The thread has three reasons to wake up:
 3. Keepalive is due — a `PINGREQ` must go out or the broker will declare us dead
 
 Reasons 1 and 2 are **descriptors**; reason 3 is a **deadline**. Because the sample clock
-now belongs to the sensor thread, exactly one deadline is left, and the timeout is simply
+belongs to the sensor thread, exactly one deadline is left here, and the timeout is simply
 `mqtt_keepalive_time_left()` — no minimum to compute, no clamp to get wrong.
 
-### What this replaced, and why it is better
+### Why one deadline and not two
 
-The previous version owned both clocks and had to reconcile them by hand:
+That simplicity is bought, not free, and it is worth seeing what the alternative costs. A
+loop that owns both the sample clock and the keepalive has to reconcile them by hand:
 
 ```c
-/* the old code */
 int64_t until_sample = next_sample - k_uptime_get();
 int timeout = MIN(MAX(until_sample, 0), mqtt_keepalive_time_left(&client));
 ```
 
-That `MAX(until_sample, 0)` was not decoration. An already-expired deadline yields a
+That `MAX(until_sample, 0)` is not decoration. An already-expired deadline yields a
 negative number, and `poll()` reads a negative timeout as **block forever** — a subtle and
-total hang. Every additional deadline folded into one loop adds another such edge. Moving
-the sample clock out removed the whole class.
+total hang, reachable only when the loop runs late. Every additional deadline folded into
+one loop adds another such edge, and each is invisible on a fast bench and lethal under
+load.
+
+Keeping one deadline per waiter removes the whole class of bug rather than guarding
+against instances of it. **A clamp is a fix; having nothing to clamp is a design.**
 
 ### Why the bus needs a file descriptor at all
 
@@ -352,7 +363,7 @@ so on its own it cannot be waited for alongside a socket. The options are then:
 | **Signal an eventfd from the callback** | One extra descriptor; the loop stays fully blocking |
 
 The third is what the code does, and it is the standard answer to "wait on a socket and an
-internal event at once" — the same trick as the self-pipe in Unix servers. §12 covers the
+internal event at once" — the same trick as the self-pipe in Unix servers. §11 covers the
 mechanics.
 
 This "block until any source is ready, then work out which fired" pattern is how every
@@ -567,9 +578,9 @@ it. So the value is exactly "how many readings happened since I last looked", an
 above 1 means the channel overwrote some. The node reports its own data loss, for free,
 with no extra state.
 
-On the bench this closed the loop precisely. A 66 s broker outage at a 5 s cadence
-produced `12 readings coalesced into one publish` and a jump from `seq=56` to `seq=69` —
-12 discarded plus 1 published equals the 13 the wall clock predicts.
+The two numbers are independently derived — the coalesce count from the eventfd, the gap
+from `sequence` — so they check each other. Stopping the broker for a minute and reading
+both back is Exercise 1 in [`zbus-guide.md`](../notes/zbus-guide.md) §9.
 
 ### Coming back: a command becomes a bus message
 
@@ -591,11 +602,13 @@ case -ENOMSG:
     return node_AckStatus_ACK_STATUS_INVALID_ARGUMENT;
 ```
 
-Before this, `main.cpp` range-checked the interval itself. Now the bounds live in
-`sensor.cpp`, next to the thread that actually obeys them, and the wire layer cannot drift
-from them — it only reports what the bus told it. `interval 100` still comes back
-`ACK_STATUS_INVALID_ARGUMENT` with `detail: interval 100 outside [1000,300000]`; the
-difference is that the rule now has one home.
+Note where the bounds are *not*. `main.cpp` never range-checks the interval; it only
+reports what the bus told it. The rule lives in `sensor.cpp`, next to the thread that
+actually obeys it, so the wire layer cannot drift from it — and neither could a second
+publisher, say a shell command, if one were added. `interval 100` comes back
+`ACK_STATUS_INVALID_ARGUMENT` with `detail: interval 100 outside [1000,300000]`; see
+Exercise 2 in [`zbus-guide.md`](../notes/zbus-guide.md) §9 to watch the period stay
+provably unchanged.
 
 Note also that `chan_sensor_cmd` uses a **message subscriber**, not a listener: it
 delivers a private copy of every message, in order, and collapses nothing. Commands have
@@ -615,4 +628,6 @@ no next one coming, so none may be dropped — the QoS 1 argument, applied inter
   reader sees the coalesce count. Fine for latest-wins telemetry; wrong for anything that
   must not be lost.
 - **The backoff can outlast the outage.** A broker that returns after 2 s may still wait
-  out a 30 s delay. See *Settled since* in [`mqtt-design.md`](mqtt-design.md).
+  out a 30 s delay. That is the intended trade — patience over hammering — but it means
+  "broker downtime" and "node downtime" are not the same number. See *Reconnect latency*
+  in [`mqtt-design.md`](mqtt-design.md).

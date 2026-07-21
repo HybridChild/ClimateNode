@@ -4,12 +4,13 @@
 why readings come back as two integers instead of a float, and what the `sensor` shell
 command is actually doing.*
 
-A teaching document. It builds up from "what is a device in Zephyr" to the four lines of
-sensor code in [`firmware/src/main.cpp`](../firmware/src/main.cpp), using this bench's
-SCD-40 as the running example. Every code reference is real — line numbers point at
-Zephyr v4.4.1 in `~/zephyr-workspace` and at this repo.
+A teaching document. It builds up from "what is a device in Zephyr" to the handful of
+sensor calls in [`firmware/src/sensor.cpp`](../firmware/src/sensor.cpp), using this bench's
+SCD-40 as the running example. Every code reference is real: this repo's code is cited by
+function name (it moves), and Zephyr's by `file:line` against v4.4.1 in `~/zephyr-workspace`
+(pinned, so those hold).
 
-For what was *built* during sensor bring-up (overlay, Kconfig, wiring), see
+For how the sensor is wired, described and initialised here, see
 [`docs/sensor-bringup.md`](../docs/sensor-bringup.md) — that's the terse reference half.
 This is the concepts half. For the chip's own command codes and conversion formulas, see
 `../../shared_refs/sensor/SCD4x.yaml`.
@@ -43,7 +44,7 @@ thermometers, CO₂ sensors, on any bus — expose the same handful of functions
 application says "fetch a sample, give me the CO₂ channel." A driver, written once by
 whoever knows the chip, translates that into the bus traffic above.
 
-The payoff is concrete for this project: `firmware/src/main.cpp` contains **zero** I²C
+The payoff is concrete for this project: `firmware/src/sensor.cpp` contains **zero** I²C
 calls, zero command codes, and zero conversion constants. Replacing the SCD-40 with a
 different CO₂ sensor would be an edit to `firmware/boards/nucleo_h753zi.overlay`, not to
 the application.
@@ -123,19 +124,56 @@ Two more things fall out of that macro:
 ### 2.3 Getting the handle in your code
 
 ```c
-scd40 = DEVICE_DT_GET(DT_NODELABEL(scd40));   /* main.cpp:601 */
-
-if (!device_is_ready(scd40)) {                /* main.cpp:603 */
-	/* driver init failed — the sensor did not answer on the bus */
-}
+const struct device *const scd40 = DEVICE_DT_GET(DT_NODELABEL(scd40));
 ```
 
 `DT_NODELABEL(scd40)` refers to the label before the colon in the overlay.
 `DEVICE_DT_GET` resolves it to the `struct device` at **compile time** — no lookup, no
 string comparison, and a build error rather than a null pointer if the node is missing.
 
-`device_is_ready()` asks whether `scd4x_init()` succeeded. It commonly fails when the
-sensor is unpowered or miswired, so it's worth checking rather than assuming.
+The runtime half is `device_is_ready()`, which asks whether `scd4x_init()` succeeded. It
+commonly fails when the sensor is unpowered or miswired, so it is worth checking rather
+than assuming. The usual pattern is therefore **get the handle statically, verify it
+dynamically**.
+
+### 2.4 Who runs init — and why that is a real decision
+
+By default the kernel initialises every device during boot, in priority order, before
+`main()`. `device_is_ready()` then just reports the outcome.
+
+That default has a sharp edge, and it is worth understanding because it is not obvious
+from the API: **a failed init is permanent.** Look at what `do_device_init()` does on
+error — it records the errno in `init_res` but sets `initialized` **unconditionally**. So:
+
+- `device_is_ready()` is `initialized && init_res == 0`, and latches false forever.
+- `device_init()` refuses a second attempt with `-EALREADY`.
+- `device_deinit()` answers `-ENOTSUP` unless the driver registers a deinit op — and the
+  scd4x driver does not.
+
+There is no retry to be had. The only thing you control is *when* the single attempt
+happens, which is exactly what Zephyr's `zephyr,deferred-init` devicetree property is
+for: mark the node, and the boot sweep skips it (`kernel/init.c`), leaving the
+application to call `device_init()` when it judges the moment right.
+
+This bench uses it, because the SCD-40 needs up to 30 ms after VDD before it will answer
+on I²C at all and it shares a power rail with the board — on a cold plug-in the MCU can
+otherwise reach the driver's `POST_KERNEL` init while the chip is still coming up, and
+every transfer NACKs. So `sensor.cpp`'s thread sleeps first, calls `device_init()` itself,
+then reads `device_is_ready()` **once** and keeps the result `const`:
+
+```c
+k_msleep(kSensorPowerUpMs);          /* 100 ms — a wide margin on the datasheet's 30 ms */
+device_init(scd40);
+const bool device_ok = device_is_ready(scd40);
+```
+
+Re-checking `device_ok` on every sampling cycle would *look* like resilience and provide
+none, for the reasons above. The rationale and its cost (~530 ms of datasheet waits, now
+off the boot path) are recorded in
+[`docs/sensor-bringup.md`](../docs/sensor-bringup.md).
+
+The transferable lesson: **when a resource gets exactly one initialisation attempt, spend
+your effort on making that attempt succeed, not on detecting its failure.**
 
 ---
 
@@ -210,7 +248,7 @@ sensor_channel_get(scd40, SENSOR_CHAN_AMBIENT_TEMP, &temp);/* memory read */
 sensor_channel_get(scd40, SENSOR_CHAN_HUMIDITY, &hum);     /* memory read */
 ```
 
-That's `main.cpp:471-479`. The division of labour:
+That's `read_scd40()` in `sensor.cpp`. The division of labour:
 
 - **`sample_fetch`** performs the I²C transaction and stores raw values into `dev->data`.
   It converts nothing.
@@ -310,10 +348,34 @@ double d = sensor_value_to_double(&temp);   /* sensor.h:1396 */
 float  f = sensor_value_to_float(&temp);    /* sensor.h:1407 */
 ```
 
-`main.cpp:481` uses these because the protobuf schema declares `float` fields. That's the
-right place to leave fixed-point behind: at the boundary where the value stops being a
-sensor reading and starts being wire data. See
-[`protobuf-guide.md`](protobuf-guide.md) for what happens to it next.
+`read_scd40()` uses these, and it is worth being precise about *which* boundary that is,
+because there are two and they are easy to conflate:
+
+```
+SCD-40
+  │   I²C
+  ▼
+struct sensor_value       fixed point — the driver's vocabulary
+  │
+  │   read_scd40()        ◀── fixed-point ends here
+  ▼
+struct sensor_reading     float / uint32 — this firmware's own type
+  │
+  │   encode_telemetry()  ◀── the internal type ends here
+  ▼
+node_Telemetry            protobuf — the shared contract, on the wire
+```
+
+**Fixed-point ends at the first arrow, not the second.** `read_scd40()` converts into
+`struct sensor_reading` — a plain application struct that knows nothing about protobuf.
+The wire format is a *separate* hop, `encode_telemetry()` in `main.cpp`, and it is
+deliberately the only place the two representations meet.
+
+That separation is the whole argument in `firmware/src/app_channels.h`: the sensor thread
+never mentions `node_Telemetry`, so a schema change stops at one function instead of
+rippling back into acquisition. See [`protobuf-guide.md`](protobuf-guide.md) for what
+happens at the second arrow, and [`zbus-guide.md`](zbus-guide.md) for the channel the
+reading crosses in between.
 
 There are also unit helpers in the same region of the header — `sensor_ms2_to_g()`,
 `sensor_rad_to_degrees()` and friends — irrelevant here but the same pattern.
@@ -366,14 +428,21 @@ polling — you stop asking "is there data yet" and let the sensor say so.
 **The in-tree `scd4x` driver does not implement it.** There is no `.trigger_set` in its
 API table.
 
-This bears directly on the open question in `CLAUDE.md` — whether telemetry should be
-triggered by the SCD-40's data-ready signal instead of a timed poll. The chip does have
-that capability (`get_data_ready_status`, and the driver calls it internally at
-`scd4x.c:604`), but it isn't exposed through the trigger API. Using it would mean either
-polling the status yourself over I²C or adding `trigger_set` to the upstream driver.
+That single omission decided this bench's sampling strategy. The obvious design — let the
+sensor's own data-ready signal drive telemetry, instead of a timed poll — is not
+available. The chip *has* the capability (`get_data_ready_status`, which the driver calls
+internally at `scd4x.c:604`), but it is never exposed through the trigger API, so using it
+would mean either polling the status yourself over raw I²C or adding `trigger_set` to the
+upstream driver.
 
-So the timed poll isn't a shortcut past an available feature — **the feature isn't
-plumbed through**. Worth recording if that decision gets revisited.
+So the timed poll is not a shortcut past an available feature — **the feature isn't
+plumbed through**. The consequences of living with a timed poll are in §8.1 and, as a
+settled decision, under *Accepted limitation* in
+[`docs/sensor-bringup.md`](../docs/sensor-bringup.md).
+
+The general habit worth taking away: **check the driver's API table before designing
+around a datasheet feature.** The chip's capabilities and the driver's exposed surface are
+different lists, and only the second one is callable.
 
 ---
 
@@ -484,10 +553,11 @@ uart:~$ sensor get scd40@62 co2 ambient_temp humidity
 Plausible reading → sensor and I²C are fine, so the bug is downstream: protobuf encode,
 MQTT publish, or host decode. Error or nonsense → the fault is at or below the driver.
 
-One command bisects the entire pipeline. That's worth the flash, and it became *more*
-valuable once zbus inserted another hop between the sensor read and the publish: the
-shell reads the driver directly, bypassing the bus, so a healthy `sensor get` alongside
-absent telemetry points at the channel rather than the chip.
+One command bisects the entire pipeline. That is worth the flash on its own, and it is
+worth more the more hops sit between the sensor and the wire — here, a zbus channel and a
+protobuf encode. The shell reads the driver directly and bypasses both, so a healthy
+`sensor get` alongside absent telemetry points at the channel or the encode rather than
+at the chip. §10, Exercise 1 walks that through.
 
 ---
 
@@ -512,14 +582,20 @@ stale.
 
 Concretely: the SCD-40 in periodic mode produces a reading about every 5 s. Poll it every
 2 s and roughly three in five polls return the previous value while reporting success.
-Your current 5 s interval sits right at the sensor's own cadence, so it mostly lines up —
-but `SetInterval` can retune that interval at runtime, and dropping it below ~5 s
-silently produces duplicate readings that look like a sensor stuck at a constant value.
+The default 5 s publish interval sits right at the sensor's own cadence, so it mostly
+lines up — but `SetInterval` retunes that interval at runtime down to 1 s, which silently
+produces duplicate readings that look like a sensor stuck at a constant value.
 
 Two ways to handle it, if it matters:
 
 - Keep the publish interval at or above the sensor's ~5 s period.
 - Track whether values changed, or read `get_data_ready_status` explicitly.
+
+This bench does **neither**, deliberately: §6.3 explains why the second is unavailable
+through the API, and the decision to accept the first — with the escape hatches, should it
+ever matter — is recorded under *Accepted limitation* in
+[`docs/sensor-bringup.md`](../docs/sensor-bringup.md). §10 below shows how to watch it
+happen.
 
 Either way this is a **driver-level surprise**, not something the sensor API's contract
 would have told you. It's a good argument for reading a driver's `sample_fetch` before
@@ -527,19 +603,22 @@ depending on its timing.
 
 ### 8.2 The zero-CO₂ warm-up
 
-`main.cpp:486` has:
+`read_scd40()` ends with:
 
 ```c
 /* The SCD-40 reports 0 ppm until its first conversion completes. */
-msg.sensor_status = (msg.co2_ppm == 0)
-			? node_SensorStatus_SENSOR_STATUS_WARMING_UP
-			: node_SensorStatus_SENSOR_STATUS_OK;
+out->status = (out->co2_ppm == 0) ? SENSOR_READING_WARMING_UP : SENSOR_READING_OK;
 ```
 
 The first periodic measurement takes ~5 s after power-up, and the chip reports 0 ppm until
 then. 0 ppm is physically impossible in air (outdoor baseline is ~420 ppm), so it's a safe
 sentinel — but note it's *this application's* interpretation, not something the sensor API
 defines.
+
+Note that the status set here is the **internal** `enum sensor_reading_status`, not the
+protobuf one. `encode_telemetry()` maps it to `node_SensorStatus_SENSOR_STATUS_WARMING_UP`
+later, at the wire boundary from §5 — which is what lets the two enums be renumbered
+independently.
 
 ### 8.3 Bare `sensor get` is noisy
 
@@ -560,48 +639,144 @@ streaming read.
 
 ### 8.5 The application ignores `channel_get` return values
 
-`main.cpp:477-479` doesn't check the return of the three `channel_get` calls. That's
+`read_scd40()` doesn't check the return of its three `channel_get` calls. That's
 defensible here — the channels are known-supported and the call can't touch the bus — but
 it does mean an unexpected `-ENOTSUP` would leave `co2`/`temp`/`hum` uninitialised. Worth
-knowing it's a deliberate simplification rather than an oversight.
+knowing it's a deliberate simplification rather than an oversight. The `sample_fetch`
+return, which *can* fail on the bus, is checked.
 
 ---
 
 ## 9. The whole path, end to end
 
-What actually happens when `main.cpp` reads the sensor:
+What actually happens when the sensor thread takes a reading, from the driver call all the
+way out to the wire:
 
 ```
-main.cpp:471   sensor_sample_fetch(scd40)
-                 └─ sensor.h:911   api->sample_fetch(dev, SENSOR_CHAN_ALL)
-                      └─ scd4x.c:571   scd4x_sample_fetch()
-                           ├─ scd4x_data_ready()      → I²C: cmd 0xE4B8
-                           │    └─ not ready? return 0, data unchanged   (§8.1)
-                           └─ scd4x_read_sample()     → I²C: cmd 0xEC05, read 9 B
-                                ├─ verify three CRC-8s
-                                └─ store 3 raw uint16 into dev->data
-
-main.cpp:477   sensor_channel_get(scd40, SENSOR_CHAN_CO2, &co2)
-                 └─ sensor.h:977   api->channel_get(dev, chan, val)
-                      └─ scd4x.c:629   scd4x_channel_get()
-                           └─ read dev->data, apply datasheet formula
-                              → struct sensor_value {val1, val2}     (no bus access)
-
-main.cpp:481   sensor_value_to_double(&co2)  → double  → protobuf field
+sensor.cpp  read_scd40()
+  │
+  ├─ sensor_sample_fetch(scd40)
+  │    └─ sensor.h:911   api->sample_fetch(dev, SENSOR_CHAN_ALL)
+  │         └─ scd4x.c:571   scd4x_sample_fetch()
+  │              ├─ scd4x_data_ready()      → I²C: cmd 0xE4B8
+  │              │    └─ not ready? return 0, data unchanged   (§8.1)
+  │              └─ scd4x_read_sample()     → I²C: cmd 0xEC05, read 9 B
+  │                   ├─ verify three CRC-8s
+  │                   └─ store 3 raw uint16 into dev->data
+  │
+  ├─ sensor_channel_get(scd40, SENSOR_CHAN_CO2, &co2)     ×3, one per channel
+  │    └─ sensor.h:977   api->channel_get(dev, chan, val)
+  │         └─ scd4x.c:629   scd4x_channel_get()
+  │              └─ read dev->data, apply datasheet formula
+  │                 → struct sensor_value {val1, val2}    (no bus access)
+  │
+  └─ sensor_value_to_double()  →  struct sensor_reading   (§5, first boundary)
+                                        │
+                     zbus_chan_pub(&chan_telemetry, …)    ← acquisition ends here
+                                        │
+main.cpp    on_telemetry()      listener, runs on the sensor thread: bumps an eventfd
+            publish_pending_telemetry()  wakes, zbus_chan_read()
+            encode_telemetry()  →  node_Telemetry           (§5, second boundary)
+                                        │
+                                mqtt_publish() → the wire
 ```
 
-Three layers, each with one job: **application** (what to do with a reading), **subsystem**
-(a uniform vocabulary of channels and units), **driver** (this chip's commands, CRCs and
-constants).
+Four layers, each with one job: **driver** (this chip's commands, CRCs and constants),
+**subsystem** (a uniform vocabulary of channels and units), **acquisition** (`sensor.cpp`
+— what a reading is, and when to take one), and **transport** (`main.cpp` — what a reading
+looks like on the wire, and getting it there).
+
+The two dashed-off boundaries are the ones that matter. Everything above
+`zbus_chan_pub()` is ignorant of MQTT and protobuf; everything below `encode_telemetry()`
+is ignorant of the SCD-40. See [`zbus-guide.md`](zbus-guide.md) for the channel in the
+middle.
 
 ---
 
-## 10. Cheat sheet
+## 10. Exercising the sensor path
+
+Three things worth doing at least once on real hardware. All of them need the console
+(`./scripts/console.sh`, quit with **Ctrl-A** then **K**); the last two also need the
+harness on the Pi (`host/.venv/bin/python host/monitor.py`).
+
+### Exercise 1 — Bisect the pipeline with the shell
+
+*Demonstrates §7.4: the shell is ground truth independent of your application.*
+
+```
+uart:~$ sensor get scd40@62 co2 ambient_temp humidity
+```
+
+Expect a plausible triple — CO₂ near **400–450 ppm** in a ventilated room, room
+temperature, a believable RH. Name the channels explicitly; a bare `sensor get` walks
+every channel in the enum and scrolls `-ENOTSUP` (§8.3).
+
+Now compare against what the Pi is seeing:
+
+| Shell | Telemetry on the Pi | Where the fault is |
+|---|---|---|
+| plausible | plausible | nothing wrong |
+| plausible | absent or wrong | at or **above** the zbus channel — encode, publish, or host decode |
+| error / nonsense | anything | at or **below** the driver — wiring, power, I²C, init |
+
+**Proves:** one command splits the whole stack in half. The shell reads the driver
+directly and bypasses the bus entirely, which is exactly what makes it a useful control.
+
+### Exercise 2 — Watch a fast poll republish stale data
+
+*Demonstrates §8.1, the sharpest edge in the sensor path.*
+
+With `monitor.py` running, drop the interval below the sensor's own cadence:
+
+```sh
+host/.venv/bin/python host/command.py interval 1000
+```
+
+Watch the telemetry lines. `sequence` advances every second, `uptime_ms` advances — and
+`co2`/`temp`/`rh` repeat in runs of roughly four or five identical values before changing:
+
+```
+seq=104   co2=  812 ppm  temp=22.41 C  rh=41.3 %  ...  SENSOR_STATUS_OK
+seq=105   co2=  812 ppm  temp=22.41 C  rh=41.3 %  ...  SENSOR_STATUS_OK
+seq=106   co2=  812 ppm  temp=22.41 C  rh=41.3 %  ...  SENSOR_STATUS_OK
+seq=107   co2=  815 ppm  temp=22.44 C  rh=41.2 %  ...  SENSOR_STATUS_OK   ← new conversion
+```
+
+Restore with `command.py interval 5000`.
+
+**Proves:** `sensor_sample_fetch()` returned **0 — success —** without new data, four times
+out of five, and nothing in the API said so. The status field says `OK` because as far as
+the application knows, it is. This is why the limitation is documented rather than
+detected: see *Accepted limitation* in
+[`docs/sensor-bringup.md`](../docs/sensor-bringup.md).
+
+### Exercise 3 — Watch the warm-up sentinel
+
+*Demonstrates §8.2 and §2.4.*
+
+Reset the board with `monitor.py` already running, and watch the first few messages. The
+console prints `SCD-40 online` about 2.5 s in (the deferred init from §2.4), and the first
+telemetry carries `SENSOR_STATUS_WARMING_UP` until the chip's first conversion lands ~5 s
+later.
+
+**Proves:** the `co2_ppm == 0` sentinel fires in practice, and the deferred init completes
+well before the first conversion is due — the ~530 ms `device_init()` costs nothing in
+wall-clock terms because the sensor was never going to have data sooner.
+
+If you instead see `SCD-40 not ready — publishing ERROR readings`, the one init attempt
+failed. Check power and wiring: there is no retry (§2.4).
+
+---
+
+## 11. Cheat sheet
 
 ```c
 /* Get the device (compile-time; errors at build if the node is missing) */
 const struct device *dev = DEVICE_DT_GET(DT_NODELABEL(scd40));
-if (!device_is_ready(dev)) { /* driver init failed */ }
+
+/* Verify at runtime. With zephyr,deferred-init the app owns the one attempt: */
+device_init(dev);                             /* omit if init runs at boot */
+const bool dev_ok = device_is_ready(dev);     /* latched — never changes after this */
 
 /* Read: one fetch, N gets */
 int rc = sensor_sample_fetch(dev);            /* bus traffic; check this */
@@ -633,17 +808,19 @@ sensor info                                      # needs CONFIG_SENSOR_INFO
 | `sample_fetch` may return 0 with stale data | Periodic mode + no new sample (§8.1) |
 | `scd4x` has no `trigger_set` | Data-ready interrupts aren't available through the API |
 | `SENSOR_SHELL` forces RTIO on | It's shell-only; the SCD-40 path still runs classic ops |
+| A failed init is permanent | `device_is_ready()` latches false; no retry exists (§2.4) |
 
 ---
 
 ## Where to go next
 
-- **[`docs/sensor-bringup.md`](../docs/sensor-bringup.md)** — the reference half: what was
-  built, the overlay, the Kconfig, verified bench facts.
+- **[`docs/sensor-bringup.md`](../docs/sensor-bringup.md)** — the reference half: the
+  overlay, the Kconfig, the deferred-init decision, and the accepted fast-poll limitation.
 - **`../../shared_refs/sensor/SCD4x.yaml`** — chip-level truth: command codes, conversion
   formulas, CRC-8 parameters. Reach for it when debugging the sensor path.
-- **[`protobuf-guide.md`](protobuf-guide.md)** — what happens to the reading
-  after `sensor_value_to_double`.
-- **[`zbus-guide.md`](zbus-guide.md)** — the sensor read now lives on its own thread and
-  reaches the publisher over a channel. §4's fetch/get separation is exactly the seam
-  that split runs along.
+- **[`protobuf-guide.md`](protobuf-guide.md)** — what happens to the reading at the second
+  boundary in §5, where it becomes bytes.
+- **[`zbus-guide.md`](zbus-guide.md)** — the channel between acquisition and transport.
+  §4's fetch/get separation is exactly the seam that split runs along: one function is
+  slow and can fail on the bus, the other is arithmetic, and knowing which is which is
+  what made it safe to move acquisition onto its own thread.

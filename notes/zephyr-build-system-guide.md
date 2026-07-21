@@ -348,6 +348,38 @@ kernel module created it for you. You are not defining an executable; you are co
 your source into Zephyr's pre-existing application target, which is then linked against the
 kernel.
 
+### Generating your own sources
+
+Step 5 said CMake decides which sources are in the build. It can also decide to *create*
+some first, and this is where a project's own code generation hooks in. This repo needs C
+structs for its wire format, generated from a `.proto` schema, so `firmware/CMakeLists.txt`
+adds one line before its `target_sources`:
+
+```cmake
+list(APPEND CMAKE_MODULE_PATH ${ZEPHYR_BASE}/modules/nanopb)
+include(nanopb)
+
+zephyr_nanopb_sources(app ${CMAKE_CURRENT_SOURCE_DIR}/../proto/node.proto)
+
+target_sources(app PRIVATE src/main.cpp src/sensor.cpp)
+```
+
+`zephyr_nanopb_sources()` registers a *build rule*: run the generator on `node.proto`, put
+`node.pb.c`/`node.pb.h` in the build directory, add the `.c` to the `app` target, and add
+the directory to the include path. Ninja then treats the generated `.c` like any other
+source, and re-runs the generator whenever the `.proto` changes.
+
+Two things generalise from this:
+
+- **Generated code belongs in `build/`, never in the repo.** It is an artifact, subject to
+  the same rule as `devicetree_generated.h` and `autoconf.h` — change the input and
+  rebuild, never edit the output. Here that is what makes "the `.proto` is the single
+  source of truth" a mechanical guarantee: there is no state in which the firmware builds
+  against a stale schema, because the schema is compiled on every build.
+- **`nanopb` is a Zephyr module**, so its CMake lives in the workspace
+  (`${ZEPHYR_BASE}/modules/nanopb`) rather than in this repo. That is the standard shape:
+  west fetches modules, and each contributes CMake and Kconfig the app can opt into.
+
 ---
 
 ## 8. Worked example: from a node in the tree to bytes on the wire
@@ -373,7 +405,7 @@ happens during the build.
    configuration captures the bus and address by reading the generated macros from step 3
    (`I2C_DT_SPEC_INST_GET`). A `struct device` now exists, with a table of function pointers
    for "fetch a sample" and "read a channel."
-8. **Your application gets a handle.** In `main.c`, `DEVICE_DT_GET(DT_NODELABEL(scd40))`
+8. **Your application gets a handle.** In `sensor.cpp`, `DEVICE_DT_GET(DT_NODELABEL(scd40))`
    resolves — at compile time — to a pointer to that exact device. If the node did not exist,
    this would not compile.
 

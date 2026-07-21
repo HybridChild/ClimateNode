@@ -5,9 +5,9 @@ instead of C.*
 
 This is a teaching document, not project documentation. It explains the concepts, the
 machinery, and the sharp edges of writing a Zephyr application in C++, in the order that
-makes them easiest to learn. It uses this repository — a CO₂ sensor node whose `main.cpp`
-reads an SCD-40 — only as a running example to keep the ideas concrete. For how the build
-system underneath works at all, see its companion,
+makes them easiest to learn. It uses this repository — a CO₂ sensor node built from two
+C++ translation units, `sensor.cpp` and `main.cpp` — only as a running example to keep the
+ideas concrete. For how the build system underneath works at all, see its companion,
 [`zephyr-build-system-guide.md`](zephyr-build-system-guide.md).
 
 ---
@@ -51,18 +51,19 @@ you care about `constexpr` breadth, `if constexpr`, structured bindings, or guar
 elision, set `CONFIG_STD_CPP17` (or `..._CPP20`) explicitly — leaving it unset silently
 gives you 2011.
 
-On the CMake side there is nothing special. Name your source `main.cpp`, list it the same way
-you would a `.c` file, and Zephyr compiles it with `g++`:
+On the CMake side there is nothing special. Give your sources a `.cpp` extension, list them
+the same way you would a `.c` file, and Zephyr compiles them with `g++`:
 
 ```cmake
-target_sources(app PRIVATE src/main.cpp)
+target_sources(app PRIVATE src/main.cpp src/sensor.cpp)
 ```
 
-In the build log you will see the payoff — one translation unit built as CXX, and the final
-image linked as a C++ executable, everything else still C:
+In the build log you will see the payoff — the app's translation units built as CXX, and the
+final image linked as a C++ executable, everything else still C:
 
 ```
 [39/185] Building CXX object CMakeFiles/app.dir/src/main.cpp.obj
+[40/185] Building CXX object CMakeFiles/app.dir/src/sensor.cpp.obj
 [146/185] Linking CXX static library app/libapp.a
 [185/185] Linking CXX executable zephyr/zephyr.elf
 ```
@@ -186,8 +187,28 @@ them a C++ callable has rules:
 
 So the idiomatic shape is a **free function** (a captureless lambda, or a function you can mark
 `extern "C"` to be strictly correct about linkage) that pulls its context out of `user_data`,
-not a method and not a capture. This is exactly the pattern you will write for every
-`sensor → zbus → nanopb → MQTT` hop.
+not a method and not a capture.
+
+This project hands three such functions to C subsystems, and they are worth looking at
+together because each crosses the boundary differently:
+
+| Callback | Registered with | Called from |
+| --- | --- | --- |
+| `mqtt_evt_handler` | `client.evt_cb = …` — a struct field holding a function pointer | inside `mqtt_input()`, on your own thread |
+| `on_telemetry` | `ZBUS_LISTENER_DEFINE(telemetry_listener, on_telemetry)` — a macro building a static record | inside `zbus_chan_pub()`, on the *publisher's* thread |
+| `sensor_cmd_valid` | an argument to `ZBUS_CHAN_DEFINE(...)` | inside `zbus_chan_pub()`, before the message is stored |
+
+All three are plain file-scope functions taking their context from the arguments the C API
+supplies — an `mqtt_evt *`, a `zbus_channel *`, a `const void *msg`. None of them could
+have been a capturing lambda or a member function.
+
+Note the second and third also illustrate why the C++ side has to care about **linkage**,
+not just calling convention: `ZBUS_LISTENER_DEFINE` and `ZBUS_CHAN_DEFINE` emit named
+symbols that the *other* translation unit refers to by name through `ZBUS_CHAN_DECLARE`.
+Put them inside an anonymous namespace — the §9 idiom for internal linkage — and the
+definition and the declaration no longer name the same thing. In `sensor.cpp` and
+`main.cpp` those definitions therefore sit deliberately at global scope, outside the
+anonymous namespace that holds everything else in the file.
 
 ---
 
@@ -219,7 +240,7 @@ Zephyr leans heavily on macros, and it is fair to worry whether they survive in 
 they do — with one category to watch.
 
 The **query and handle macros are pure constant expressions** and behave identically in C and
-C++. This project's `main.cpp` calls, unchanged:
+C++. This project's `sensor.cpp` calls, unchanged:
 
 ```cpp
 const struct device *const scd40 = DEVICE_DT_GET(DT_NODELABEL(scd40));
@@ -253,8 +274,9 @@ target — not through the hosted conveniences you've had to give up.
 - **Classes as modules.** A publisher object that *owns* its sequence counter, buffers, and
   client handle beats a scatter of file-static globals — clearer ownership, easier to reason
   about.
-- **`constexpr` for compile-time constants**, e.g. this project's `constexpr k_timeout_t
-  kSamplePeriod = K_SECONDS(5);` — a typed constant with no storage, no macro.
+- **`constexpr` for compile-time constants**, e.g. this project's `constexpr uint16_t
+  kKeepaliveSec = 60;` and `constexpr size_t kSensorStackSize = 2048;` — typed constants
+  with no storage and no macro, where C would reach for `#define`.
 - **Anonymous namespaces** for internal linkage, in place of file-`static`.
 - **Static allocation, fixed-size types, no standard containers on the hot path** — hold the
   same determinism contract C gave you: no hidden allocation, no `throw`, nothing that can

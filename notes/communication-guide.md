@@ -721,8 +721,10 @@ keepalive and reconnect become your problem in firmware and never came up here.
 
 *Demonstrates §6/§7: the broker speaks for a client that dies without a clean disconnect.*
 
-> **Not yet run on this bench** — unlike Exercises 1–4, this one hasn't been verified here.
-> Check `mosquitto_sub --help` if the will options differ on your version.
+This version uses two CLI clients, so it needs no firmware and proves the mechanism in
+isolation. Testing the **node's** will is a harder problem — the obvious methods take the
+observer down along with the node — and needs a packet filter instead; see *Testing the
+Last Will* in [`mqtt-design.md`](../docs/mqtt-design.md) for that procedure.
 
 **Terminal A** — a client that registers a will, then just sits there:
 ```sh
@@ -747,6 +749,49 @@ Contrast with stopping A via Ctrl-C, which sends a clean `DISCONNECT` and theref
 **Proves:** the node gets correct offline reporting for free, including on crash or cable
 pull — the failure case it could never have handled itself. Combined with a retained `online`
 published at connect, `node/1/status` is then always accurate for any subscriber.
+
+### Exercise 6 — Point the same tools at the real node
+
+*Demonstrates §3.3: the Nucleo is just another conforming MQTT client, and every concept
+above applies to it unchanged.*
+
+With the node flashed and running, watch everything it says:
+
+```sh
+mosquitto_sub -h 192.168.10.1 -t 'node/#' -v
+```
+
+You will see three things at once, and each is a concept from earlier made concrete:
+
+```
+node/1/status online                          ← retained (§6), delivered instantly on subscribe
+node/1/telemetry <binary>                     ← QoS 0, every ~5 s
+node/1/telemetry <binary>
+```
+
+The `status` line arrives **immediately**, before any telemetry, because it is retained —
+Exercise 3 with a real publisher. The telemetry lines arrive on the sensor's own cadence.
+
+But the telemetry payload is unreadable, and that is the point: **MQTT gives you delivery,
+not meaning** (§2). The broker never looked inside those bytes and neither can
+`mosquitto_sub`. To read them you need the schema:
+
+```sh
+host/.venv/bin/python host/monitor.py
+```
+
+```
+14:02:11  node/1/status        [retained] online
+14:02:16  node/1/telemetry     seq=1042  co2=  812 ppm  temp=22.41 C  rh=41.3 %  up=  5210.4s  SENSOR_STATUS_OK  (schema v1)
+```
+
+Same bytes, same broker, same topics — the only thing added is Protobuf, decoding a
+payload MQTT carried verbatim and never inspected.
+
+**Proves:** the layering in §2 is real and separable. Everything you learned with
+`mosquitto_pub`/`mosquitto_sub` transfers to the firmware without modification, because
+both are clients of the same protocol (§3.3) — and the one thing the CLI tools cannot do
+is the one thing that lives *above* MQTT.
 
 ### 8.3 Quick reference
 
@@ -777,32 +822,44 @@ Where every piece finally sits:
 ┌─ NUCLEO ─────────────────────────────────┐      ┌─ RASPBERRY PI ──────────────┐
 │                                          │      │                             │
 │  SCD-40 ──I²C──▶ sensor thread           │      │   Mosquitto (broker)        │
-│                      │                   │      │   192.168.10.1:1883         │
-│                      ▼  publish          │      │        │                    │
-│                  zbus channel            │      │        │ routes by topic    │
-│                      │                   │      │        ▼                    │
-│                      ▼  observer         │      │   paho-mqtt harness         │
-│                MQTT publisher thread     │      │        │                    │
-│                      │                   │      │        ▼                    │
-│                      ▼  nanopb encode    │      │   protobuf decode → log     │
-│                 [20 opaque bytes]        │      │                             │
-│                      │                   │      └─────────────────────────────┘
-│                      ▼  mqtt_publish()   │                    ▲
+│                  (sensor.cpp)            │      │   192.168.10.1:1883         │
+│                       │                  │      │        │                    │
+│                       ▼ zbus_chan_pub()  │      │        │ routes by topic    │
+│                  zbus channel            │      │        ▼                    │
+│                    │      │              │      │   paho-mqtt harness         │
+│        the value   │      │ listener     │      │        │                    │
+│        stays here  │      ▼ bumps it     │      │        ▼                    │
+│                    │   eventfd           │      │   protobuf decode → log     │
+│                    │      │              │      │                             │
+│                    ▼      ▼              │      └─────────────────────────────┘
+│           MQTT thread (main.cpp)         │                    ▲
+│           poll(socket, eventfd)          │                    │
+│                       │                  │                    │
+│                       ▼ nanopb encode    │                    │
+│                 [26 opaque bytes]        │                    │
+│                       │                  │                    │
+│                       ▼ mqtt_publish()   │                    │
 │              TCP ▸ IP ▸ Ethernet         │                    │
-└──────────────────────┼───────────────────┘                    │
-                       └──── RJ45, 100 Mbit full-duplex ────────┘
+└───────────────────────┼──────────────────┘                    │
+                        └─── RJ45, 100 Mbit full-duplex ────────┘
                               192.168.10.2 → 192.168.10.1
 ```
 
+Note that the eventfd never leaves the chip — both it and the channel are in-process. The
+signal and the value travel **separately**: the eventfd says *something happened*, the
+channel holds *what it was*. That is why the MQTT thread has two inbound arrows.
+
 Two boundaries in that diagram are the actual learning goals:
 
-- **zbus → MQTT publisher.** The sensor thread never mentions MQTT; it publishes a struct
-  to an in-process channel. An observer picks it up and deals with transport. Sensing and
-  transport are decoupled *inside* the firmware, exactly as pub/sub decouples the node from
-  the host *outside* it. Same idea, two scales.
+- **sensor thread → MQTT thread.** The sensor thread never mentions MQTT; it publishes a
+  struct to an in-process channel and moves on. A zbus *listener* — which runs on the
+  sensor thread, so it does nothing but bump an eventfd — is what lets the MQTT thread
+  wait on the socket and the bus in a single `poll()`. Sensing and transport are decoupled
+  *inside* the firmware, exactly as pub/sub decouples the node from the host *outside* it.
+  Same idea, two scales; see [`zbus-guide.md`](zbus-guide.md).
 - **nanopb → MQTT.** MQTT carries opaque bytes. Protobuf decides what they mean. Both ends
   derive from the same `.proto`, which is why that file — not the firmware — is the
-  contract.
+  contract. See [`protobuf-guide.md`](protobuf-guide.md).
 
 ---
 

@@ -1,8 +1,9 @@
 # Zephyr build system — project reference
 
-Written 2026-07-06. A terse, project-specific map of *which input produces which generated
-file, consumed by what* — verified against a real `firmware/build/` for `nucleo_h753zi`
-(Zephyr v4.4.1). Line numbers drift on regeneration; the structure holds.
+A terse, project-specific map of *which input produces which generated file, consumed by
+what* — checked against a real `firmware/build/` for `nucleo_h753zi` (Zephyr v4.4.1).
+Line numbers into generated files drift whenever Kconfig gains or loses a symbol; the
+structure holds. Regenerate and re-grep rather than trusting a number that looks off.
 
 **For the concepts** (the mental model, why it's designed this way, how devicetree and
 Kconfig fit together) see the companion guide,
@@ -23,9 +24,14 @@ which uses the sibling `../ImpulseZephyr` repo as its reference.
 `firmware/CMakeLists.txt`:
 
 ```cmake
-find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})   # line 3 — the seam; must precede project()
+find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})   # the seam; must precede project()
 project(scd40_read)
-target_sources(app PRIVATE src/main.cpp)                # `app` target is created by Zephyr's kernel.cmake
+
+list(APPEND CMAKE_MODULE_PATH ${ZEPHYR_BASE}/modules/nanopb)
+include(nanopb)
+zephyr_nanopb_sources(app ${CMAKE_CURRENT_SOURCE_DIR}/../proto/node.proto)
+
+target_sources(app PRIVATE src/main.cpp src/sensor.cpp) # `app` target is created by Zephyr's kernel.cmake
 ```
 
 `find_package(Zephyr)` loads `share/zephyr-package/cmake/ZephyrConfig.cmake`, which prepends
@@ -100,9 +106,15 @@ All under `firmware/build/zephyr/` unless noted.
 | `zephyr.dts` | `gen_edt.py` (debug dump) | **humans** (debug: "did my overlay merge?") + `dtc` lint | `scd40@62` at line 669, back-refs `overlay:5` |
 | `include/generated/zephyr/devicetree_generated.h` | `gen_defines.py` ← `edt.pickle` | `#include <devicetree.h>` → all `DT_*` macros | `_scd40_62_BUS` at 25907; `_ADDRESS 0x62` at 25912 |
 | `build/Kconfig/Kconfig.dts` ⭐ | `gen_driver_kconfig_dts.py` ← bindings | Kconfig parser (as input) | declares `DT_HAS_SENSIRION_SCD40_ENABLED` |
-| `.config` | Kconfig ← `prj.conf`+defconfig+tree Kconfig+`Kconfig.dts` | **CMake** (which files to compile) | `CONFIG_SCD4X=y` at 1036; `CONFIG_DT_HAS_SENSIRION_SCD40_ENABLED=y` at 20 |
-| `include/generated/zephyr/autoconf.h` | Kconfig ← `.config` | **every `.c`** via `-imacros` | `#define CONFIG_SCD4X 1` at 328 |
+| `.config` | Kconfig ← `prj.conf`+defconfig+tree Kconfig+`Kconfig.dts` | **CMake** (which files to compile) | `CONFIG_SCD4X=y` at 1241; `CONFIG_DT_HAS_SENSIRION_SCD40_ENABLED=y` at 20 |
+| `include/generated/zephyr/autoconf.h` | Kconfig ← `.config` | **every `.c`** via `-imacros` | `#define CONFIG_SCD4X 1` at 421 |
 | `misc/generated/configs.c` | Kconfig | debugger symbol table | `GEN_ABSOLUTE_SYM_KCONFIG(CONFIG_DT_HAS_SENSIRION_SCD40_ENABLED, 1)` |
+| `../node.pb.c` / `../node.pb.h` | nanopb generator ← `proto/node.proto` + `node.options` | `#include <node.pb.h>` in both `.cpp` files | `#define node_Telemetry_size 36` |
+
+The last row is the one generator this *app* adds; everything above it is Zephyr's own.
+It follows the same rule as the rest — the input is `proto/node.proto`, the output lives in
+`build/` and is never checked in or hand-edited. Concepts in
+[`zephyr-build-system-guide.md`](../notes/zephyr-build-system-guide.md) §7.
 
 `autoconf.h` is force-included into every translation unit — confirmed in
 `firmware/build/compile_commands.json`: `-imacros …/autoconf.h`. That is why any `.c` can
@@ -112,7 +124,7 @@ test `#ifdef CONFIG_SCD4X` with no `#include`.
 
 | Stage | File : line | Content |
 |---|---|---|
-| input | `firmware/boards/nucleo_h753zi.overlay:4-7` | `scd40@62 { compatible="sensirion,scd40"; reg=<0x62>; status="okay" }` |
+| input | `firmware/boards/nucleo_h753zi.overlay:4-17` | `scd40@62 { compatible="sensirion,scd40"; reg=<0x62>; status="okay"; zephyr,deferred-init }` |
 | ↓ gen_edt | `build/zephyr/zephyr.dts:669` | node merged under `/soc/i2c@40005400`; recorded in `edt.pickle` |
 | ↓ gen_defines | `devicetree_generated.h:25907,25912` | `_BUS → i2c@40005400`, `_ADDRESS 0x62` |
 | ↓ gen_driver_kconfig | `build/Kconfig/Kconfig.dts` | declares `DT_HAS_SENSIRION_SCD40_ENABLED` (value from `edt.pickle`) |
@@ -122,9 +134,15 @@ test `#ifdef CONFIG_SCD4X` with no `#include`.
 | ↓ CMake | `scd4x/CMakeLists.txt` | compiles `scd4x.c` **because** `CONFIG_SCD4X` |
 | ↓ driver | `scd4x.c:902-903` | `DT_DRV_COMPAT sensirion_scd40` + `DT_INST_FOREACH_STATUS_OKAY` → 1 instance |
 | ↓ driver | `scd4x.c:894` | `.bus = I2C_DT_SPEC_INST_GET(0)` ← reads the `_BUS`/`_ADDRESS` macros above |
-| ↓ app | `firmware/src/main.cpp:25` | `DEVICE_DT_GET(DT_NODELABEL(scd40))` ← same node symbol |
-| ↓ runtime | `firmware/src/main.cpp:35` | `sensor_sample_fetch()` → I²C bytes on the wire |
+| ↓ app | `firmware/src/sensor.cpp` | `DEVICE_DT_GET(DT_NODELABEL(scd40))` ← same node symbol |
+| ↓ runtime | `firmware/src/sensor.cpp`, `read_scd40()` | `sensor_sample_fetch()` → I²C bytes on the wire |
 
 Everything above the `sample_fetch` row resolves **at compile time**; only the final I²C
 exchange is runtime. The command codes, timings, and CRC-8 params underneath
-`sensor_sample_fetch` are documented in `../../shared_refs/sensor/SCD4x.yaml`.
+`sensor_sample_fetch` are documented in `../../shared_refs/sensor/SCD4x.yaml`, and the
+sensor API itself in [`sensor-api-guide.md`](../notes/sensor-api-guide.md).
+
+One extra wrinkle this table does not show: the node carries `zephyr,deferred-init`, so
+the boot sweep skips it and `sensor.cpp` calls `device_init()` itself. That changes *when*
+the driver's init runs, not any of the compile-time resolution above — see
+[`sensor-bringup.md`](sensor-bringup.md).

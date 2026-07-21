@@ -22,28 +22,28 @@ To make the telemetry *real* (rather than a hard-coded counter), the node reads 
 ## Scope and status
 A Zephyr app on the Nucleo — written in **C++ (C++17)** to match how production firmware of this kind is written; see [`notes/language-cpp.md`](notes/language-cpp.md).
 
-**Implemented** (`firmware/src/main.cpp`, walked through in [`docs/firmware-mqtt-walkthrough.md`](docs/firmware-mqtt-walkthrough.md)):
+The app is split across **two threads**, and they meet on the zbus channels declared in [`firmware/src/app_channels.h`](firmware/src/app_channels.h): `sensor.cpp` owns the sensor, `main.cpp` owns the network. `main.cpp` is walked through line by line in [`docs/firmware-mqtt-walkthrough.md`](docs/firmware-mqtt-walkthrough.md).
+
 1. Brings up the network interface and connects as an **MQTT client** to the broker on the Pi. Reconnect is the shape of the program, not error handling bolted on: a forever loop of connect → serve until dropped → back off (1 s doubling to 30 s) → retry, so a cable pull or a downed broker is survivable.
-2. Reads the SCD-40 over I²C via Zephyr's **sensor API** (upstream `sensirion,scd40` driver): `SENSOR_CHAN_CO2`, `SENSOR_CHAN_AMBIENT_TEMP`, `SENSOR_CHAN_HUMIDITY`. A failed read still publishes, carrying `sensor_status = ERROR` rather than silently going quiet.
+2. Reads the SCD-40 over I²C via Zephyr's **sensor API** (upstream `sensirion,scd40` driver) on its own thread, at its own cadence: `SENSOR_CHAN_CO2`, `SENSOR_CHAN_AMBIENT_TEMP`, `SENSOR_CHAN_HUMIDITY`. A failed read still publishes, carrying `sensor_status = ERROR` rather than silently going quiet. Because sampling is decoupled from transport, a reconnect backoff never stops the sensor.
 3. **Publishes** those readings as **Protobuf `Telemetry`** (default every 5 s) and **subscribes** to the command topic, answering every `Command` with a **Protobuf `Ack`** — encoded/decoded with **nanopb**. `SetInterval` retunes the publish period at runtime (bounded to 1 s–300 s), `TriggerMeasurement` forces one, `GetDeviceInfo` returns firmware/board/client id. MQTT carries each message as one complete payload, so there is no app-level framing / stream reassembly.
 4. Announces liveness on a **retained `status` topic** — `online` on connect, `offline` published by the broker via the Last Will if the node drops without a clean DISCONNECT.
-5. Talks to a **host-side test harness** on the Raspberry Pi (Python, paho-mqtt) that decodes and logs the telemetry stream and can publish commands.
+5. Decouples the two halves internally with **zbus**: the sensor thread publishes readings to a channel and never mentions MQTT, while a listener signals the network thread through an eventfd so it can wait on the socket and the bus in one `poll()`. A channel validator owns the sample-period bounds, so the wire layer cannot drift from them.
+6. Talks to a **host-side test harness** on the Raspberry Pi (Python, paho-mqtt) that decodes and logs the telemetry stream and can publish commands.
 
-**Verification status.** All of the above is confirmed on the bench (2026-07-20): connect,
-reconnect with backoff, QoS 0 telemetry decoded by the host, QoS 1 commands with every
-branch exercised, an out-of-range `SetInterval` rejected rather than silently clamped, a
-redelivered command acknowledged but not re-executed, and a malformed payload answered
-with `MALFORMED` without desynchronising the MQTT stream. The node also ran ~14 hours
-unattended without a gap in the sequence counter.
+**Verifying it yourself.** Every claim above is exercised by a lab in the documentation rather
+than reported as a past result — see the *Exercising…* section of each guide in the table below.
+Between them they cover telemetry decode, all three commands, out-of-range rejection, duplicate
+suppression, a malformed payload that must not desynchronise the stream, a broker outage the
+sensor samples straight through, and the Last Will.
 
 **Still to do:**
-- **zbus** — the sensor read and the MQTT publish are still in one loop; the point is to split them across a zbus channel (see the learning goals below).
 - **Schema-versioning exercise** — add a field and deliberately run old↔new against each other.
 - *(Optional higher-fidelity pass: re-run the harness in C#/.NET on a Windows box to mirror a Windows-side desktop application.)*
 
 ## The things to actually learn (don't skip these)
 1. **MQTT client on Zephyr** — connect/keepalive, QoS levels, topic design (telemetry vs. command topics), and especially **reconnect handling** when the link drops. Uses Zephyr's `CONFIG_MQTT_LIB`. (MQTT frames and delimits messages itself, so the length-prefix / partial-read problem of raw TCP goes away — each payload arrives whole.)
-2. **zbus as the internal bus** — the sensor thread publishes readings to a **zbus channel**; a separate MQTT-publisher observer subscribes to that channel and marshals to nanopb → MQTT publish. Decouples sensing from transport, the way production firmware does.
+2. **zbus as the internal bus** — the sensor thread publishes readings to a **zbus channel**; the MQTT thread observes that channel and marshals to nanopb → MQTT publish. Decouples sensing from transport, the way production firmware does. The interesting parts are choosing an observer kind per channel (latest-wins for state, every-message for commands — the same argument as QoS 0 vs 1), and waiting on a channel and a socket in one call.
 3. **Schema versioning & backward-compat** — exercise adding a field and talking old↔new: field numbers, `optional`, unknown-field handling. This is the firmware↔SW-team contract in miniature.
 4. **nanopb on a constrained target** — `.proto` → generated C, `.options` files, fixed-size vs callback fields, no-malloc/static allocation.
 
@@ -66,7 +66,7 @@ Topics are `node/<id>/{telemetry,command,ack,status}` — telemetry at QoS 0, co
 - `host/` — host test harness on the Pi: a Python **paho-mqtt** monitor and command client that encode/decode Protobuf, plus `generate.sh` for the Python bindings.
 - `scripts/` — the build/flash/console wrappers. Use these rather than raw `west`; they source the workspace venv and pass the right source/build directories.
 - `docs/` — terse project references: decisions, rationale, and verified facts (e.g. `mqtt-design.md`).
-- `notes/` — from-first-principles teaching guides for the concepts behind those decisions (e.g. `communication-guide.md`), plus the phased roadmap.
+- `notes/` — from-first-principles teaching guides for the concepts behind those decisions (e.g. `communication-guide.md`), each ending in a lab you can run against the bench.
 
 ## Getting started
 
@@ -91,7 +91,7 @@ host/.venv/bin/python host/command.py trigger       # force a single measurement
 host/.venv/bin/python host/command.py interval 2000 # retune the publish period (ms)
 ```
 
-There is no test or lint tooling: verification is build → flash → observe, via the console, Zephyr's `net` shell commands, or the host harness.
+There is no test or lint tooling: verification is build → flash → observe, via the console, Zephyr's `net` shell commands, or the host harness. The labs at the end of each guide are the closest thing to a test suite — they say what to run and what the result should look like.
 
 ## Documentation
 Split by *kind*, not by topic: **`notes/`** holds from-first-principles teaching guides — general concepts, largely portable beyond this repo. **`docs/`** holds terse project references — decisions, verified facts, and what was actually built here. Most topics have one of each.
@@ -102,10 +102,13 @@ Split by *kind*, not by topic: **`notes/`** holds from-first-principles teaching
 | Zephyr build system | [`zephyr-build-system-guide.md`](notes/zephyr-build-system-guide.md) | [`build-system-overview.md`](docs/build-system-overview.md) |
 | Sensor API + shell | [`sensor-api-guide.md`](notes/sensor-api-guide.md) | [`sensor-bringup.md`](docs/sensor-bringup.md) |
 | Protobuf / nanopb | [`protobuf-guide.md`](notes/protobuf-guide.md) | [`proto/node.proto`](proto/node.proto) (decisions inline) |
+| zbus (the internal bus) | [`zbus-guide.md`](notes/zbus-guide.md) | [`firmware/src/app_channels.h`](firmware/src/app_channels.h) (decisions in the header comment) |
+
+The last two pair a guide with a **source file** rather than a `docs/` page, because in both cases the decisions belong next to the thing they constrain: the field-numbering and evolution rules live in the schema, and the observer-kind choice lives in the header both threads include.
 
 Guides without a reference half: [`language-cpp.md`](notes/language-cpp.md) — why C++17, and the C↔C++ boundary.
 
-References without a guide half: [`toolchain.md`](docs/toolchain.md) — workspace layout, build/flash workflow · [`out-of-tree-hardware-overview.md`](docs/out-of-tree-hardware-overview.md) — porting to a board Zephyr doesn't ship.
+References without a guide half: [`toolchain.md`](docs/toolchain.md) — both toolchains, build/flash workflow, and the host venv · [`out-of-tree-hardware-overview.md`](docs/out-of-tree-hardware-overview.md) — porting to a board Zephyr doesn't ship.
 
 Neither, and deliberately so: [`firmware-mqtt-walkthrough.md`](docs/firmware-mqtt-walkthrough.md) — a guided reading of `firmware/src/main.cpp` that connects the others. It teaches, but it tracks this repo's code, so it lives with the references and must stay in sync when the client changes.
 

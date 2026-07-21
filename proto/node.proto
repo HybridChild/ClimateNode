@@ -2,8 +2,13 @@
 //
 // THIS FILE IS THE SINGLE SOURCE OF TRUTH. Firmware and host both generate from
 // it; never hand-edit generated code. Firmware generates node.pb.c/.h at build
-// time (firmware/CMakeLists.txt); the host runs host/generate.sh. For how the
-// payload sits under MQTT, see notes/communication-guide.md.
+// time (firmware/CMakeLists.txt); the host runs host/generate.sh.
+//
+// This file is the decisions half of the Protobuf documentation: the rationale
+// lives inline in the comments below. For the concepts from first principles --
+// varints, wire types, why field numbers are permanent, what nanopb's .options
+// buys -- see notes/protobuf-guide.md. For how the payload sits under MQTT, see
+// notes/communication-guide.md.
 //
 // Field numbers 1-15 encode their tag in a single byte, 16+ take two. Telemetry
 // is the high-rate message, so its fields are kept inside that range.
