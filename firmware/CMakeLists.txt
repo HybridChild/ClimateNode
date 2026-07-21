@@ -15,4 +15,8 @@ include(nanopb)
 
 zephyr_nanopb_sources(app ${CMAKE_CURRENT_SOURCE_DIR}/../proto/node.proto)
 
-target_sources(app PRIVATE src/main.cpp)
+target_sources(app PRIVATE
+  src/main.cpp     # MQTT client: the network half
+  src/sensor.cpp   # SCD-40 thread: the sensor half; they meet on the zbus
+                   # channels declared in src/app_channels.h
+)

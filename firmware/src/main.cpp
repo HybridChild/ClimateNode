@@ -1,5 +1,11 @@
-/* MQTT client node: reads the Adafruit SCD-40 over I2C and publishes the readings
- * to a Mosquitto broker on the Raspberry Pi.
+/* MQTT client node: publishes SCD-40 readings to a Mosquitto broker on the
+ * Raspberry Pi, and answers commands from it.
+ *
+ * This file owns the *network* half only. The sensor lives in sensor.cpp and
+ * reaches us over the zbus channels declared in app_channels.h — see that
+ * header for why the two channels use different observer styles. The boundary
+ * where the internal `struct sensor_reading` becomes a wire-format
+ * `node_Telemetry` is encode_telemetry() below, and nowhere else.
  *
  * Implements the design in docs/mqtt-design.md:
  *
@@ -14,9 +20,6 @@
  * proto/node.proto at build time. `status` stays plain ASCII: the broker itself
  * writes it as the will, so firmware cannot encode it.
  *
- * Still to come: a zbus channel decoupling the sensor read from the publish, which
- * today share one loop.
- *
  * Structure: main() owns a forever loop of "connect, serve until dropped, back
  * off, retry". Reconnect is not error handling bolted on the side — it is the
  * shape of the program, because a node that cannot survive a cable pull is not
@@ -25,21 +28,23 @@
  * The interface itself needs no code: net_config applies the static IPv4 address
  * at boot from prj.conf.
  *
- * C++ app (see docs/language-cpp.md): the MQTT, sensor and socket APIs are C APIs
+ * C++ app (see notes/language-cpp.md): the MQTT, sensor and socket APIs are C APIs
  * called directly from C++. `main` is never name-mangled, so it needs no
  * extern "C"; the event callback is a plain static function used as a C function
  * pointer.
  */
 #include <zephyr/kernel.h>
-#include <zephyr/device.h>
-#include <zephyr/drivers/sensor.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/net/mqtt.h>
 #include <zephyr/net/socket.h>
+#include <zephyr/zbus/zbus.h>
+#include <zephyr/zvfs/eventfd.h>
 
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+
+#include "app_channels.h"
 
 /* Generated from proto/node.proto at build time into the build directory.
  * It is C, with extern "C" guards, so it includes cleanly here. */
@@ -66,7 +71,7 @@ constexpr const char *kTopicStatus = "node/1/status";
  * field changes do not touch it — protobuf handles those on its own. */
 constexpr uint32_t kSchemaVersion = 1;
 
-constexpr const char *kFirmwareVersion = "0.4.0";
+constexpr const char *kFirmwareVersion = "0.5.0";
 constexpr const char *kBoardName = CONFIG_BOARD;
 
 /* Keepalive bounds how long the broker waits before declaring us dead
@@ -75,14 +80,6 @@ constexpr const char *kBoardName = CONFIG_BOARD;
  * Lower it temporarily (e.g. 10 s) when testing the will by hand; see
  * "Testing the Last Will" in docs/mqtt-design.md. */
 constexpr uint16_t kKeepaliveSec = 60;
-
-/* Plain milliseconds rather than a k_timeout_t: this value is only ever used in
- * arithmetic against k_uptime_get(), never handed to a kernel API, and it is
- * now runtime-adjustable via the SetInterval command. The bounds keep a bad
- * command from either flooding the broker or stalling telemetry entirely. */
-constexpr uint32_t kSamplePeriodDefaultMs = 5000;
-constexpr uint32_t kSamplePeriodMinMs = 1000;
-constexpr uint32_t kSamplePeriodMaxMs = 300000;
 
 /* Reconnect backoff: start at 1 s, double up to 30 s, so a broker that is down
  * (or a cable left unplugged) is retried patiently instead of in a hot loop. */
@@ -100,14 +97,19 @@ struct sockaddr_in broker;
 volatile bool connected;
 volatile bool connect_failed;
 
-uint32_t sequence;
-
-/* Adjustable by SetInterval; survives reconnects deliberately, since the host's
- * last instruction should outlive a dropped TCP connection. */
-uint32_t sample_period_ms = kSamplePeriodDefaultMs;
-
-/* Set by TriggerMeasurement to force a publish on the next loop pass. */
-bool sample_now;
+/* How the sensor thread wakes this one.
+ *
+ * The serve loop must wait on two unrelated things at once: bytes from the
+ * broker, and a fresh reading from the bus. zsock_poll() only understands file
+ * descriptors, and a zbus channel is not one — so the zbus listener writes to an
+ * eventfd, which *is* a descriptor and can sit in the same poll set as the
+ * socket. That keeps the loop fully blocking: no timed wakeups just to check
+ * whether the bus has something.
+ *
+ * -1 until main() creates it. The sensor thread starts at boot and may publish
+ * before then; the listener checks, and a reading lost before the network is
+ * even up is of no consequence. */
+int telemetry_evt_fd = -1;
 
 /* QoS 1 is at-least-once, so a redelivered command must not be executed twice.
  * We ack duplicates (the broker needs the PUBACK) but skip the side effect. */
@@ -151,6 +153,32 @@ void send_ack(uint32_t seq, node_AckStatus status, const char *detail,
 	publish(kTopicAck, buf, stream.bytes_written, MQTT_QOS_1_AT_LEAST_ONCE, false);
 }
 
+/* Hand a command to the sensor thread over the bus and translate the result into
+ * an Ack status. Bounds checking is the channel validator's job (sensor.cpp), so
+ * this function only reports what the bus told it — the wire layer never gets a
+ * second, drifting copy of the sensor's rules. */
+node_AckStatus forward_to_sensor(const struct sensor_cmd &sc, char *detail, size_t detail_len)
+{
+	int rc = zbus_chan_pub(&chan_sensor_cmd, &sc, K_MSEC(100));
+
+	switch (rc) {
+	case 0:
+		return node_AckStatus_ACK_STATUS_OK;
+
+	case -ENOMSG:
+		/* The validator rejected it: the message never reached the
+		 * channel, so nothing was changed. */
+		snprintf(detail, detail_len, "interval %u outside [%u,%u]", sc.interval_ms,
+			 SAMPLE_PERIOD_MIN_MS, SAMPLE_PERIOD_MAX_MS);
+		return node_AckStatus_ACK_STATUS_INVALID_ARGUMENT;
+
+	default:
+		/* Channel busy, or the subscriber's queue is full. */
+		snprintf(detail, detail_len, "bus publish failed: %d", rc);
+		return node_AckStatus_ACK_STATUS_FAILED;
+	}
+}
+
 /* Execute a decoded command. Returns the status to report, and may fill
  * `detail` and `info` for the Ack. */
 node_AckStatus apply_command(const node_Command &cmd, char *detail, size_t detail_len,
@@ -158,22 +186,19 @@ node_AckStatus apply_command(const node_Command &cmd, char *detail, size_t detai
 {
 	switch (cmd.which_payload) {
 	case node_Command_set_interval_tag: {
-		uint32_t ms = cmd.payload.set_interval.interval_ms;
+		struct sensor_cmd sc = {};
 
-		if (ms < kSamplePeriodMinMs || ms > kSamplePeriodMaxMs) {
-			snprintf(detail, detail_len, "interval %u outside [%u,%u]", ms,
-				 kSamplePeriodMinMs, kSamplePeriodMaxMs);
-			return node_AckStatus_ACK_STATUS_INVALID_ARGUMENT;
-		}
-		sample_period_ms = ms;
-		LOG_INF("sample period set to %u ms", ms);
-		return node_AckStatus_ACK_STATUS_OK;
+		sc.kind = SENSOR_CMD_SET_INTERVAL;
+		sc.interval_ms = cmd.payload.set_interval.interval_ms;
+		return forward_to_sensor(sc, detail, detail_len);
 	}
 
-	case node_Command_trigger_measurement_tag:
-		sample_now = true;
-		LOG_INF("single-shot measurement requested");
-		return node_AckStatus_ACK_STATUS_OK;
+	case node_Command_trigger_measurement_tag: {
+		struct sensor_cmd sc = {};
+
+		sc.kind = SENSOR_CMD_TRIGGER;
+		return forward_to_sensor(sc, detail, detail_len);
+	}
 
 	case node_Command_get_device_info_tag:
 		*info = node_DeviceInfo_init_zero;
@@ -447,11 +472,30 @@ int wait_for_input(int timeout_ms)
 	return rc;
 }
 
-/* ---- sensor --------------------------------------------------------------- */
+/* ---- telemetry: from the bus to the wire ---------------------------------- */
 
-const struct device *scd40;
+/* zbus listener for chan_telemetry.
+ *
+ * Listener callbacks run **in the publisher's context** — this executes on the
+ * sensor thread, inside zbus_chan_pub(), with the channel locked. So it does the
+ * one thing that cannot block: bump the eventfd. The actual reading is left in
+ * the channel for the serve loop to pick up.
+ *
+ * That split is deliberate. The eventfd carries "something new happened"; the
+ * channel carries the value. Because a channel stores exactly one message, the
+ * serve loop always gets the *latest* reading, never a backlog of stale ones. */
+void on_telemetry(const struct zbus_channel *chan)
+{
+	ARG_UNUSED(chan);
 
-/* Encode the current reading as a node.Telemetry message.
+	if (telemetry_evt_fd >= 0) {
+		zvfs_eventfd_write(telemetry_evt_fd, 1);
+	}
+}
+
+/* The one place the internal representation becomes the wire format. Everything
+ * above this line speaks `struct sensor_reading`; everything below speaks
+ * node.Telemetry. A schema change stops here.
  *
  * A failed sensor read is still published, with sensor_status = ERROR and the
  * measurement fields left at zero. Silence would be ambiguous — the host cannot
@@ -459,33 +503,28 @@ const struct device *scd40;
  * the host can act on. This is why the status enum exists.
  *
  * Returns the encoded length, or 0 on encode failure. */
-size_t encode_telemetry(uint8_t *out, size_t out_len)
+size_t encode_telemetry(const struct sensor_reading &reading, uint8_t *out, size_t out_len)
 {
 	node_Telemetry msg = node_Telemetry_init_zero;
-	struct sensor_value co2, temp, hum;
 
 	msg.schema_version = kSchemaVersion;
-	msg.sequence = sequence;
-	msg.uptime_ms = static_cast<uint32_t>(k_uptime_get());
+	msg.sequence = reading.sequence;
+	msg.uptime_ms = reading.uptime_ms;
+	msg.co2_ppm = reading.co2_ppm;
+	msg.temperature_c = reading.temperature_c;
+	msg.humidity_rh = reading.humidity_rh;
 
-	int rc = sensor_sample_fetch(scd40);
-
-	if (rc != 0) {
-		LOG_ERR("sample_fetch failed: %d", rc);
+	switch (reading.status) {
+	case SENSOR_READING_OK:
+		msg.sensor_status = node_SensorStatus_SENSOR_STATUS_OK;
+		break;
+	case SENSOR_READING_WARMING_UP:
+		msg.sensor_status = node_SensorStatus_SENSOR_STATUS_WARMING_UP;
+		break;
+	case SENSOR_READING_ERROR:
+	default:
 		msg.sensor_status = node_SensorStatus_SENSOR_STATUS_ERROR;
-	} else {
-		sensor_channel_get(scd40, SENSOR_CHAN_CO2, &co2);
-		sensor_channel_get(scd40, SENSOR_CHAN_AMBIENT_TEMP, &temp);
-		sensor_channel_get(scd40, SENSOR_CHAN_HUMIDITY, &hum);
-
-		msg.co2_ppm = static_cast<uint32_t>(sensor_value_to_double(&co2));
-		msg.temperature_c = static_cast<float>(sensor_value_to_double(&temp));
-		msg.humidity_rh = static_cast<float>(sensor_value_to_double(&hum));
-
-		/* The SCD-40 reports 0 ppm until its first conversion completes. */
-		msg.sensor_status = (msg.co2_ppm == 0)
-					    ? node_SensorStatus_SENSOR_STATUS_WARMING_UP
-					    : node_SensorStatus_SENSOR_STATUS_OK;
+		break;
 	}
 
 	/* An output stream writing into a caller-supplied buffer. nanopb never
@@ -499,6 +538,45 @@ size_t encode_telemetry(uint8_t *out, size_t out_len)
 		return 0;
 	}
 	return stream.bytes_written;
+}
+
+/* Drain the eventfd, read the newest reading off the bus, encode it, publish it.
+ * Returns an mqtt_publish() result, or 0 if there was nothing to send. */
+int publish_pending_telemetry(void)
+{
+	zvfs_eventfd_t signalled = 0;
+
+	/* Non-blocking, and reading resets the counter to zero. Its value is the
+	 * number of readings taken since we last looked: more than one means the
+	 * channel overwrote some, which the host will see as a sequence gap. */
+	if (zvfs_eventfd_read(telemetry_evt_fd, &signalled) != 0) {
+		return 0;
+	}
+	if (signalled > 1) {
+		LOG_WRN("%llu readings coalesced into one publish",
+			static_cast<unsigned long long>(signalled - 1));
+	}
+
+	struct sensor_reading reading;
+	int rc = zbus_chan_read(&chan_telemetry, &reading, K_MSEC(50));
+
+	if (rc != 0) {
+		LOG_ERR("chan_telemetry read failed: %d", rc);
+		return 0;
+	}
+
+	uint8_t payload[node_Telemetry_size];
+	size_t len = encode_telemetry(reading, payload, sizeof(payload));
+
+	if (len == 0) {
+		return 0;
+	}
+
+	rc = publish(kTopicTelemetry, payload, len, MQTT_QOS_0_AT_MOST_ONCE, false);
+	if (rc == 0) {
+		LOG_INF("published telemetry seq=%u (%zu bytes)", reading.sequence, len);
+	}
+	return rc;
 }
 
 /* ---- the session ---------------------------------------------------------- */
@@ -542,17 +620,25 @@ bool run_session(void)
 	publish_text(kTopicStatus, "online", MQTT_QOS_1_AT_LEAST_ONCE, true);
 	subscribe_to_commands();
 
-	int64_t next_sample = k_uptime_get();
-
 	while (connected) {
-		/* Wake for whichever comes first: the next telemetry publish, or
-		 * the keepalive deadline. Sleeping past either would stall
-		 * publishing or let the broker time us out. */
-		int64_t until_sample = next_sample - k_uptime_get();
-		int keepalive_ms = mqtt_keepalive_time_left(&client);
-		int timeout = MIN(MAX(until_sample, 0), keepalive_ms);
+		/* Two descriptors, one wait. Before zbus this loop also owned the
+		 * sample clock, so the timeout had to be the minimum of "next
+		 * sample due" and "keepalive due". Now the sensor keeps its own
+		 * cadence and tells us via the eventfd, leaving exactly one
+		 * deadline here: the keepalive. */
+		struct zsock_pollfd fds[2] = {};
 
-		if (wait_for_input(timeout) > 0) {
+		fds[0].fd = client.transport.tcp.sock;
+		fds[0].events = ZSOCK_POLLIN;
+		fds[1].fd = telemetry_evt_fd;
+		fds[1].events = ZSOCK_POLLIN;
+
+		if (zsock_poll(fds, 2, mqtt_keepalive_time_left(&client)) < 0) {
+			LOG_ERR("poll: %d", errno);
+			break;
+		}
+
+		if (fds[0].revents & ZSOCK_POLLIN) {
 			rc = mqtt_input(&client);
 			if (rc != 0) {
 				LOG_ERR("mqtt_input: %d", rc);
@@ -567,24 +653,15 @@ bool run_session(void)
 			break;
 		}
 
-		if (sample_now || k_uptime_get() >= next_sample) {
-			uint8_t payload[node_Telemetry_size];
-			size_t len = encode_telemetry(payload, sizeof(payload));
-
-			sample_now = false;
-
-			if (len > 0) {
-				rc = publish(kTopicTelemetry, payload, len,
-					     MQTT_QOS_0_AT_MOST_ONCE, false);
-				if (rc != 0) {
-					LOG_ERR("publish: %d", rc);
-					break;
-				}
-				LOG_INF("published telemetry seq=%u (%zu bytes)",
-					sequence, len);
-				sequence++;
+		/* A command handled by mqtt_input() above may have triggered a
+		 * measurement; the sensor thread runs and signals the eventfd, so
+		 * the next pass picks it up. Nothing here needs to know that. */
+		if (fds[1].revents & ZSOCK_POLLIN) {
+			rc = publish_pending_telemetry();
+			if (rc != 0) {
+				LOG_ERR("publish: %d", rc);
+				break;
 			}
-			next_sample = k_uptime_get() + sample_period_ms;
 		}
 	}
 
@@ -596,15 +673,21 @@ bool run_session(void)
 
 }  // namespace
 
+/* At global scope: the observation records ZBUS_CHAN_DEFINE emits in sensor.cpp
+ * refer to this symbol by name. */
+ZBUS_LISTENER_DEFINE(telemetry_listener, on_telemetry);
+
 int main(void)
 {
-	scd40 = DEVICE_DT_GET(DT_NODELABEL(scd40));
+	/* Counter starts at 0 and never blocks a reader, so a poll on it is
+	 * simply "has the sensor thread published since I last looked". */
+	telemetry_evt_fd = zvfs_eventfd(0, ZVFS_EFD_NONBLOCK);
 
-	if (!device_is_ready(scd40)) {
-		LOG_ERR("SCD-40 not ready");
+	if (telemetry_evt_fd < 0) {
+		LOG_ERR("eventfd: %d", errno);
 		return 0;
 	}
-	LOG_INF("SCD-40 online; broker %s:%u", kBrokerAddr, kBrokerPort);
+	LOG_INF("broker %s:%u", kBrokerAddr, kBrokerPort);
 
 	int backoff = kBackoffMinMs;
 
