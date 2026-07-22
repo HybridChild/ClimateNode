@@ -171,16 +171,31 @@ void sensor_thread(void *, void *, void *)
 				break; /* timed out: the period elapsed */
 			}
 
-			if (cmd.kind == SENSOR_CMD_TRIGGER) {
+			/* Exhaustive on purpose: with no `default`, a new command
+			 * kind is a -Wswitch warning here rather than something
+			 * that silently lands in the set-interval path. The flag
+			 * is needed because a `break` inside the switch would
+			 * leave the switch, not this wait loop. */
+			bool sample_now = false;
+
+			switch (cmd.kind) {
+			case SENSOR_CMD_TRIGGER:
 				LOG_INF("out-of-cadence measurement requested");
+				sample_now = true;
+				break;
+			case SENSOR_CMD_SET_INTERVAL:
+				/* Validated on publish, so it is in range by
+				 * construction. The loop recomputes `left` from the
+				 * new period, which is what makes a shortened
+				 * interval take effect at once. */
+				period_ms = cmd.interval_ms;
+				LOG_INF("sample period set to %u ms", period_ms);
 				break;
 			}
 
-			/* Validated on publish, so it is in range by construction.
-			 * The loop recomputes `left` from the new period, which is
-			 * what makes a shortened interval take effect at once. */
-			period_ms = cmd.interval_ms;
-			LOG_INF("sample period set to %u ms", period_ms);
+			if (sample_now) {
+				break;
+			}
 		}
 	}
 }
@@ -191,18 +206,80 @@ void sensor_thread(void *, void *, void *)
  * these same symbols, and an anonymous namespace would give them a different
  * linkage than the declaration. */
 
+/* The command channel's observer. The single argument is just the symbol name;
+ * it expands to a k_fifo, the observer struct, and an enabled flag (this form
+ * defaults to enabled — ZBUS_MSG_SUBSCRIBER_DEFINE_WITH_ENABLE takes it
+ * explicitly).
+ *
+ * A message subscriber is handed its own *copy* of every message, which is what
+ * lets zbus_sub_wait_msg() above return a command that arrived while this thread
+ * was busy sampling. Those copies come from a fixed net_buf pool sized in
+ * prj.conf (CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_POOL_SIZE and _STATIC_DATA_SIZE),
+ * not the heap — same no-allocator policy as nanopb. */
 ZBUS_MSG_SUBSCRIBER_DEFINE(sensor_cmd_sub);
 
+/* Sensor -> MQTT. ZBUS_CHAN_DEFINE takes six arguments, in order:
+ *
+ *   1 name       the symbol. ZBUS_CHAN_DECLARE in app_channels.h declares this
+ *                same one, which is why the definition is at global scope.
+ *   2 type       the message type. The channel stores exactly one instance,
+ *                statically: publishing *copies* into it, so there is no queue
+ *                and no allocation, and an undelivered reading is overwritten
+ *                rather than backing up. Latest wins, deliberately.
+ *   3 validator  bool (*)(const void *msg, size_t msg_size), called inside
+ *                zbus_chan_pub() before the message is stored.
+ *   4 user data  a void * carried on the channel; zbus never reads it. It is
+ *                for observers shared between channels that need to tell which
+ *                one they were invoked for.
+ *   5 observers  who is notified, in the order listed — that order *is* the
+ *                notification priority.
+ *   6 init val   the channel's contents before anything is published.
+ */
 ZBUS_CHAN_DEFINE(chan_telemetry, struct sensor_reading,
-		 nullptr,                            /* no validator: any reading is legal */
-		 nullptr,                            /* user data */
+		 nullptr,                            /* no validator: every reading is legal,
+						      * including an ERROR one — that is a fact
+						      * to report, not a value to reject */
+		 nullptr,                            /* no user data */
 		 ZBUS_OBSERVERS(telemetry_listener), /* defined in main.cpp */
-		 ZBUS_MSG_INIT(0));
+		 ZBUS_MSG_INIT(0));                  /* zeroed; the first sample overwrites it */
 
+/* MQTT -> sensor. Same six arguments; the two that differ carry the weight:
+ *
+ *   validator  sensor_cmd_valid — the reason the period bounds cannot be
+ *              bypassed. zbus_chan_pub() returns -ENOMSG and stores nothing
+ *              when it returns false, so commands.cpp never re-checks them.
+ *   observers  sensor_cmd_sub, the message subscriber above, so two commands
+ *              arriving back to back are both delivered rather than collapsed.
+ *
+ * ZBUS_MSG_INIT's own arguments are ordinary positional initialisers for the
+ * message struct — {.kind, .interval_ms} here — not a zbus concept. This value
+ * is only ever the channel's *initial contents*: defining a channel notifies
+ * nobody, so the sensor thread never receives it. It matches the period the
+ * thread starts from on purpose, so a reader of either one is not misled about
+ * the other. */
 ZBUS_CHAN_DEFINE(chan_sensor_cmd, struct sensor_cmd, sensor_cmd_valid, nullptr,
 		 ZBUS_OBSERVERS(sensor_cmd_sub),
-		 /* Never delivered — just the channel's initial contents. */
 		 ZBUS_MSG_INIT(SENSOR_CMD_SET_INTERVAL, SAMPLE_PERIOD_DEFAULT_MS));
 
+/* Starts the sensor thread during kernel boot. K_THREAD_DEFINE's nine
+ * arguments, in order:
+ *
+ *   sensor_tid        the thread id symbol (a k_tid_t), for later k_thread_*
+ *                     calls. Nothing needs it here; the thread runs untouched.
+ *   kSensorStackSize  stack size in bytes, reserved statically.
+ *   sensor_thread     the entry function.
+ *   NULL, NULL, NULL  its three void * parameters, unused — this thread takes
+ *                     all of its input from the channels instead.
+ *   kSensorPriority   a preemptible priority (>= 0), lower than main's by
+ *                     design; see kSensorPriority for why.
+ *   0                 thread options — K_ESSENTIAL, K_FP_REGS and friends.
+ *                     None apply: this thread does no floating-point work in
+ *                     an ISR, and its death should not panic the kernel.
+ *   0                 start delay in ms. Zero means the kernel starts it during
+ *                     boot; K_FOREVER would leave it suspended for an explicit
+ *                     k_thread_start(). The SCD-40's power-up wait is *inside*
+ *                     the thread (kSensorPowerUpMs) rather than expressed here,
+ *                     so it delays only this thread and not the boot sweep.
+ */
 K_THREAD_DEFINE(sensor_tid, kSensorStackSize, sensor_thread, NULL, NULL, NULL,
 		kSensorPriority, 0, 0);
