@@ -31,7 +31,17 @@ CompileFlags:
 # build compiler, folds it silently and Zephyr never passes -Wvla. Suppressing
 # it here removes an IDE-only diagnostic; the alternative, CONFIG_LOG_USE_VLA=n,
 # would change the firmware's stack usage to fix an editor squiggle.
+#
+# -Wsection ("section attribute is specified on redeclared variable") fires on
+# every ZBUS_*_DEFINE whose symbol was forward-declared with ZBUS_CHAN_DECLARE
+# or ZBUS_OBS_DECLARE. The declaration is a plain `extern const struct ...`; the
+# definition adds __in_section(...), so clang sees the attribute appear on a
+# redeclaration. That split is zbus's intended API — it is how one TU defines a
+# channel that others reference — and nothing relies on the section being known
+# at the declaration, since the linker script is what gathers the symbols. GCC,
+# the build compiler, does not warn.
 Diagnostics:
   Suppress:
     - vla-cxx-extension
     - vla-extension
+    - section

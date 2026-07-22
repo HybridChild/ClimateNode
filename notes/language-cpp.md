@@ -345,6 +345,11 @@ sections above compressed to one line each; the rest appear nowhere else in this
   (`-mfp16-format=ieee`, `-fno-reorder-functions`) and Zephyr macros (`K_SECONDS`) it can't
   parse, and flags them red — while the GCC build is clean. **The GCC build is the source of
   truth.** A `.clangd` file that removes the offending flags silences the noise.
+- **`-Wsection` on every `ZBUS_*_DEFINE` is a C++-only artefact.** zbus's `_ZBUS_CPP_EXTERN`
+  expands to `extern` under `__cplusplus` and to nothing in C, so in C++ the definition is a
+  *re*declaration of the `ZBUS_CHAN_DECLARE`/`ZBUS_OBS_DECLARE` extern — and it is the one
+  carrying the section attribute. clang warns; GCC doesn't. The split is zbus's intended API
+  (§6), nothing reads the section from the declaration side, so `.clangd` suppresses it.
 - **A link error naming a symbol you can see defined** is almost always linkage, not a
   missing file: check whether the definition drifted into an anonymous namespace (§6).
 - **Link errors are where mangling becomes visible.** An undefined symbol reported as
