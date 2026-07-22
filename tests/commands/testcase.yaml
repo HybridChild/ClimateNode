@@ -1,0 +1,12 @@
+# Command-semantics unit tests: dispatch, validator rejection, duplicate
+# suppression. No hardware -- the sensor thread is absent entirely, and the
+# channel it would normally own is supplied by the test.
+common:
+  tags:
+    - unit
+    - commands
+tests:
+  node.commands:
+    platform_allow:
+      - qemu_cortex_m3
+      - native_sim

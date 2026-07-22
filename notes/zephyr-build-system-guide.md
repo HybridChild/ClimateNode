@@ -378,7 +378,7 @@ include(nanopb)
 
 zephyr_nanopb_sources(app ${CMAKE_CURRENT_SOURCE_DIR}/../proto/node.proto)
 
-target_sources(app PRIVATE src/main.cpp src/sensor.cpp)
+target_sources(app PRIVATE src/main.cpp src/sensor.cpp src/protocol.cpp src/commands.cpp)
 ```
 
 `zephyr_nanopb_sources()` registers a *build rule*: run the generator on `node.proto`, put
@@ -451,9 +451,9 @@ are the same shape — which is the point of the module system:
    app sources beside it are C++, because that is the language it was written in:
 
    ```
-   [18/333] Building C object CMakeFiles/app.dir/node.pb.c.obj
-   [29/333] Building CXX object CMakeFiles/app.dir/src/sensor.cpp.obj
-   [50/333] Building CXX object CMakeFiles/app.dir/src/main.cpp.obj
+   [16/335] Building C object CMakeFiles/app.dir/node.pb.c.obj
+   [26/335] Building CXX object CMakeFiles/app.dir/src/protocol.cpp.obj
+   [30/335] Building CXX object CMakeFiles/app.dir/src/sensor.cpp.obj
    ```
 
 5. **Your code includes the generated header** — `#include <node.pb.h>` resolves because
@@ -561,17 +561,20 @@ touch proto/node.proto
 ```
 
 ```
-[1/9] Running C++ protocol buffer compiler using nanopb plugin on .../proto/node.proto
-[2/9] Building C object CMakeFiles/app.dir/node.pb.c.obj
-[3/9] Building CXX object CMakeFiles/app.dir/src/main.cpp.obj
-[4/9] Linking CXX static library app/libapp.a
+[1/11] Running C++ protocol buffer compiler using nanopb plugin on .../proto/node.proto
+[2/11] Building C object CMakeFiles/app.dir/node.pb.c.obj
+[3/11] Building CXX object CMakeFiles/app.dir/src/commands.cpp.obj
+[4/11] Building CXX object CMakeFiles/app.dir/src/protocol.cpp.obj
+[5/11] Building CXX object CMakeFiles/app.dir/src/main.cpp.obj
+[6/11] Linking CXX static library app/libapp.a
 ...
-[9/9] Linking CXX executable zephyr/zephyr.elf
+[11/11] Linking CXX executable zephyr/zephyr.elf
 ```
 
-Nine steps out of the 333 a pristine build runs. Note carefully what is **absent**:
-CMake never re-ran (no configuration changed), and `sensor.cpp` was not rebuilt — only
-`main.cpp` includes `node.pb.h`, so only `main.cpp` depends on the generated header.
+Eleven steps out of the 335 a pristine build runs. Note carefully what is **absent**:
+CMake never re-ran (no configuration changed), and `sensor.cpp` was not rebuilt — it is the
+only application source that never sees `node.pb.h`, because acquisition has no business
+knowing the wire format.
 
 **Proves:** the generator is an ordinary build rule with ordinary dependency tracking, and
 the schema genuinely cannot go stale — the only way to get `node.pb.c` is to run the
@@ -591,8 +594,8 @@ echo 'CONFIG_ASSERT=y' >> firmware/prj.conf
 ```
 
 The build re-runs CMake and Kconfig, regenerates `.config` and `autoconf.h`, and then
-rebuilds essentially the entire tree — **325 steps**, against nine in Exercise 3. Remove
-the line and rebuild to restore.
+rebuilds essentially the entire tree — **hundreds of steps**, against eleven in Exercise 3.
+Remove the line and rebuild to restore.
 
 The reason is §5.3's second route: `autoconf.h` is force-included into *every* translation
 unit via `-imacros`, so changing one symbol invalidates all of them. Pick your symbol

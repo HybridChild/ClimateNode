@@ -1,6 +1,6 @@
 # The guides
 
-Six teaching documents, each building one concept from first principles and using this
+Seven teaching documents, each building one concept from first principles and using this
 repo — a CO₂ node on a Nucleo-H753ZI talking to a Raspberry Pi — as the running example.
 They are meant to be readable by someone who has never seen this project.
 
@@ -10,15 +10,15 @@ the other, and the pairing is listed in the table below.
 
 ## Where to start
 
-There is no need to read all six, and reading them in file order is the wrong order. The
+There is no need to read all seven, and reading them in file order is the wrong order. The
 dependencies are real but shallow:
 
 ```
 zephyr-build-system-guide  ─┬─▶  sensor-api-guide  ─┐
    devicetree, Kconfig      │      the SCD-40       │
-                            │                       ├─▶  zbus-guide
-                            └─▶  language-cpp       │     the internal bus
-                                  orthogonal        │
+                            │                       ├─▶  zbus-guide  ──▶  testing-guide
+                            └─▶  language-cpp       │     the internal      no hardware
+                                  orthogonal        │     bus               required
                                                     │
         communication-guide  ──▶  protobuf-guide  ──┘
           MQTT, the broker         the wire format
@@ -35,9 +35,15 @@ is not on the wire, so the *topic* asserts it) needs MQTT topics to already mean
 
 **If you are chasing a bug**, go straight to the lab at the end of the relevant guide.
 Each is a numbered set of exercises with expected output and a **Proves:** line, and
-`sensor-api-guide.md` §11 Exercise 1 in particular is written as a pipeline bisect.
+`sensor-api-guide.md` §11 Exercise 1 in particular is written as a pipeline bisect. If the
+suspect is the wire format or command handling, `./scripts/test.sh` answers in eighteen
+seconds without unplugging anything.
 
-## The six
+**`testing-guide.md` is last for a reason**, not least. It is the only one that argues
+about how the *firmware itself* should be arranged, and that argument is easier to follow
+once you have seen what the pieces do.
+
+## The seven
 
 | Guide | Answers | Assumes you know | Reference half |
 |---|---|---|---|
@@ -46,9 +52,10 @@ Each is a numbered set of exercises with expected output and a **Proves:** line,
 | [`zbus-guide.md`](zbus-guide.md) | What is an in-process message bus, and why does a two-thread firmware want one? | threads and blocking calls; `poll()` and mutexes are explained in §1–§2 | [`app_channels.h`](../firmware/src/app_channels.h) header comment |
 | [`communication-guide.md`](communication-guide.md) | How does one reading get from the sensor to the host PC, and why a broker? | TCP/IP exists; no MQTT knowledge needed | [`mqtt-design.md`](../docs/mqtt-design.md) |
 | [`protobuf-guide.md`](protobuf-guide.md) | How does a reading become bytes, and what does a schema actually buy? | binary/hex, and MQTT topics (the guide above) | [`node.proto`](../proto/node.proto), decisions inline |
-| [`language-cpp.md`](language-cpp.md) | What actually changes when a Zephyr app is C++? | C++ basics; the freestanding/boundary consequences are the subject | *(none — the two source files are the reference)* |
+| [`language-cpp.md`](language-cpp.md) | What actually changes when a Zephyr app is C++? | C++ basics; the freestanding/boundary consequences are the subject | *(none — the source files are the reference)* |
+| [`testing-guide.md`](testing-guide.md) | How do you test firmware on a machine that is not the target — and what has to be true of the code first? | roughly what a unit test is; the rest is built up | [`test-strategy.md`](../docs/test-strategy.md) |
 
-Two of the six pair with a **source file** rather than a `docs/` page, because in those
+Two of the seven pair with a **source file** rather than a `docs/` page, because in those
 cases the decisions belong next to the thing they constrain: the field-numbering rules live
 in the schema, and the observer-kind choice lives in the header both threads include.
 

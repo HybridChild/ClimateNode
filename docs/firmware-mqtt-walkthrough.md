@@ -8,11 +8,25 @@ this code implements (which topic, which QoS, and why) see
 [`protobuf-guide.md`](../notes/protobuf-guide.md). For channels, observers and why the
 sensor is a separate thread, see [`zbus-guide.md`](../notes/zbus-guide.md).
 
-`main.cpp` owns the network half only. The sensor lives in `sensor.cpp` and the two meet
-on the zbus channels in `app_channels.h` — §11 reads that boundary. Together they touch
-every layer of the stack: Zephyr's device model, its socket API, the MQTT library, the
-sensor API, and an in-process message bus. Read them as a stack of ideas, not top to
-bottom.
+`main.cpp` owns the **MQTT session** and nothing else. The application is four translation
+units, each with one job:
+
+| File | Owns |
+|---|---|
+| `sensor.cpp` | acquisition: the SCD-40, the sample period, the bounds |
+| `protocol.cpp` | the wire format: internal types ↔ protobuf |
+| `commands.cpp` | command semantics: dispatch, duplicate suppression, node identity |
+| **`main.cpp`** | **this walkthrough: connect, poll, publish, reconnect** |
+
+So when this file decodes a command it calls `decode_command()` (protocol) and then
+`handle_command()` (commands), and does not itself know what a `SetInterval` means. That
+separation is what lets the middle two be tested without hardware — see
+[`test-strategy.md`](test-strategy.md).
+
+`sensor.cpp` and `main.cpp` meet on the zbus channels in `app_channels.h` — §11 reads that
+boundary. Together the four touch every layer of the stack: Zephyr's device model, its
+socket API, the MQTT library, the sensor API, and an in-process message bus. Read them as a
+stack of ideas, not top to bottom.
 
 ---
 
@@ -527,8 +541,9 @@ non-static member function and therefore has ordinary C calling convention.
 
 ## 11. The seam between the two threads
 
-Everything above concerns one file. This section reads the join. For channels and
-observers from first principles, see [`zbus-guide.md`](../notes/zbus-guide.md).
+Everything above concerns the MQTT thread. This section reads the join to the other one.
+For channels and observers from first principles, see
+[`zbus-guide.md`](../notes/zbus-guide.md).
 
 ### Going out: a reading becomes a publish
 
@@ -584,8 +599,7 @@ both back is Exercise 1 in [`zbus-guide.md`](../notes/zbus-guide.md) §10.
 
 ### Coming back: a command becomes a bus message
 
-`apply_command()` no longer changes anything itself. It fills a `struct sensor_cmd` and
-hands it over:
+`forward_to_sensor()`, in `commands.cpp`, fills a `struct sensor_cmd` and hands it over:
 
 ```cpp
 int rc = zbus_chan_pub(&chan_sensor_cmd, &sc, K_MSEC(100));
@@ -602,9 +616,10 @@ case -ENOMSG:
     return node_AckStatus_ACK_STATUS_INVALID_ARGUMENT;
 ```
 
-Note where the bounds are *not*. `main.cpp` never range-checks the interval; it only
-reports what the bus told it. The rule lives in `sensor.cpp`, next to the thread that
-actually obeys it, so the wire layer cannot drift from it — and neither could a second
+Note where the bounds are *not*. Neither `main.cpp` nor `commands.cpp` range-checks the
+interval; both only report what the bus told them. The rule is `sensor_cmd_in_range()` in
+`app_channels.h`, stated next to the bounds it compares against, with `sensor_cmd_valid()`
+in `sensor.cpp` as the zbus adapter around it — so the wire layer cannot drift from it — and neither could a second
 publisher, say a shell command, if one were added. `interval 100` comes back
 `ACK_STATUS_INVALID_ARGUMENT` with `detail: interval 100 outside [1000,300000]`; see
 Exercise 2 in [`zbus-guide.md`](../notes/zbus-guide.md) §10 to watch the period stay
@@ -620,9 +635,10 @@ no next one coming, so none may be dropped — the QoS 1 argument, applied inter
   only. A real deployment uses `MQTT_TRANSPORT_SECURE` plus a credential set.
 - **No persistence.** The sample period survives reconnects but not reboots; a
   `SetInterval` is lost on power cycle. Zephyr's settings subsystem is the usual answer.
-- **Single-slot command dedupe.** `last_command_sequence` remembers only the most recent
-  command, so back-to-back duplicates are caught but an interleaved `A, B, A` is not. A
-  deliberate simplification for a node with one command source.
+- **Single-slot command dedupe.** `last_command_sequence`, in `commands.cpp`, remembers
+  only the most recent command, so back-to-back duplicates are caught but an interleaved
+  `A, B, A` is not. A deliberate simplification for a node with one command source, and one
+  the tests pin in both directions (`tests/commands/`).
 - **No backpressure from the bus.** The sensor thread publishes regardless of whether the
   MQTT thread is keeping up, and never learns that a reading was discarded — only the
   reader sees the coalesce count. Fine for latest-wins telemetry; wrong for anything that

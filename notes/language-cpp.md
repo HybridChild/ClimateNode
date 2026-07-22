@@ -5,9 +5,8 @@ instead of C.*
 
 This is a teaching document, not project documentation. It explains the concepts, the
 machinery, and the sharp edges of writing a Zephyr application in C++, in the order that
-makes them easiest to learn. It uses this repository — a CO₂ sensor node built from two
-C++ translation units, `sensor.cpp` and `main.cpp` — only as a running example to keep the
-ideas concrete. For how the build system underneath works at all, see its companion,
+makes them easiest to learn. It uses this repository — a CO₂ sensor node built from four
+C++ translation units — only as a running example to keep the ideas concrete. For how the build system underneath works at all, see its companion,
 [`zephyr-build-system-guide.md`](zephyr-build-system-guide.md).
 
 **The shape of this document:**
@@ -69,23 +68,25 @@ On the CMake side there is nothing special. Give your sources a `.cpp` extension
 the same way you would a `.c` file, and Zephyr compiles them with `g++`:
 
 ```cmake
-target_sources(app PRIVATE src/main.cpp src/sensor.cpp)
+target_sources(app PRIVATE src/main.cpp src/sensor.cpp src/protocol.cpp src/commands.cpp)
 ```
 
 In the build log you will see the payoff. These are the C++-relevant lines out of a
-333-step pristine build of this app:
+335-step pristine build of this app:
 
 ```
-[16/333] Building CXX object zephyr/CMakeFiles/zephyr.dir/lib/cpp/minimal/cpp_vtable.cpp.obj
-[18/333] Building C   object CMakeFiles/app.dir/node.pb.c.obj
-[19/333] Building CXX object zephyr/CMakeFiles/zephyr.dir/lib/cpp/minimal/cpp_new.cpp.obj
-[29/333] Building CXX object CMakeFiles/app.dir/src/sensor.cpp.obj
-[50/333] Building CXX object CMakeFiles/app.dir/src/main.cpp.obj
-[283/333] Linking CXX static library app/libapp.a
-[333/333] Linking CXX executable zephyr/zephyr.elf
+[16/335] Building C   object CMakeFiles/app.dir/node.pb.c.obj
+[17/335] Building CXX object zephyr/CMakeFiles/zephyr.dir/lib/cpp/minimal/cpp_vtable.cpp.obj
+[20/335] Building CXX object zephyr/CMakeFiles/zephyr.dir/lib/cpp/minimal/cpp_new.cpp.obj
+[26/335] Building CXX object CMakeFiles/app.dir/src/protocol.cpp.obj
+[27/335] Building CXX object CMakeFiles/app.dir/src/commands.cpp.obj
+[30/335] Building CXX object CMakeFiles/app.dir/src/sensor.cpp.obj
+[45/335] Building CXX object CMakeFiles/app.dir/src/main.cpp.obj
+[282/335] Linking CXX static library app/libapp.a
+[335/335] Linking CXX executable zephyr/zephyr.elf
 ```
 
-Seven lines out of 333 — the other 326 are C. Three details in there are the whole of this
+Nine lines out of 335 — the other 326 are C. Three details in there are the whole of this
 document in miniature:
 
 - **`lib/cpp/minimal/…`** is Zephyr's C++ runtime compiling itself into your image. Two
@@ -93,7 +94,7 @@ document in miniature:
   and §3 is about what it does and does not contain.
 - **`node.pb.c` is built as a C object inside the app target.** Generated nanopb code is C
   and stays C, sitting in the same target as two C++ files. §10 returns to this.
-- **Only your two sources are CXX.** C++ here is an application language grafted onto a C
+- **Only your own sources are CXX.** C++ here is an application language grafted onto a C
   system, which is §1's founding claim, visible in the build log.
 
 Because `CONFIG_CPP` is a Kconfig change, it ripples through generated configuration — do a
@@ -373,8 +374,8 @@ Each says what to revert; revert it before moving on.
 ./scripts/build.sh -p 2>&1 | grep -E 'CXX|cpp/minimal|node\.pb\.c'
 ```
 
-You get the seven lines quoted in §2 and no more. Count them against the 333 total, then
-look at *which* files they are: two from `zephyr/lib/cpp/minimal`, two of your own, and one
+You get the nine lines quoted in §2 and no more. Count them against the 335 total, then
+look at *which* files they are: two from `zephyr/lib/cpp/minimal`, four of your own, and one
 C object — `node.pb.c` — compiled as C inside the same `app` target as the C++ files.
 
 **Proves:** the runtime you depend on is two translation units, your code is the only C++

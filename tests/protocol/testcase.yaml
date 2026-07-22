@@ -1,0 +1,18 @@
+# Wire-format unit tests. No hardware, no network, no sensor.
+#
+# qemu_cortex_m3 is the platform that matters on this bench: native_sim is
+# Linux-only and development happens on macOS. It is listed anyway so a Linux CI
+# runner can use it, where it is considerably faster than emulation.
+#
+# The M3 has no FPU, so the float fields go through soft-float here and through
+# hardware float on the STM32H7. IEEE-754 makes that distinction invisible to
+# the encoded bytes, which is why the same assertions hold on both.
+common:
+  tags:
+    - unit
+    - protocol
+tests:
+  node.protocol:
+    platform_allow:
+      - qemu_cortex_m3
+      - native_sim

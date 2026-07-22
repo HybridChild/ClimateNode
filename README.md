@@ -22,7 +22,7 @@ To make the telemetry *real* (rather than a hard-coded counter), the node reads 
 ## Scope and status
 A Zephyr app on the Nucleo — written in **C++ (C++17)** to match how production firmware of this kind is written; see [`notes/language-cpp.md`](notes/language-cpp.md).
 
-The app is split across **two threads**, and they meet on the zbus channels declared in [`firmware/src/app_channels.h`](firmware/src/app_channels.h): `sensor.cpp` owns the sensor, `main.cpp` owns the network. `main.cpp` is walked through line by line in [`docs/firmware-mqtt-walkthrough.md`](docs/firmware-mqtt-walkthrough.md).
+The app runs **two threads** across **four translation units**, one responsibility each: `sensor.cpp` (acquisition), `protocol.cpp` (the wire format), `commands.cpp` (command semantics) and `main.cpp` (the MQTT session). The two threads meet on the zbus channels declared in [`firmware/src/app_channels.h`](firmware/src/app_channels.h). `main.cpp` is walked through line by line in [`docs/firmware-mqtt-walkthrough.md`](docs/firmware-mqtt-walkthrough.md); the middle two have no hardware dependency, which is what lets [`tests/`](tests/) exercise them on a laptop.
 
 1. Brings up the network interface and connects as an **MQTT client** to the broker on the Pi. Reconnect is the shape of the program, not error handling bolted on: a forever loop of connect → serve until dropped → back off (1 s doubling to 30 s) → retry, so a cable pull or a downed broker is survivable.
 2. Reads the SCD-40 over I²C via Zephyr's **sensor API** (upstream `sensirion,scd40` driver) on its own thread, at its own cadence: `SENSOR_CHAN_CO2`, `SENSOR_CHAN_AMBIENT_TEMP`, `SENSOR_CHAN_HUMIDITY`. A failed read still publishes, carrying `sensor_status = ERROR` rather than silently going quiet. Because sampling is decoupled from transport, a reconnect backoff never stops the sensor.
@@ -91,7 +91,7 @@ host/.venv/bin/python host/command.py trigger       # force a single measurement
 host/.venv/bin/python host/command.py interval 2000 # retune the publish period (ms)
 ```
 
-There is no test or lint tooling: verification is build → flash → observe, via the console, Zephyr's `net` shell commands, or the host harness. The labs at the end of each guide are the closest thing to a test suite — they say what to run and what the result should look like.
+`./scripts/test.sh` runs 21 host-side unit tests in about 18 seconds with no hardware attached — the wire format and command handling, on `qemu_cortex_m3`. Everything below the socket still needs the bench: verification there is build → flash → observe, via the console, Zephyr's `net` shell commands, or the host harness, and the labs at the end of each guide say what to run and what the result should look like. There is no lint tooling.
 
 ## Documentation
 Split by *kind*, not by topic: **`notes/`** holds from-first-principles teaching guides — general concepts, largely portable beyond this repo. **`docs/`** holds terse project references — decisions, verified facts, and what was actually built here. Most topics have one of each.
@@ -105,6 +105,7 @@ Split by *kind*, not by topic: **`notes/`** holds from-first-principles teaching
 | Sensor API + shell | [`sensor-api-guide.md`](notes/sensor-api-guide.md) | [`sensor-bringup.md`](docs/sensor-bringup.md) |
 | Protobuf / nanopb | [`protobuf-guide.md`](notes/protobuf-guide.md) | [`proto/node.proto`](proto/node.proto) (decisions inline) |
 | zbus (the internal bus) | [`zbus-guide.md`](notes/zbus-guide.md) | [`firmware/src/app_channels.h`](firmware/src/app_channels.h) (decisions in the header comment) |
+| Testing (host-side, no hardware) | [`testing-guide.md`](notes/testing-guide.md) | [`test-strategy.md`](docs/test-strategy.md) |
 
 The last two pair a guide with a **source file** rather than a `docs/` page, because in both cases the decisions belong next to the thing they constrain: the field-numbering and evolution rules live in the schema, and the observer-kind choice lives in the header both threads include.
 

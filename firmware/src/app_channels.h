@@ -38,8 +38,8 @@
 #include <stdint.h>
 
 /* Sample period bounds. Enforced by the chan_sensor_cmd validator, which is the
- * single source of truth for them; main.cpp only names them in the Ack detail
- * text it sends back to the host. The bounds keep a bad command from either
+ * single source of truth for them; commands.cpp only names them in the Ack
+ * detail text it sends back to the host. The bounds keep a bad command from either
  * flooding the broker or stalling telemetry entirely. */
 #define SAMPLE_PERIOD_DEFAULT_MS 5000U
 #define SAMPLE_PERIOD_MIN_MS 1000U
@@ -54,8 +54,8 @@
 
 /* Deliberately NOT the generated node_Telemetry struct. zbus is internal, the
  * protobuf types are the wire format, and keeping them separate means a schema
- * change stops at the one function in main.cpp that maps between them instead
- * of rippling into the sensor thread. */
+ * change stops in protocol.cpp -- the one translation unit that maps between
+ * them -- instead of rippling into the sensor thread. */
 enum sensor_reading_status {
 	SENSOR_READING_OK,
 	/* The SCD-40 needs a warm-up before its first valid conversion. */
@@ -86,6 +86,25 @@ struct sensor_cmd {
 	/* Only meaningful for SENSOR_CMD_SET_INTERVAL. */
 	uint32_t interval_ms;
 };
+
+/* The rule the chan_sensor_cmd validator enforces, stated next to the bounds it
+ * compares against rather than in sensor.cpp -- the constants and the
+ * comparison drifting apart is exactly the failure a single definition
+ * prevents. sensor_cmd_valid() in sensor.cpp is the zbus *adapter* around this
+ * (it takes a const void *, as the bus requires); this is the rule itself, and
+ * being an ordinary function it can be tested directly. */
+static inline bool sensor_cmd_in_range(const struct sensor_cmd *cmd)
+{
+	switch (cmd->kind) {
+	case SENSOR_CMD_SET_INTERVAL:
+		return cmd->interval_ms >= SAMPLE_PERIOD_MIN_MS &&
+		       cmd->interval_ms <= SAMPLE_PERIOD_MAX_MS;
+	case SENSOR_CMD_TRIGGER:
+		return true;
+	default:
+		return false;
+	}
+}
 
 ZBUS_CHAN_DECLARE(chan_telemetry);
 ZBUS_CHAN_DECLARE(chan_sensor_cmd);

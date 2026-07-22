@@ -62,17 +62,10 @@ constexpr int kSensorPowerUpMs = 100;
 bool sensor_cmd_valid(const void *msg, size_t msg_size)
 {
 	ARG_UNUSED(msg_size);
-	const struct sensor_cmd *cmd = static_cast<const struct sensor_cmd *>(msg);
 
-	switch (cmd->kind) {
-	case SENSOR_CMD_SET_INTERVAL:
-		return cmd->interval_ms >= SAMPLE_PERIOD_MIN_MS &&
-		       cmd->interval_ms <= SAMPLE_PERIOD_MAX_MS;
-	case SENSOR_CMD_TRIGGER:
-		return true;
-	default:
-		return false;
-	}
+	/* The adapter; the rule itself is sensor_cmd_in_range() in
+	 * app_channels.h, next to the bounds it enforces. */
+	return sensor_cmd_in_range(static_cast<const struct sensor_cmd *>(msg));
 }
 
 /* Fill `out` from the sensor. A failed read is reported, not hidden: the host

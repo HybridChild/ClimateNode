@@ -663,7 +663,11 @@ Decoding mirrors it with `pb_istream_from_buffer()` and `pb_decode()`.
 
 ## 10. Reading the firmware
 
-Three functions in `firmware/src/main.cpp` carry the whole serialisation story.
+The whole serialisation story lives in one translation unit,
+`firmware/src/protocol.cpp` — and that it *is* one translation unit is the point. Every
+byte that crosses between this firmware's own types and the schema crosses here; nothing
+else in the app includes `pb_encode.h`. Which is also why it can be tested on a laptop with
+no board attached (see [`testing-guide.md`](testing-guide.md)).
 
 ### `encode_telemetry()`
 
@@ -708,35 +712,46 @@ sensor from a dead node — whereas an explicit status is a fact it can act on. 
 what §5 does to such a message: the three zeroed measurement fields vanish from the wire
 entirely, so an error report is one of the smallest messages the node ever sends.
 
-### `handle_incoming_publish()`
-
-The MQTT half is covered in the walkthrough; the Protobuf half is:
+### `decode_command()`
 
 ```c
-node_Command cmd = node_Command_init_zero;
-pb_istream_t stream = pb_istream_from_buffer(payload, kept);
+bool decode_command(const uint8_t *buf, size_t len, bool oversized, node_Command *out)
+{
+    *out = node_Command_init_zero;
 
-if (oversized || !pb_decode(&stream, node_Command_fields, &cmd)) {
-    send_ack(0, node_AckStatus_ACK_STATUS_MALFORMED, ...);
-    return;
+    if (oversized) { return false; }
+
+    pb_istream_t stream = pb_istream_from_buffer(buf, len);
+
+    if (!pb_decode(&stream, node_Command_fields, out)) { ... return false; }
+    return true;
 }
 ```
 
-Two decisions worth noting. **Oversize is rejected outright** rather than decoded from a
-truncated buffer — a partial message can decode into something plausible (§8), and acting on
-half a command is worse than refusing it. And the failure Ack carries `sequence = 0`,
-because the sequence could not be read: there is nothing to correlate against, and inventing
-a number would be worse than admitting ignorance.
+**Oversize is rejected outright** rather than decoded from a truncated buffer — a partial
+message can decode into something plausible (§8), and acting on half a command is worse
+than refusing it. Whoever calls this then answers `MALFORMED` with `sequence = 0`, because
+the sequence could not be read: there is nothing to correlate against, and inventing a
+number would be worse than admitting ignorance.
 
-What follows the decode is the dispatch on `cmd.which_payload` from §6, with the `default:`
-arm returning `UNSUPPORTED` — the branch that catches both a newer host and the
-structurally-legal-but-meaningless payloads of §8.
+Note what a `true` return does **not** promise: that the bytes were meant as a `Command`.
+§4 is the reason — the type is never on the wire, so unrelated bytes decode cleanly into a
+`Command` with every field defaulted. This function cannot detect that and does not try.
+The dispatch on `cmd.which_payload` in `commands.cpp` is what catches it, via the
+`default:` arm returning `UNSUPPORTED` (§6) — which is the same branch that catches a host
+newer than the node. Two different problems, one branch, and neither of them is the
+decoder's business.
 
-### `send_ack()`
+### `encode_ack()`
 
-Builds an `Ack`, encodes it into a `node_Ack_size` buffer, and publishes at QoS 1. It is
-best-effort by design — a failure here is logged, not propagated, because the command may
-already have taken effect and there is nothing useful to undo.
+Builds an `Ack` into a `node_Ack_size` buffer: sequence, status, an optional bounded
+`detail` string and an optional `DeviceInfo`. The publishing half is `send_ack()` in
+`main.cpp`, and it is best-effort by design — a failure there is logged, not propagated,
+because the command may already have taken effect and there is nothing useful to undo.
+
+That division is the file boundary in miniature: `protocol.cpp` turns a result into bytes
+and cannot fail for any reason but "it did not fit"; `main.cpp` decides what to do when the
+network refuses them.
 
 ---
 
@@ -888,8 +903,11 @@ and let the generator emit a worst-case size per message, so buffers come from
   field, regenerate both sides, and prove an old reader still parses a new message and
   vice versa. §7 says it is safe; doing it is how you believe it.
 - **[`firmware-mqtt-walkthrough.md`](../docs/firmware-mqtt-walkthrough.md)** — the
-  surrounding MQTT client, including where `encode_telemetry()` and
-  `handle_incoming_publish()` sit in the event loop.
+  surrounding MQTT client, and where `encode_telemetry()` and `decode_command()` are called
+  from in the event loop.
+- **[`testing-guide.md`](testing-guide.md)** — `tests/protocol/` turns much of this guide
+  into assertions: that a warming-up reading is shorter on the wire (§5), and that `hi`
+  decodes into a legal `Command` while `garbage` does not (§4, §8).
 - **[`zbus-guide.md`](zbus-guide.md)** — the internal channel a reading crosses *before*
   it reaches the encoder, and why the wire type deliberately stops there.
 - **nanopb's own docs** — `concepts.md` and `reference.md` in the module source, for

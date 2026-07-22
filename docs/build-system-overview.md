@@ -31,7 +31,8 @@ list(APPEND CMAKE_MODULE_PATH ${ZEPHYR_BASE}/modules/nanopb)
 include(nanopb)
 zephyr_nanopb_sources(app ${CMAKE_CURRENT_SOURCE_DIR}/../proto/node.proto)
 
-target_sources(app PRIVATE src/main.cpp src/sensor.cpp) # `app` target is created by Zephyr's kernel.cmake
+target_sources(app PRIVATE src/main.cpp src/sensor.cpp   # `app` target is created by
+               src/protocol.cpp src/commands.cpp)        # Zephyr's kernel.cmake
 ```
 
 `find_package(Zephyr)` loads `share/zephyr-package/cmake/ZephyrConfig.cmake`, which prepends

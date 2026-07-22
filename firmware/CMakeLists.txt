@@ -15,8 +15,14 @@ include(nanopb)
 
 zephyr_nanopb_sources(app ${CMAKE_CURRENT_SOURCE_DIR}/../proto/node.proto)
 
+# One translation unit per responsibility. protocol.cpp and commands.cpp carry
+# no socket or device dependency, which is what lets tests/ compile them on
+# their own for the host-side suite -- see notes/testing-guide.md.
 target_sources(app PRIVATE
-  src/main.cpp     # MQTT client: the network half
-  src/sensor.cpp   # SCD-40 thread: the sensor half; they meet on the zbus
-                   # channels declared in src/app_channels.h
+  src/main.cpp      # MQTT session: connect, poll, publish, reconnect
+  src/sensor.cpp    # SCD-40 thread: acquisition, sample period, bounds
+  src/protocol.cpp  # the wire format: internal types <-> protobuf
+  src/commands.cpp  # command semantics: dispatch, dedupe, node identity
+                    # sensor.cpp and main.cpp meet on the zbus channels
+                    # declared in src/app_channels.h
 )

@@ -1,11 +1,20 @@
 /* MQTT client node: publishes SCD-40 readings to a Mosquitto broker on the
  * Raspberry Pi, and answers commands from it.
  *
- * This file owns the *network* half only. The sensor lives in sensor.cpp and
- * reaches us over the zbus channels declared in app_channels.h — see that
- * header for why the two channels use different observer styles. The boundary
- * where the internal `struct sensor_reading` becomes a wire-format
- * `node_Telemetry` is encode_telemetry() below, and nowhere else.
+ * This file owns the MQTT session and nothing else. The application is four
+ * translation units, each with one responsibility:
+ *
+ *   sensor.cpp     acquisition — owns the SCD-40, the sample period, the bounds
+ *   protocol.cpp   the wire format — the only place internal types meet protobuf
+ *   commands.cpp   command semantics — dispatch, duplicate suppression, identity
+ *   main.cpp       this file: connect, poll, publish, reconnect
+ *
+ * sensor.cpp and main.cpp meet on the zbus channels declared in app_channels.h —
+ * see that header for why the two channels use different observer styles.
+ *
+ * The split is what makes the logic testable without hardware: protocol.cpp and
+ * commands.cpp carry no socket or device dependency, so tests/ compiles them on
+ * their own. See notes/testing-guide.md.
  *
  * Implements the design in docs/mqtt-design.md:
  *
@@ -45,12 +54,8 @@
 #include <string.h>
 
 #include "app_channels.h"
-
-/* Generated from proto/node.proto at build time into the build directory.
- * It is C, with extern "C" guards, so it includes cleanly here. */
-#include <node.pb.h>
-#include <pb_decode.h>
-#include <pb_encode.h>
+#include "commands.h"
+#include "protocol.h"
 
 LOG_MODULE_REGISTER(node, LOG_LEVEL_INF);
 
@@ -61,18 +66,10 @@ namespace {
 constexpr const char *kBrokerAddr = CONFIG_NET_CONFIG_PEER_IPV4_ADDR;
 constexpr uint16_t kBrokerPort = 1883;
 
-constexpr const char *kClientId = "nucleo-1";
 constexpr const char *kTopicTelemetry = "node/1/telemetry";
 constexpr const char *kTopicCommand = "node/1/command";
 constexpr const char *kTopicAck = "node/1/ack";
 constexpr const char *kTopicStatus = "node/1/status";
-
-/* Bumped only when a change to proto/node.proto breaks old readers. Additive
- * field changes do not touch it — protobuf handles those on its own. */
-constexpr uint32_t kSchemaVersion = 1;
-
-constexpr const char *kFirmwareVersion = "0.5.0";
-constexpr const char *kBoardName = CONFIG_BOARD;
 
 /* Keepalive bounds how long the broker waits before declaring us dead
  * (1.5x keepalive) and firing the will. We publish every 5 s, so PINGREQ rarely
@@ -111,11 +108,6 @@ volatile bool connect_failed;
  * even up is of no consequence. */
 int telemetry_evt_fd = -1;
 
-/* QoS 1 is at-least-once, so a redelivered command must not be executed twice.
- * We ack duplicates (the broker needs the PUBACK) but skip the side effect. */
-bool have_last_command;
-uint32_t last_command_sequence;
-
 /* ---- MQTT plumbing -------------------------------------------------------- */
 
 /* Defined below, after the client struct it operates on. */
@@ -127,96 +119,13 @@ int publish(const char *topic, const uint8_t *payload, size_t payload_len,
 void send_ack(uint32_t seq, node_AckStatus status, const char *detail,
 	      const node_DeviceInfo *info)
 {
-	node_Ack ack = node_Ack_init_zero;
 	uint8_t buf[node_Ack_size];
+	size_t len = encode_ack(seq, status, detail, info, buf, sizeof(buf));
 
-	ack.schema_version = kSchemaVersion;
-	ack.sequence = seq;
-	ack.status = status;
-
-	if (detail != nullptr) {
-		/* Bounded by max_size:48 in node.options. Truncating the
-		 * diagnostic is fine; hosts branch on `status`, not this text. */
-		strncpy(ack.detail, detail, sizeof(ack.detail) - 1);
-	}
-	if (info != nullptr) {
-		ack.has_device_info = true;
-		ack.device_info = *info;
-	}
-
-	pb_ostream_t stream = pb_ostream_from_buffer(buf, sizeof(buf));
-
-	if (!pb_encode(&stream, node_Ack_fields, &ack)) {
-		LOG_ERR("ack encode failed: %s", PB_GET_ERROR(&stream));
+	if (len == 0) {
 		return;
 	}
-	publish(kTopicAck, buf, stream.bytes_written, MQTT_QOS_1_AT_LEAST_ONCE, false);
-}
-
-/* Hand a command to the sensor thread over the bus and translate the result into
- * an Ack status. Bounds checking is the channel validator's job (sensor.cpp), so
- * this function only reports what the bus told it — the wire layer never gets a
- * second, drifting copy of the sensor's rules. */
-node_AckStatus forward_to_sensor(const struct sensor_cmd &sc, char *detail, size_t detail_len)
-{
-	int rc = zbus_chan_pub(&chan_sensor_cmd, &sc, K_MSEC(100));
-
-	switch (rc) {
-	case 0:
-		return node_AckStatus_ACK_STATUS_OK;
-
-	case -ENOMSG:
-		/* The validator rejected it: the message never reached the
-		 * channel, so nothing was changed. */
-		snprintf(detail, detail_len, "interval %u outside [%u,%u]", sc.interval_ms,
-			 SAMPLE_PERIOD_MIN_MS, SAMPLE_PERIOD_MAX_MS);
-		return node_AckStatus_ACK_STATUS_INVALID_ARGUMENT;
-
-	default:
-		/* Channel busy, or the subscriber's queue is full. */
-		snprintf(detail, detail_len, "bus publish failed: %d", rc);
-		return node_AckStatus_ACK_STATUS_FAILED;
-	}
-}
-
-/* Execute a decoded command. Returns the status to report, and may fill
- * `detail` and `info` for the Ack. */
-node_AckStatus apply_command(const node_Command &cmd, char *detail, size_t detail_len,
-			     node_DeviceInfo *info, bool *has_info)
-{
-	switch (cmd.which_payload) {
-	case node_Command_set_interval_tag: {
-		struct sensor_cmd sc = {};
-
-		sc.kind = SENSOR_CMD_SET_INTERVAL;
-		sc.interval_ms = cmd.payload.set_interval.interval_ms;
-		return forward_to_sensor(sc, detail, detail_len);
-	}
-
-	case node_Command_trigger_measurement_tag: {
-		struct sensor_cmd sc = {};
-
-		sc.kind = SENSOR_CMD_TRIGGER;
-		return forward_to_sensor(sc, detail, detail_len);
-	}
-
-	case node_Command_get_device_info_tag:
-		*info = node_DeviceInfo_init_zero;
-		strncpy(info->firmware_version, kFirmwareVersion,
-			sizeof(info->firmware_version) - 1);
-		strncpy(info->board, kBoardName, sizeof(info->board) - 1);
-		strncpy(info->client_id, kClientId, sizeof(info->client_id) - 1);
-		*has_info = true;
-		return node_AckStatus_ACK_STATUS_OK;
-
-	default:
-		/* A oneof member this firmware does not know: the host is newer
-		 * than the node. Protobuf decoded it fine — the gap is in our
-		 * handlers, which is exactly what UNSUPPORTED reports. */
-		snprintf(detail, detail_len, "unknown command tag %u",
-			 static_cast<unsigned>(cmd.which_payload));
-		return node_AckStatus_ACK_STATUS_UNSUPPORTED;
-	}
+	publish(kTopicAck, buf, len, MQTT_QOS_1_AT_LEAST_ONCE, false);
 }
 
 /* Read a PUBLISH payload out of the socket and decode it. The MQTT_EVT_PUBLISH
@@ -272,14 +181,12 @@ void handle_incoming_publish(struct mqtt_client *c,
 		mqtt_publish_qos1_ack(c, &puback);
 	}
 
-	node_Command cmd = node_Command_init_zero;
-	pb_istream_t stream = pb_istream_from_buffer(payload, kept);
+	/* From here the transport is done with the bytes: protocol.cpp decides
+	 * whether they are a Command, commands.cpp decides what it means, and
+	 * this layer only reports the outcome back to the host. */
+	node_Command cmd;
 
-	/* A truncated payload might still decode into something plausible, so
-	 * reject oversize outright rather than acting on a partial command. */
-	if (oversized || !pb_decode(&stream, node_Command_fields, &cmd)) {
-		LOG_ERR("command decode failed: %s",
-			oversized ? "payload too large" : PB_GET_ERROR(&stream));
+	if (!decode_command(payload, kept, oversized, &cmd)) {
 		/* sequence 0: we could not read one, so there is nothing to
 		 * correlate against. The host learns the message was garbage. */
 		send_ack(0, node_AckStatus_ACK_STATUS_MALFORMED,
@@ -287,32 +194,12 @@ void handle_incoming_publish(struct mqtt_client *c,
 		return;
 	}
 
-	LOG_INF("command seq=%u tag=%u schema=%u", cmd.sequence,
-		static_cast<unsigned>(cmd.which_payload), cmd.schema_version);
+	struct command_result result;
 
-	/* Duplicate suppression. QoS 1 redelivers after a lost PUBACK, so the
-	 * same command can arrive twice; re-running "set interval" is harmless
-	 * but "trigger measurement" is not. Ack again so the host still gets a
-	 * reply, but skip the side effect. */
-	if (have_last_command && cmd.sequence == last_command_sequence) {
-		LOG_WRN("duplicate command seq=%u ignored", cmd.sequence);
-		send_ack(cmd.sequence, node_AckStatus_ACK_STATUS_OK,
-			 "duplicate ignored", nullptr);
-		return;
-	}
+	handle_command(cmd, &result);
 
-	char detail[48] = {};
-	node_DeviceInfo info = node_DeviceInfo_init_zero;
-	bool has_info = false;
-
-	node_AckStatus status =
-		apply_command(cmd, detail, sizeof(detail), &info, &has_info);
-
-	have_last_command = true;
-	last_command_sequence = cmd.sequence;
-
-	send_ack(cmd.sequence, status, detail[0] != '\0' ? detail : nullptr,
-		 has_info ? &info : nullptr);
+	send_ack(cmd.sequence, result.status, result.detail[0] != '\0' ? result.detail : nullptr,
+		 result.has_info ? &result.info : nullptr);
 }
 
 void mqtt_evt_handler(struct mqtt_client *const c, const struct mqtt_evt *evt)
@@ -365,8 +252,8 @@ void client_setup(void)
 
 	client.broker = &broker;
 	client.evt_cb = mqtt_evt_handler;
-	client.client_id.utf8 = reinterpret_cast<uint8_t *>(const_cast<char *>(kClientId));
-	client.client_id.size = strlen(kClientId);
+	client.client_id.utf8 = reinterpret_cast<uint8_t *>(const_cast<char *>(kNodeClientId));
+	client.client_id.size = strlen(kNodeClientId);
 	client.user_name = nullptr;
 	client.password = nullptr;
 	client.protocol_version = MQTT_VERSION_3_1_1;
@@ -491,53 +378,6 @@ void on_telemetry(const struct zbus_channel *chan)
 	if (telemetry_evt_fd >= 0) {
 		zvfs_eventfd_write(telemetry_evt_fd, 1);
 	}
-}
-
-/* The one place the internal representation becomes the wire format. Everything
- * above this line speaks `struct sensor_reading`; everything below speaks
- * node.Telemetry. A schema change stops here.
- *
- * A failed sensor read is still published, with sensor_status = ERROR and the
- * measurement fields left at zero. Silence would be ambiguous — the host cannot
- * tell a broken sensor from a dead node — whereas an explicit ERROR is a fact
- * the host can act on. This is why the status enum exists.
- *
- * Returns the encoded length, or 0 on encode failure. */
-size_t encode_telemetry(const struct sensor_reading &reading, uint8_t *out, size_t out_len)
-{
-	node_Telemetry msg = node_Telemetry_init_zero;
-
-	msg.schema_version = kSchemaVersion;
-	msg.sequence = reading.sequence;
-	msg.uptime_ms = reading.uptime_ms;
-	msg.co2_ppm = reading.co2_ppm;
-	msg.temperature_c = reading.temperature_c;
-	msg.humidity_rh = reading.humidity_rh;
-
-	switch (reading.status) {
-	case SENSOR_READING_OK:
-		msg.sensor_status = node_SensorStatus_SENSOR_STATUS_OK;
-		break;
-	case SENSOR_READING_WARMING_UP:
-		msg.sensor_status = node_SensorStatus_SENSOR_STATUS_WARMING_UP;
-		break;
-	case SENSOR_READING_ERROR:
-	default:
-		msg.sensor_status = node_SensorStatus_SENSOR_STATUS_ERROR;
-		break;
-	}
-
-	/* An output stream writing into a caller-supplied buffer. nanopb never
-	 * allocates: if the message does not fit, encoding fails rather than
-	 * growing anything. node_Telemetry_size (36) is the generated upper
-	 * bound, so a 256-byte buffer cannot overflow here. */
-	pb_ostream_t stream = pb_ostream_from_buffer(out, out_len);
-
-	if (!pb_encode(&stream, node_Telemetry_fields, &msg)) {
-		LOG_ERR("telemetry encode failed: %s", PB_GET_ERROR(&stream));
-		return 0;
-	}
-	return stream.bytes_written;
 }
 
 /* Drain the eventfd, read the newest reading off the bus, encode it, publish it.

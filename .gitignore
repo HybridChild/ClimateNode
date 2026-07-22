@@ -2,6 +2,11 @@
 build/
 *.build/
 
+# Twister's per-suite build trees, logs and reports (scripts/test.sh). Rebuilt
+# on every run; twister rotates old ones to twister-out.N itself.
+twister-out/
+twister-out.*/
+
 # Python
 __pycache__/
 *.pyc
