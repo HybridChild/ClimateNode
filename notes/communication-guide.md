@@ -47,10 +47,11 @@ Everything below MQTT, Zephyr implements for you. Everything from MQTT up is you
 
 ---
 
-## 2. The one big idea: each layer solves one problem
+## 2. The same chain, as a reference table
 
-Here is the whole architecture in one table. The right column is the important one — it's
-the reason the *next* layer up has to exist.
+§1 told the chain as a story; here it is as a table to come back to. The right-hand column
+is the one that does the work — what each layer *refuses* to do is precisely why the next
+one up has to exist.
 
 | Layer | Gives you | Does **not** give you (⇒ why the next layer exists) |
 |---|---|---|
@@ -79,10 +80,10 @@ Each layer wraps the one above it — this is **encapsulation**:
 
 ```
                      ┌──────────────────────────────────────┐
-Protobuf  Telemetry: │ co2=812  temp=22.5  rh=41.2  seq=7   │   ~20 bytes
+Protobuf  Telemetry: │ co2=812  temp=22.5  rh=41.2  seq=7 … │   26 bytes
                      └──────────────────────────────────────┘
                      ┌────────────┬─────────────────────────┐
-MQTT      PUBLISH:   │ hdr+topic  │  <the 20 bytes above>   │
+MQTT      PUBLISH:   │ hdr+topic  │  <the 26 bytes above>   │
                      └────────────┴─────────────────────────┘
                      ┌────────────┬─────────────────────────┐
 TCP       segment:   │ src/dst    │  <the MQTT packet>      │
@@ -97,14 +98,16 @@ Ethernet  frame:     │ dst/src MAC│  <the IP packet>    │CRC│
                                     → out the RJ45 →
 ```
 
-The Pi unwraps it in exactly the reverse order and hands your ~20 bytes to the harness.
+The Pi unwraps it in exactly the reverse order and hands your 26 bytes to the harness. (The
+`…` is the rest of Telemetry's fields — uptime, sensor status, schema version — which §9
+shows decoded.)
 
 ### What's in that `hdr`? The part that matters here
 
 The `hdr+topic` box above is MQTT's **fixed header** followed by its **variable header**.
-Most of its fields belong to concepts that arrive later — the flag bits are QoS (§5) and
-retain (§7), and §5 takes the header apart again once those mean something. One field,
-though, is the whole reason §2's table says MQTT is where framing gets solved:
+Most of its fields belong to concepts that arrive later — QoS (§5) and retain (§7), picked
+back up there. One field, though, is the whole reason the table above says MQTT is where
+framing gets solved:
 
 ```
 Fixed header
@@ -119,18 +122,20 @@ Payload
 ```
 
 **`Remaining Length` is how MQTT solves the framing problem.** It states exactly how many
-bytes this message occupies, so the receiver knows precisely where this message ends and
-the next begins — it is the length prefix you would otherwise have had to design,
-implement, and debug yourself on top of raw TCP. Everything else in that header is
-machinery for concepts you have not met yet, and the arrows say where each is picked up.
+bytes this message occupies, so the receiver knows where this message ends and the next
+begins — the length prefix you would otherwise have had to design, implement, and debug
+yourself on top of raw TCP. The rest of the header carries concepts you have not met yet;
+the arrows point to where each is picked up.
 
 ---
 
 ## 3. Why a broker? The shift you have to make
 
-This is the conceptual jump of the whole architecture, and it is worth slowing down for. It
-changes *who is responsible for what* — and in doing so, deletes a pile of code the node
-would otherwise have to carry.
+The table credited MQTT with two jobs TCP won't do: frame whole messages — that was §2's
+header — and deliver each to *any number of subscribers*. That second job is the conceptual
+jump of the whole architecture, and it is worth slowing down for. It changes *who is
+responsible for what* — and in doing so, deletes a pile of code the node would otherwise
+have to carry.
 
 ### 3.1 The problem: client/server puts the node in charge of its consumers
 
@@ -178,9 +183,9 @@ knowing whether anyone was there to receive it.
 Two words used above name different *kinds* of thing, and keeping them apart prevents a lot
 of muddle:
 
-- **MQTT** is the **protocol** — the written rules for what bytes go on the wire (`CONNECT`,
-  `PUBLISH`, `PUBACK`, topics, QoS flags). This project uses version **3.1.1**. A protocol
-  is a *contract*, not a program.
+- **MQTT** is the **protocol** — the written rules for what bytes go on the wire
+  (`CONNECT`/`CONNACK`, `PUBLISH`/`PUBACK`, topics, QoS flags). This project uses version
+  **3.1.1**. A protocol is a *contract*, not a program.
 - **Mosquitto** is one **program that implements** that protocol — specifically the
   **broker** role. The clients are implementations too, just of the other role.
 
@@ -231,11 +236,9 @@ So in this entire system there is **exactly one listening socket** — Mosquitto
 1883. Every other participant, the Nucleo included, only ever **dials out**. None of them is
 a server; all of them receive data.
 
-That single listening port serves all of them simultaneously because a TCP connection is
-identified by its **4-tuple** `(client IP, client port, broker IP, 1883)`. Each client's
-IP/port pair differs, so the Pi's TCP stack demultiplexes the traffic into separate
-connections. This is why one port can hold thousands of clients at once: the *connection*,
-not the port, is the unit of identity.
+That one port serves them all at once because a TCP connection is identified by its whole
+`(client IP, client port, broker IP, 1883)` tuple, not by the port alone — so each client's
+connection stays distinct even though they share the broker's port.
 
 ### 3.5 Connection direction vs. data flow
 
@@ -350,9 +353,10 @@ QoS is the most misunderstood part of MQTT, largely because the obvious guess is
 | **1** | at least once | `PUBLISH` → `PUBACK` | arrives, but **maybe twice** |
 | **2** | exactly once | `PUBLISH` → `PUBREC` → `PUBREL` → `PUBCOMP` | arrives exactly once |
 
-**Exercise 4 in §9 shows this on the wire** with `-d`: QoS 0 sends `PUBLISH` and stops;
-QoS 1 sends `PUBLISH` and waits for a `PUBACK` before moving on. One extra round trip —
-that's the entire difference.
+**Exercise 4 in §9 shows this on the wire** with `-d` — the flag on the `mosquitto_pub` /
+`mosquitto_sub` CLI tools that dumps every MQTT control packet as it goes by: QoS 0 sends
+`PUBLISH` and stops; QoS 1 sends `PUBLISH` and waits for a `PUBACK` before moving on. One
+extra round trip — that's the entire difference.
 
 ### The insight: TCP reliability ≠ MQTT QoS
 
