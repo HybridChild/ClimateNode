@@ -1,6 +1,6 @@
 # The guides
 
-Eight teaching documents, each building one concept from first principles and using this
+Nine teaching documents, each building one concept from first principles and using this
 repo — a CO₂ node on a Nucleo-H753ZI talking to a Raspberry Pi — as the running example.
 They are meant to be readable by someone who has never seen this project.
 
@@ -12,7 +12,7 @@ there was no project *decision* to record — as the table's last column notes.
 
 ## Where to start
 
-There is no need to read all seven, and reading them in file order is the wrong order. The
+There is no need to read all nine, and reading them in file order is the wrong order. The
 dependencies are real but shallow:
 
 ```
@@ -25,6 +25,9 @@ zephyr-build-system-guide  ─┬─▶  sensor-api-guide  ─┐
                                   debug console     │
         communication-guide  ──▶  protobuf-guide  ──┘
           MQTT, the broker         the wire format
+        network-stack-guide
+          below the socket:
+          prj.conf → live interface
 ```
 
 `shell-guide.md` sits off to the side like `language-cpp.md`: a debugging tool, not a step
@@ -41,6 +44,10 @@ a devicetree overlay does, and `language-cpp.md` assumes you know what `prj.conf
 instead. `communication-guide.md` and `protobuf-guide.md` are a self-contained pair that
 never touch devicetree — read them in that order, because Protobuf §4's argument (the type
 is not on the wire, so the *topic* asserts it) needs MQTT topics to already mean something.
+`network-stack-guide.md` is the layer *beneath* that pair: it answers "how does Zephyr get a
+socket onto the wire from `prj.conf` alone, and how portable is that across USB/Wi-Fi?" — it
+leans on the build-system guide (devicetree, Kconfig) but only lightly on MQTT, so it reads
+well either before or after the communication guide.
 
 **If you are chasing a bug**, go straight to the lab at the end of the relevant guide.
 Each is a numbered set of exercises with expected output and a **Proves:** line, and
@@ -52,7 +59,7 @@ seconds without unplugging anything.
 about how the *firmware itself* should be arranged, and that argument is easier to follow
 once you have seen what the pieces do.
 
-## The eight
+## The nine
 
 | Guide | Answers | Assumes you know | Reference half |
 |---|---|---|---|
@@ -60,12 +67,13 @@ once you have seen what the pieces do.
 | [`sensor-api-guide.md`](sensor-api-guide.md) | How does `sensor_sample_fetch()` become I²C traffic, and why two integers instead of a float? | devicetree basics (the guide above), roughly what I²C is | [`sensor-bringup.md`](../docs/sensor-bringup.md) |
 | [`zbus-guide.md`](zbus-guide.md) | What is an in-process message bus, and why does a two-thread firmware want one? | threads and blocking calls; `poll()` and mutexes are explained in §1–§2 | [`app_channels.h`](../firmware/src/app_channels.h) header comment |
 | [`communication-guide.md`](communication-guide.md) | How does one reading get from the sensor to the host PC, and why a broker? | TCP/IP exists; no MQTT knowledge needed | [`mqtt-design.md`](../docs/mqtt-design.md) |
+| [`network-stack-guide.md`](network-stack-guide.md) | How does `prj.conf` plus one devicetree node become a live socket with no app code — and how portable is that to USB/Wi-Fi? | devicetree & Kconfig (the build-system guide); that TCP/sockets exist | [`network-bringup.md`](../docs/network-bringup.md) |
 | [`protobuf-guide.md`](protobuf-guide.md) | How does a reading become bytes, and what does a schema actually buy? | binary/hex, and MQTT topics (the guide above) | [`node.proto`](../proto/node.proto), decisions inline |
 | [`language-cpp.md`](language-cpp.md) | What actually changes when a Zephyr app is C++? | C++ basics; the freestanding/boundary consequences are the subject | *(none — the source files are the reference)* |
 | [`shell-guide.md`](shell-guide.md) | What is the `uart:~$` prompt, and how does typing `net iface` call a function inside the firmware? | what a Kconfig option is (the build-system guide); the rest is built up | *(none — a stock subsystem, no project decision to record)* |
 | [`testing-guide.md`](testing-guide.md) | How do you test firmware on a machine that is not the target — and what has to be true of the code first? | roughly what a unit test is; the rest is built up | [`test-strategy.md`](../docs/test-strategy.md) |
 
-Two of the eight pair with a **source file** rather than a `docs/` page, because in those
+Two of the nine pair with a **source file** rather than a `docs/` page, because in those
 cases the decisions belong next to the thing they constrain: the field-numbering rules live
 in the schema, and the observer-kind choice lives in the header both threads include.
 

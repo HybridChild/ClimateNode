@@ -45,6 +45,12 @@ The chain is:
 
 Everything below MQTT, Zephyr implements for you. Everything from MQTT up is your work.
 
+This guide takes that lower half as a given and builds upward. If you want the *other*
+direction — how those layers actually get wired up, how a handful of `CONFIG_NET_*` lines and
+one devicetree node become a live socket with no application code, and how much would change
+if the wire were USB or Wi-Fi — that is [`network-stack-guide.md`](network-stack-guide.md),
+paired with [`network-bringup.md`](../docs/network-bringup.md).
+
 ---
 
 ## 2. The same chain, as a reference table

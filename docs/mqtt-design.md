@@ -3,7 +3,9 @@
 Decisions and verified setup for the Nucleo ↔ Pi MQTT link. Terse by intent — for the
 concepts behind any of it, see the companion teaching guide,
 [`communication-guide.md`](../notes/communication-guide.md). For how these decisions are expressed
-in code, see [`firmware-mqtt-walkthrough.md`](firmware-mqtt-walkthrough.md).
+in code, see [`firmware-mqtt-walkthrough.md`](firmware-mqtt-walkthrough.md). This page starts
+at the socket; for the layer *below* it — the PHY/MAC, the interface, and how the static
+address gets there with no app code — see [`network-bringup.md`](network-bringup.md).
 
 ## Transport
 

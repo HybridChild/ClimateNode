@@ -141,6 +141,11 @@ people coming from Berkeley-sockets examples.
 `client.broker`, and sends the MQTT `CONNECT` packet. **The library owns the file
 descriptor.**
 
+That the socket *can* be created here at all — that a configured IPv4 interface already
+exists by the time `main()` runs, with no bring-up code anywhere in this file — is its own
+story, one layer down: see [`network-stack-guide.md`](../notes/network-stack-guide.md) and
+its reference half [`network-bringup.md`](network-bringup.md).
+
 You touch it only to wait on it:
 
 ```c
