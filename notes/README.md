@@ -1,19 +1,12 @@
 # The guides
 
-Nine teaching documents, each building one concept from first principles and using this
-repo — a CO₂ node on a Nucleo-H753ZI talking to a Raspberry Pi — as the running example.
-They are meant to be readable by someone who has never seen this project.
+Nine teaching documents, each building one concept from first principles and using this repo — a CO₂ node on a Nucleo-H753ZI talking to a Raspberry Pi — as the running example. They are meant to be readable by someone who has never seen this project.
 
-Most guides have a **reference half** in [`../docs/`](../docs/) recording what *this* project
-decided and why. The guides explain concepts; the references record facts. Each links to
-the other, and the pairing is listed in the table below. Two guides pair with a source file
-instead, and two (`language-cpp.md`, `shell-guide.md`) have no reference half at all —
-there was no project *decision* to record — as the table's last column notes.
+Most guides have a **reference half** in [`../docs/`](../docs/) recording what *this* project decided and why. The guides explain concepts; the references record facts. Each links to the other, and the pairing is listed in the table below. Two guides pair with a source file instead, and two (`language-cpp.md`, `shell-guide.md`) have no reference half at all — there was no project *decision* to record — as the table's last column notes.
 
 ## Where to start
 
-There is no need to read all nine, and reading them in file order is the wrong order. The
-dependencies are real but shallow:
+There is no need to read all nine, and reading them in file order is the wrong order. The dependencies are real but shallow:
 
 ```
 zephyr-build-system-guide  ─┬─▶  sensor-api-guide  ─┐
@@ -30,34 +23,15 @@ zephyr-build-system-guide  ─┬─▶  sensor-api-guide  ─┐
           prj.conf → live interface
 ```
 
-`shell-guide.md` sits off to the side like `language-cpp.md`: a debugging tool, not a step
-on the sensor→wire path. It leans lightly on the build-system guide (Kconfig, and the
-link-time sections commands live in) and is what `sensor-api-guide.md` §7 and the `net`
-shell in `communication-guide.md` both rest on — read it when the `uart:~$` prompt itself
-is the mystery, in either of their labs or on its own.
+`shell-guide.md` sits off to the side like `language-cpp.md`: a debugging tool, not a step on the sensor→wire path. It leans lightly on the build-system guide (Kconfig, and the link-time sections commands live in) and is what `sensor-api-guide.md` §7 and the `net` shell in `communication-guide.md` both rest on — read it when the `uart:~$` prompt itself is the mystery, in either of their labs or on its own.
 
-**If you are new to Zephyr, start at the top left.** `zephyr-build-system-guide.md` is the
-one whose absence is most felt elsewhere: `sensor-api-guide.md` §2.2 assumes you know what
-a devicetree overlay does, and `language-cpp.md` assumes you know what `prj.conf` is for.
+**If you are new to Zephyr, start at the top left.** `zephyr-build-system-guide.md` is the one whose absence is most felt elsewhere: `sensor-api-guide.md` §2.2 assumes you know what a devicetree overlay does, and `language-cpp.md` assumes you know what `prj.conf` is for.
 
-**If you already know Zephyr and came for the networking**, start at the bottom left
-instead. `communication-guide.md` and `protobuf-guide.md` are a self-contained pair that
-never touch devicetree — read them in that order, because Protobuf §4's argument (the type
-is not on the wire, so the *topic* asserts it) needs MQTT topics to already mean something.
-`network-stack-guide.md` is the layer *beneath* that pair: it answers "how does Zephyr get a
-socket onto the wire from `prj.conf` alone, and how portable is that across USB/Wi-Fi?" — it
-leans on the build-system guide (devicetree, Kconfig) but only lightly on MQTT, so it reads
-well either before or after the communication guide.
+**If you already know Zephyr and came for the networking**, start at the bottom left instead. `communication-guide.md` and `protobuf-guide.md` are a self-contained pair that never touch devicetree — read them in that order, because Protobuf §4's argument (the type is not on the wire, so the *topic* asserts it) needs MQTT topics to already mean something. `network-stack-guide.md` is the layer *beneath* that pair: it answers "how does Zephyr get a socket onto the wire from `prj.conf` alone, and how portable is that across USB/Wi-Fi?" — it leans on the build-system guide (devicetree, Kconfig) but only lightly on MQTT, so it reads well either before or after the communication guide.
 
-**If you are chasing a bug**, go straight to the lab at the end of the relevant guide.
-Each is a numbered set of exercises with expected output and a **Proves:** line, and
-`sensor-api-guide.md` §11 Exercise 1 in particular is written as a pipeline bisect. If the
-suspect is the wire format or command handling, `./scripts/test.sh` answers in eighteen
-seconds without unplugging anything.
+**If you are chasing a bug**, go straight to the lab at the end of the relevant guide. Each is a numbered set of exercises with expected output and a **Proves:** line, and `sensor-api-guide.md` §11 Exercise 1 in particular is written as a pipeline bisect. If the suspect is the wire format or command handling, `./scripts/test.sh` answers in eighteen seconds without unplugging anything.
 
-**`testing-guide.md` is last for a reason**, not least. It is the only one that argues
-about how the *firmware itself* should be arranged, and that argument is easier to follow
-once you have seen what the pieces do.
+**`testing-guide.md` is last for a reason**, not least. It is the only one that argues about how the *firmware itself* should be arranged, and that argument is easier to follow once you have seen what the pieces do.
 
 ## The nine
 
@@ -73,9 +47,7 @@ once you have seen what the pieces do.
 | [`shell-guide.md`](shell-guide.md) | What is the `uart:~$` prompt, and how does typing `net iface` call a function inside the firmware? | what a Kconfig option is (the build-system guide); the rest is built up | *(none — a stock subsystem, no project decision to record)* |
 | [`testing-guide.md`](testing-guide.md) | How do you test firmware on a machine that is not the target — and what has to be true of the code first? | roughly what a unit test is; the rest is built up | [`test-strategy.md`](../docs/test-strategy.md) |
 
-Two of the nine pair with a **source file** rather than a `docs/` page, because in those
-cases the decisions belong next to the thing they constrain: the field-numbering rules live
-in the schema, and the observer-kind choice lives in the header both threads include.
+Two of the nine pair with a **source file** rather than a `docs/` page, because in those cases the decisions belong next to the thing they constrain: the field-numbering rules live in the schema, and the observer-kind choice lives in the header both threads include.
 
 ## How each guide is built
 
@@ -87,14 +59,8 @@ They share a skeleton, so you can navigate any of them the same way:
 - a **lab**: numbered exercises with commands, expected output, and what each proves;
 - **the model in one paragraph**, and **where to go next**.
 
-Cross-references are by section number (`§7`) within a guide and by name across guides.
-Code in this repo is cited by function name because it moves; Zephyr's own code is cited by
-`file:line` against v4.4.1, which is pinned in `~/zephyr-workspace`.
+Cross-references are by section number (`§7`) within a guide and by name across guides. Code in this repo is cited by function name because it moves; Zephyr's own code is cited by `file:line` against v4.4.1, which is pinned in `~/zephyr-workspace`.
 
 ## What is not here
 
-`../docs/` holds the project references, plus [`toolchain.md`](../docs/toolchain.md) (both
-toolchains and the build/flash workflow) and
-[`firmware-mqtt-walkthrough.md`](../docs/firmware-mqtt-walkthrough.md) — a guided reading of
-`firmware/src/main.cpp` that connects most of these concepts in one file. It teaches, but it
-tracks this repo's code rather than a general concept, so it lives with the references.
+`../docs/` holds the project references, plus [`toolchain.md`](../docs/toolchain.md) (both toolchains and the build/flash workflow) and [`firmware-mqtt-walkthrough.md`](../docs/firmware-mqtt-walkthrough.md) — a guided reading of `firmware/src/main.cpp` that connects most of these concepts in one file. It teaches, but it tracks this repo's code rather than a general concept, so it lives with the references.

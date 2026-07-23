@@ -1,23 +1,13 @@
 # Zephyr build system — project reference
 
-A terse, project-specific map of *which input produces which generated file, consumed by
-what* — checked against a real `firmware/build/` for `nucleo_h753zi` (Zephyr v4.4.1).
-Line numbers into generated files drift whenever Kconfig gains or loses a symbol; the
-structure holds. Regenerate and re-grep rather than trusting a number that looks off.
+A terse, project-specific map of *which input produces which generated file, consumed by what* — checked against a real `firmware/build/` for `nucleo_h753zi` (Zephyr v4.4.1). Line numbers into generated files drift whenever Kconfig gains or loses a symbol; the structure holds. Regenerate and re-grep rather than trusting a number that looks off.
 
-**For the concepts** (the mental model, why it's designed this way, how devicetree and
-Kconfig fit together) see the companion guide,
-[`zephyr-build-system-guide.md`](../notes/zephyr-build-system-guide.md). This file is the lookup
-reference that guide points back to.
+**For the concepts** (the mental model, why it's designed this way, how devicetree and Kconfig fit together) see the companion guide, [`zephyr-build-system-guide.md`](../notes/zephyr-build-system-guide.md). This file is the lookup reference that guide points back to.
 
 ## Workspace & entry point
 
-- Built as a freestanding app against the shared workspace at `~/zephyr-workspace`
-  (see [`toolchain.md`](toolchain.md)); this repo carries no Zephyr copy.
-- **`west zephyr-export`** registered the workspace by writing one file into CMake's user
-  package registry — `~/.cmake/packages/Zephyr/<hash>` containing the single path
-  `~/zephyr-workspace/zephyr/share/zephyr-package/cmake`. That is how `find_package(Zephyr)`
-  locates Zephyr with `ZEPHYR_BASE` unset.
+- Built as a freestanding app against the shared workspace at `~/zephyr-workspace` (see [`toolchain.md`](toolchain.md)); this repo carries no Zephyr copy.
+- **`west zephyr-export`** registered the workspace by writing one file into CMake's user package registry — `~/.cmake/packages/Zephyr/<hash>` containing the single path `~/zephyr-workspace/zephyr/share/zephyr-package/cmake`. That is how `find_package(Zephyr)` locates Zephyr with `ZEPHYR_BASE` unset.
 
 `firmware/CMakeLists.txt`:
 
@@ -33,8 +23,7 @@ target_sources(app PRIVATE src/main.cpp src/sensor.cpp   # `app` target is creat
                src/protocol.cpp src/commands.cpp)        # Zephyr's kernel.cmake
 ```
 
-`find_package(Zephyr)` loads `share/zephyr-package/cmake/ZephyrConfig.cmake`, which prepends
-`zephyr/cmake/modules` to `CMAKE_MODULE_PATH` and `include(zephyr_default)`.
+`find_package(Zephyr)` loads `share/zephyr-package/cmake/ZephyrConfig.cmake`, which prepends `zephyr/cmake/modules` to `CMAKE_MODULE_PATH` and `include(zephyr_default)`.
 
 ## Module order (`zephyr/cmake/modules/zephyr_default.cmake`)
 
@@ -44,8 +33,7 @@ target_sources(app PRIVATE src/main.cpp src/sensor.cpp   # `app` target is creat
 … boards → (dts) → (kconfig) → arch → soc → [foreach ends] → include(kernel)
 ```
 
-`dts` runs **before** `kconfig` (devicetree feeds Kconfig — see the ⭐ bridge).
-`include(kernel)` is last and unconditional; it defines the `app` target.
+`dts` runs **before** `kconfig` (devicetree feeds Kconfig — see the ⭐ bridge). `include(kernel)` is last and unconditional; it defines the `app` target.
 
 ## The four kinds of files
 
@@ -59,10 +47,7 @@ target_sources(app PRIVATE src/main.cpp src/sensor.cpp   # `app` target is creat
 
 ## The master pipeline
 
-`dtc` is **not** the parser — Zephyr parses with its own Python `edtlib` and only runs `dtc`
-as an optional linter. `edt.pickle` is the parsed-tree hub: read by `gen_defines.py` (→ C
-macros) and by Kconfig (→ `DT_HAS_*` values). `Kconfig.dts` is generated from the
-**bindings**, not the tree.
+`dtc` is **not** the parser — Zephyr parses with its own Python `edtlib` and only runs `dtc` as an optional linter. `edt.pickle` is the parsed-tree hub: read by `gen_defines.py` (→ C macros) and by Kconfig (→ `DT_HAS_*` values). `Kconfig.dts` is generated from the **bindings**, not the tree.
 
 ```
  SOURCE INPUTS                    DTS STAGE  (Python; dtc only lints)                   CONSUMED BY
@@ -82,15 +67,12 @@ macros) and by Kconfig (→ `DT_HAS_*` values). `Kconfig.dts` is generated from 
 
 ### The ⭐ bridge (exact mechanism)
 
-- **Declaration** — `gen_driver_kconfig_dts.py` scans *all* bindings (not your tree) and
-  writes `Kconfig.dts`, declaring one symbol per compatible:
+- **Declaration** — `gen_driver_kconfig_dts.py` scans *all* bindings (not your tree) and writes `Kconfig.dts`, declaring one symbol per compatible:
   ```
   config DT_HAS_SENSIRION_SCD40_ENABLED
       def_bool $(dt_compat_enabled,$(DT_COMPAT_SENSIRION_SCD40))
   ```
-- **Evaluation** — `dt_compat_enabled` (a Kconfig function in
-  `scripts/kconfig/kconfigfunctions.py`) reads `edt.pickle` during parsing and returns `y`
-  if and only if some `status = "okay"` node has that compatible.
+- **Evaluation** — `dt_compat_enabled` (a Kconfig function in `scripts/kconfig/kconfigfunctions.py`) reads `edt.pickle` during parsing and returns `y` if and only if some `status = "okay"` node has that compatible.
 
 Bindings decide which symbols *exist*; `edt.pickle` decides which are `y`.
 
@@ -110,14 +92,9 @@ All under `firmware/build/zephyr/` unless noted.
 | `misc/generated/configs.c` | Kconfig | debugger symbol table | `GEN_ABSOLUTE_SYM_KCONFIG(CONFIG_DT_HAS_SENSIRION_SCD40_ENABLED, 1)` |
 | `../node.pb.c` / `../node.pb.h` | nanopb generator ← `proto/node.proto` + `node.options` | `#include <node.pb.h>` in both `.cpp` files | `#define node_Telemetry_size 36` |
 
-The last row is the one generator this *app* adds; everything above it is Zephyr's own.
-It follows the same rule as the rest — the input is `proto/node.proto`, the output lives in
-`build/` and is never checked in or hand-edited. Concepts in
-[`zephyr-build-system-guide.md`](../notes/zephyr-build-system-guide.md) §8.
+The last row is the one generator this *app* adds; everything above it is Zephyr's own. It follows the same rule as the rest — the input is `proto/node.proto`, the output lives in `build/` and is never checked in or hand-edited. Concepts in [`zephyr-build-system-guide.md`](../notes/zephyr-build-system-guide.md) §8.
 
-`autoconf.h` is force-included into every translation unit — confirmed in
-`firmware/build/compile_commands.json`: `-imacros …/autoconf.h`. That is why any `.c` can
-test `#ifdef CONFIG_SCD4X` with no `#include`.
+`autoconf.h` is force-included into every translation unit — confirmed in `firmware/build/compile_commands.json`: `-imacros …/autoconf.h`. That is why any `.c` can test `#ifdef CONFIG_SCD4X` with no `#include`.
 
 ## Worked example: `&i2c1` → SCD40, end to end
 
@@ -136,12 +113,6 @@ test `#ifdef CONFIG_SCD4X` with no `#include`.
 | ↓ app | `firmware/src/sensor.cpp` | `DEVICE_DT_GET(DT_NODELABEL(scd40))` ← same node symbol |
 | ↓ runtime | `firmware/src/sensor.cpp`, `read_scd40()` | `sensor_sample_fetch()` → I²C bytes on the wire |
 
-Everything above the `sample_fetch` row resolves **at compile time**; only the final I²C
-exchange is runtime. The command codes, timings, and CRC-8 params underneath
-`sensor_sample_fetch` live in the SCD4x datasheet, and the
-sensor API itself in [`sensor-api-guide.md`](../notes/sensor-api-guide.md).
+Everything above the `sample_fetch` row resolves **at compile time**; only the final I²C exchange is runtime. The command codes, timings, and CRC-8 params underneath `sensor_sample_fetch` live in the SCD4x datasheet, and the sensor API itself in [`sensor-api-guide.md`](../notes/sensor-api-guide.md).
 
-One extra wrinkle this table does not show: the node carries `zephyr,deferred-init`, so
-the boot sweep skips it and `sensor.cpp` calls `device_init()` itself. That changes *when*
-the driver's init runs, not any of the compile-time resolution above — see
-[`sensor-bringup.md`](sensor-bringup.md).
+One extra wrinkle this table does not show: the node carries `zephyr,deferred-init`, so the boot sweep skips it and `sensor.cpp` calls `device_init()` itself. That changes *when* the driver's init runs, not any of the compile-time resolution above — see [`sensor-bringup.md`](sensor-bringup.md).

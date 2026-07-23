@@ -1,11 +1,6 @@
 # MQTT design — project reference
 
-Decisions and verified setup for the Nucleo ↔ Pi MQTT link. Terse by intent — for the
-concepts behind any of it, see the companion teaching guide,
-[`communication-guide.md`](../notes/communication-guide.md). For how these decisions are expressed
-in code, see [`firmware-mqtt-walkthrough.md`](firmware-mqtt-walkthrough.md). This page starts
-at the socket; for the layer *below* it — the PHY/MAC, the interface, and how the static
-address gets there with no app code — see [`network-bringup.md`](network-bringup.md).
+Decisions and verified setup for the Nucleo ↔ Pi MQTT link. Terse by intent — for the concepts behind any of it, see the companion teaching guide, [`communication-guide.md`](../notes/communication-guide.md). For how these decisions are expressed in code, see [`firmware-mqtt-walkthrough.md`](firmware-mqtt-walkthrough.md). This page starts at the socket; for the layer *below* it — the PHY/MAC, the interface, and how the static address gets there with no app code — see [`network-bringup.md`](network-bringup.md).
 
 ## Transport
 
@@ -18,9 +13,7 @@ address gets there with no app code — see [`network-bringup.md`](network-bring
 
 ## Topic hierarchy
 
-`node/<id>/<kind>` — general → specific, so a harness can select one node
-(`node/1/telemetry`), one kind across nodes (`node/+/telemetry`), or one node entirely
-(`node/1/#`) without firmware changes.
+`node/<id>/<kind>` — general → specific, so a harness can select one node (`node/1/telemetry`), one kind across nodes (`node/+/telemetry`), or one node entirely (`node/1/#`) without firmware changes.
 
 | Topic | Direction | QoS | Retain | Payload |
 |---|---|---|---|---|
@@ -29,88 +22,50 @@ address gets there with no app code — see [`network-bringup.md`](network-bring
 | `node/<id>/ack` | node → host | **1** | no | `Ack` protobuf |
 | `node/<id>/status` | node → host | **1** | **yes** | ASCII `online` / `offline` (see LWT) |
 
-`<id>` is `1` for the single bench node. Keep the level even with one node — retrofitting a
-level into a topic scheme later breaks every subscriber.
+`<id>` is `1` for the single bench node. Keep the level even with one node — retrofitting a level into a topic scheme later breaks every subscriber.
 
-`status` stays plain ASCII deliberately: it is the one topic the broker itself writes (as
-the will), so it cannot be protobuf-encoded by firmware.
+`status` stays plain ASCII deliberately: it is the one topic the broker itself writes (as the will), so it cannot be protobuf-encoded by firmware.
 
 ## QoS rationale
 
-**Telemetry = QoS 0.** Not a cost decision — a correctness one. A fresh sample lands every
-~5 s, so a lost one self-heals almost immediately. QoS 1 + a persistent session would
-**queue telemetry during a disconnect and flood stale readings on reconnect**, which is
-worse than losing them: two-minute-old "live" data is misleading. QoS 0 also spares the
-target from tracking in-flight packet ids and retransmits.
+**Telemetry = QoS 0.** Not a cost decision — a correctness one. A fresh sample lands every ~5 s, so a lost one self-heals almost immediately. QoS 1 + a persistent session would **queue telemetry during a disconnect and flood stale readings on reconnect**, which is worse than losing them: two-minute-old "live" data is misleading. QoS 0 also spares the target from tracking in-flight packet ids and retransmits.
 
-**Command / Ack = QoS 1.** A dropped "set interval" has no self-healing path — there is no
-next one coming. Consequence: QoS 1 is *at least* once, so **duplicates are possible** (the
-`DUP` flag on redelivery after a lost `PUBACK`). Commands must therefore be **idempotent or
-carry a `sequence` the node dedupes on** — this is what forces the `sequence` field in the
-README's message set, and `Ack` echoes it back.
+**Command / Ack = QoS 1.** A dropped "set interval" has no self-healing path — there is no next one coming. Consequence: QoS 1 is *at least* once, so **duplicates are possible** (the `DUP` flag on redelivery after a lost `PUBACK`). Commands must therefore be **idempotent or carry a `sequence` the node dedupes on** — this is what forces the `sequence` field in the README's message set, and `Ack` echoes it back.
 
-**QoS 2 unused.** Its exactly-once four-packet handshake buys nothing that a `sequence` +
-dedupe doesn't already give us, at higher cost and complexity.
+**QoS 2 unused.** Its exactly-once four-packet handshake buys nothing that a `sequence` + dedupe doesn't already give us, at higher cost and complexity.
 
-MQTT QoS is **not** TCP reliability. TCP guarantees bytes reached the broker's *TCP stack*;
-QoS 1 guarantees the broker *application* took ownership. QoS 0's real exposure is the
-reconnect gap, not wire corruption.
+MQTT QoS is **not** TCP reliability. TCP guarantees bytes reached the broker's *TCP stack*; QoS 1 guarantees the broker *application* took ownership. QoS 0's real exposure is the reconnect gap, not wire corruption.
 
 ## Session, keepalive, will
 
-- **Clean session** — the node keeps no server-side state. Follows directly from the QoS 0
-  telemetry decision: there is no queue we want replayed.
-- **Keepalive 60 s.** The node publishes every ~5 s so `PINGREQ` will rarely fire; the value
-  sets how fast the broker declares us dead (1.5× keepalive) and fires the will. Needed
-  because TCP notices a dead peer far too slowly and an idle connection is silent.
-- **Last Will**: topic `node/<id>/status`, payload `offline`, **retained**, QoS 1,
-  registered at `CONNECT`. On connect the node publishes `online` (retained) to the same
-  topic. Net effect: `status` is always correct for any subscriber, including after a crash
-  or cable pull, with no firmware handling the failure path.
-- **Reconnect**: on drop, retry the TCP connect + MQTT `CONNECT` with backoff. This is the
-  README's headline learning goal — treat it as real work, not error handling.
+- **Clean session** — the node keeps no server-side state. Follows directly from the QoS 0 telemetry decision: there is no queue we want replayed.
+- **Keepalive 60 s.** The node publishes every ~5 s so `PINGREQ` will rarely fire; the value sets how fast the broker declares us dead (1.5× keepalive) and fires the will. Needed because TCP notices a dead peer far too slowly and an idle connection is silent.
+- **Last Will**: topic `node/<id>/status`, payload `offline`, **retained**, QoS 1, registered at `CONNECT`. On connect the node publishes `online` (retained) to the same topic. Net effect: `status` is always correct for any subscriber, including after a crash or cable pull, with no firmware handling the failure path.
+- **Reconnect**: on drop, retry the TCP connect + MQTT `CONNECT` with backoff. This is the README's headline learning goal — treat it as real work, not error handling.
 
 ### Reconnect latency vs. backoff
 
-The backoff starts at 1 s, doubles to a 30 s cap, and resets to the minimum only after a
-session that actually reached CONNACK. Consequence: **a broker that comes back early still
-waits out the current delay.** Restarting Mosquitto takes seconds; the node can reconnect
-30 s later.
+The backoff starts at 1 s, doubles to a 30 s cap, and resets to the minimum only after a session that actually reached CONNACK. Consequence: **a broker that comes back early still waits out the current delay.** Restarting Mosquitto takes seconds; the node can reconnect 30 s later.
 
-That is the intended trade — patience over hammering a dead endpoint — but it means
-"broker downtime" and "node downtime" are not the same number, and a 5 s telemetry cadence
-can lose several samples to a 1 s outage. The sensor keeps sampling throughout (that is
-what the zbus split is for), so the loss is a `sequence` gap, not missing time.
+That is the intended trade — patience over hammering a dead endpoint — but it means "broker downtime" and "node downtime" are not the same number, and a 5 s telemetry cadence can lose several samples to a 1 s outage. The sensor keeps sampling throughout (that is what the zbus split is for), so the loss is a `sequence` gap, not missing time.
 
 ## Broker config (verified)
 
-Mosquitto 2.0 binds to loopback and denies anonymous **by default**, so an untouched
-install is unreachable from the Nucleo (connection *refused*). Drop-in at
-`/etc/mosquitto/conf.d/bench.conf` (read via `include_dir` from the shipped
-`mosquitto.conf`, which stays untouched):
+Mosquitto 2.0 binds to loopback and denies anonymous **by default**, so an untouched install is unreachable from the Nucleo (connection *refused*). Drop-in at `/etc/mosquitto/conf.d/bench.conf` (read via `include_dir` from the shipped `mosquitto.conf`, which stays untouched):
 
 ```
 listener 1883 192.168.10.1
 allow_anonymous true
 ```
 
-- Binding to `192.168.10.1` (not `0.0.0.0`) keeps the unauthenticated broker on the bench
-  cable and **off the home LAN**, where the Pi is `192.168.1.105` over WiFi.
-- Defining any listener **replaces** the implicit localhost one — verified: `ss -tlnp` shows
-  only `192.168.10.1:1883`, loopback gone. So even on the Pi, use `-h 192.168.10.1`, never
-  `-h localhost`.
+- Binding to `192.168.10.1` (not `0.0.0.0`) keeps the unauthenticated broker on the bench cable and **off the home LAN**, where the Pi is `192.168.1.105` over WiFi.
+- Defining any listener **replaces** the implicit localhost one — verified: `ss -tlnp` shows only `192.168.10.1:1883`, loopback gone. So even on the Pi, use `-h 192.168.10.1`, never `-h localhost`.
 
 ### Boot ordering — required, or the broker dies on reboot
 
-Binding to a *specific* IP means mosquitto cannot start until that address exists. On boot it
-loses the race against NetworkManager: `bind()` fails with `Cannot assign requested address`,
-and systemd's default limiter (5 starts / 10 s) gives up **within one second** —
-`Start request repeated too quickly` — long before `eth0` is configured. This shows up the
-first time the Pi reboots after the listener is bound: the service is simply dead until
-started by hand.
+Binding to a *specific* IP means mosquitto cannot start until that address exists. On boot it loses the race against NetworkManager: `bind()` fails with `Cannot assign requested address`, and systemd's default limiter (5 starts / 10 s) gives up **within one second** — `Start request repeated too quickly` — long before `eth0` is configured. This shows up the first time the Pi reboots after the listener is bound: the service is simply dead until started by hand.
 
-Fix, `/etc/systemd/system/mosquitto.service.d/override.conf` (a drop-in, so package upgrades
-don't clobber it) — then `sudo systemctl daemon-reload`:
+Fix, `/etc/systemd/system/mosquitto.service.d/override.conf` (a drop-in, so package upgrades don't clobber it) — then `sudo systemctl daemon-reload`:
 
 ```ini
 [Unit]
@@ -123,30 +78,17 @@ Restart=on-failure
 RestartSec=5
 ```
 
-- `Wants=` **and** `After=network-online.target` — `After=` alone only orders *if* the target
-  is already being started; `Wants=` pulls it in. Not `network.target`, which only means
-  "networking is being configured" and still races.
+- `Wants=` **and** `After=network-online.target` — `After=` alone only orders *if* the target is already being started; `Wants=` pulls it in. Not `network.target`, which only means "networking is being configured" and still races.
 - `StartLimitIntervalSec=0` disables the rate limiter that caused the give-up.
-- `Restart=on-failure` + `RestartSec=5` retry indefinitely. This covers the case ordering
-  *cannot* fix: with the **Nucleo powered off** there is no carrier, so NetworkManager never
-  applies the profile and `192.168.10.1` genuinely does not exist. The broker then starts by
-  itself once the board is plugged in.
+- `Restart=on-failure` + `RestartSec=5` retry indefinitely. This covers the case ordering *cannot* fix: with the **Nucleo powered off** there is no carrier, so NetworkManager never applies the profile and `192.168.10.1` genuinely does not exist. The broker then starts by itself once the board is plugged in.
 
-Requires `NetworkManager-wait-online.service` to be **enabled** — it is what actually
-satisfies `network-online.target`; if disabled, the target is inert and the ordering silently
-does nothing. Check with `systemctl is-enabled NetworkManager-wait-online.service`, and
-inspect the merged unit with `systemctl cat mosquitto`.
+Requires `NetworkManager-wait-online.service` to be **enabled** — it is what actually satisfies `network-online.target`; if disabled, the target is inert and the ordering silently does nothing. Check with `systemctl is-enabled NetworkManager-wait-online.service`, and inspect the merged unit with `systemctl cat mosquitto`.
 
-Check it holds: `sudo reboot`, then once the Pi is back,
-`systemctl is-active mosquitto` should say `active` with no manual start — and
-`ss -tlnp | grep 1883` should show the listener bound to `192.168.10.1`.
+Check it holds: `sudo reboot`, then once the Pi is back, `systemctl is-active mosquitto` should say `active` with no manual start — and `ss -tlnp | grep 1883` should show the listener bound to `192.168.10.1`.
 
 ### Testing the Last Will — two obvious methods silently cannot work
 
-The will fires when the broker stops hearing from the node for 1.5× keepalive. Observing
-that requires the node to look dead **while the Pi's own networking stays intact** — because
-`192.168.10.1` is both where Mosquitto listens *and* where a local `mosquitto_sub` connects.
-Anything that drops carrier takes the observer down with the node, so nothing can watch.
+The will fires when the broker stops hearing from the node for 1.5× keepalive. Observing that requires the node to look dead **while the Pi's own networking stays intact** — because `192.168.10.1` is both where Mosquitto listens *and* where a local `mosquitto_sub` connects. Anything that drops carrier takes the observer down with the node, so nothing can watch.
 
 | Method | Works? | Why |
 |---|---|---|
@@ -164,13 +106,9 @@ sudo nft add rule inet bench input ip saddr 192.168.10.2 drop
 sudo nft delete table inet bench          # node reconnects and republishes "online"
 ```
 
-Lower `kKeepaliveSec` to ~10 s and reflash first, or the wait is 90 s. Watch
-`node/1/status` from a second terminal on the Pi (`mosquitto_sub -h 192.168.10.1 -t
-'node/1/status' -v`) — `offline` appears without any client having published it.
+Lower `kKeepaliveSec` to ~10 s and reflash first, or the wait is 90 s. Watch `node/1/status` from a second terminal on the Pi (`mosquitto_sub -h 192.168.10.1 -t 'node/1/status' -v`) — `offline` appears without any client having published it.
 
-This exercises both directions of the failure at once: the broker detects a dead node and
-fires the will, while the node detects a dead broker (unacked `PINGREQ`) and enters its
-reconnect backoff, which you can watch on the console.
+This exercises both directions of the failure at once: the broker detects a dead node and fires the will, while the node detects a dead broker (unacked `PINGREQ`) and enters its reconnect backoff, which you can watch on the console.
 
 Verify / exercise:
 
@@ -182,22 +120,13 @@ mosquitto_pub -h 192.168.10.1 -t 'node/1/command' -m x -q 1 -d  # -d shows the p
 
 ## Payload
 
-[`proto/node.proto`](../proto/node.proto) is the contract, and carries its own field-level
-rationale inline. Concepts in [`protobuf-guide.md`](../notes/protobuf-guide.md).
+[`proto/node.proto`](../proto/node.proto) is the contract, and carries its own field-level rationale inline. Concepts in [`protobuf-guide.md`](../notes/protobuf-guide.md).
 
-One consequence belongs here rather than there: **the topic is what says which message
-type a payload is.** Protobuf puts no type identity on the wire, so `node/<id>/command`
-carrying a `Command` is not a convention — it is the half of the wire format the `.proto`
-file does not contain. Never mix message types on one topic.
+One consequence belongs here rather than there: **the topic is what says which message type a payload is.** Protobuf puts no type identity on the wire, so `node/<id>/command` carrying a `Command` is not a convention — it is the half of the wire format the `.proto` file does not contain. Never mix message types on one topic.
 
 ## Still open
 
-- **Retain on telemetry** — off. Turning it on gives a late-starting harness the last
-  reading instantly; revisit if that friction shows up. Note the retained `status` topic
-  already covers the "is it alive?" half.
-- **`<id>` source** — hardcoded `1`, or derived from the STM32 unique ID (the same source
-  the Ethernet MAC `02:80:E1:9C:A7:DE` is hashed from). Only matters with a second node.
+- **Retain on telemetry** — off. Turning it on gives a late-starting harness the last reading instantly; revisit if that friction shows up. Note the retained `status` topic already covers the "is it alive?" half.
+- **`<id>` source** — hardcoded `1`, or derived from the STM32 unique ID (the same source the Ethernet MAC `02:80:E1:9C:A7:DE` is hashed from). Only matters with a second node.
 
-Settled elsewhere: the **telemetry trigger** question — a timed poll rather than the
-SCD-40's data-ready signal — is closed, because the in-tree driver never exposes data-ready
-through the sensor API. See *Accepted limitation* in [`sensor-bringup.md`](sensor-bringup.md).
+Settled elsewhere: the **telemetry trigger** question — a timed poll rather than the SCD-40's data-ready signal — is closed, because the in-tree driver never exposes data-ready through the sensor API. See *Accepted limitation* in [`sensor-bringup.md`](sensor-bringup.md).

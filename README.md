@@ -31,11 +31,7 @@ The app runs **two threads** across **four translation units**, one responsibili
 5. Decouples the two halves internally with **zbus**: the sensor thread publishes readings to a channel and never mentions MQTT, while a listener signals the network thread through an eventfd so it can wait on the socket and the bus in one `poll()`. A channel validator owns the sample-period bounds, so the wire layer cannot drift from them.
 6. Talks to a **host-side test harness** on the Raspberry Pi (Python, paho-mqtt) that decodes and logs the telemetry stream and can publish commands.
 
-**Verifying it yourself.** Every claim above is exercised by a lab in the documentation rather
-than reported as a past result — see the *Exercising…* section of each guide in the table below.
-Between them they cover telemetry decode, all three commands, out-of-range rejection, duplicate
-suppression, a malformed payload that must not desynchronise the stream, a broker outage the
-sensor samples straight through, and the Last Will.
+**Verifying it yourself.** Every claim above is exercised by a lab in the documentation rather than reported as a past result — see the *Exercising…* section of each guide in the table below. Between them they cover telemetry decode, all three commands, out-of-range rejection, duplicate suppression, a malformed payload that must not desynchronise the stream, a broker outage the sensor samples straight through, and the Last Will.
 
 **Still to do:**
 - **Schema-versioning exercise** — add a field and deliberately run old↔new against each other.
