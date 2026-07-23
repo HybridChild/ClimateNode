@@ -155,8 +155,7 @@ By default the kernel initialises every device during boot, in priority order, b
 `main()`. `device_is_ready()` then just reports the outcome.
 
 That default has a sharp edge, and it is worth understanding because it is not obvious
-from the API: **a failed init is permanent.** Look at what `do_device_init()` does on
-error — it records the errno in `init_res` but sets `initialized` **unconditionally**. So:
+from the API: **a failed init is permanent.** Look at what the kernel's internal `do_device_init()` does on error — it records the errno in `init_res` but sets `initialized` **unconditionally**. So:
 
 - `device_is_ready()` is `initialized && init_res == 0`, and latches false forever.
 - `device_init()` refuses a second attempt with `-EALREADY`.
@@ -466,6 +465,12 @@ different lists, and only the second one is callable.
 
 ## 7. The shell — and the RTIO detour
 
+The general machinery — what the `uart:~$` prompt is, how a command like `sensor get` comes
+to exist as a registered function, and why device names tab-complete — is its own subject,
+built from first principles in **[`shell-guide.md`](shell-guide.md)**. Read that first if
+the shell itself is new to you; this section is the *sensor* flavour of it and its one weird
+quirk (the RTIO detour), and it leans on the general guide rather than re-deriving it.
+
 ### 7.1 What you get
 
 `CONFIG_SENSOR_SHELL=y` registers one root command (`sensor_shell.c:1147`) with these
@@ -500,8 +505,9 @@ the SCD-40 reports. *(Shape taken from the format strings, not captured from thi
 run it to see live values.)*
 
 The device name `scd40@62` is the **devicetree node name** — label `scd40`, unit address
-`0x62`. Not the label alone. Both device and channel names tab-complete; the command
-table wires up dynamic completion via `&dsub_device_name` (`sensor_shell.c:1131`).
+`0x62`. Not the label alone. Both device and channel names tab-complete, via the dynamic
+subcommand `&dsub_device_name` (`sensor_shell.c:1131`); dynamic completion is the mechanism
+explained in [`shell-guide.md` §5](shell-guide.md).
 
 Channel names are the enum names lowercased with `SENSOR_CHAN_` stripped:
 `SENSOR_CHAN_AMBIENT_TEMP` → `ambient_temp`. The table is at `sensor_shell.c:52`.
