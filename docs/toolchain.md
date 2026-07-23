@@ -19,10 +19,9 @@ harness. They share only `proto/node.proto`.
 EthernetProtobufZephyr/    this repo — pure source (proto/ firmware/ host/ docs/), builds vs. above
 ```
 
-The workspace is **shared with `../ImpulseZephyr`** (originally a self-contained T2 workspace; its
-Zephyr tree was promoted here so both projects reuse one install). Consequence: **both projects are
-pinned to Zephyr v4.4.1.** If this project ever needs a different version, give it its own workspace
-(escape hatch — not needed today; v4.4.1 already ships everything below).
+The workspace is a shared global install, **pinned to Zephyr v4.4.1.** If this project ever needs a
+different version, give it its own workspace (escape hatch — not needed today; v4.4.1 already ships
+everything below).
 
 ### Everything this project needs is in v4.4.1
 
@@ -56,8 +55,8 @@ west flash -r openocd --build-dir <repo>/firmware/build
   from the repo and nanopb and the HALs are invisible.
 - **`-s`/`-d`** keep the app source in this repo and the build output beside it.
 - **`-r openocd` is required for flashing.** `nucleo_h753zi` defaults to the `stm32cubeprogrammer`
-  runner, which is not installed. OpenOCD (bundled in the SDK hosttools; ST-LINK over SWD) works and
-  matches how ImpulseZephyr flashes. Forced by `flash.sh` rather than baked into the app as a
+  runner, which is not installed. OpenOCD (bundled in the SDK hosttools; ST-LINK over SWD) works.
+  Forced by `flash.sh` rather than baked into the app as a
   default runner — overriding `board.cmake` for an in-tree board would mean carrying a board
   fragment in this repo purely to change one default, and a one-line `-r` in the wrapper is the
   smaller cost.
@@ -96,9 +95,9 @@ Two constraints worth knowing before changing anything here:
   reverse. A system `protoc` a generation ahead of the installed `protobuf` runtime fails with
   `Runtime version cannot be older than the linked gencode version`. Bundling both halves in one
   package keeps them in lockstep.
-- **Never install protobuf into `~/zephyr-workspace/.venv`.** That venv drives the nanopb generator
-  and is shared with `../ImpulseZephyr`; upgrading it to satisfy the host would risk the firmware
-  build of two projects. The separation is the point — see `host/requirements.txt`.
+- **Never install protobuf into `~/zephyr-workspace/.venv`.** That venv drives the nanopb generator;
+  upgrading it to satisfy the host would risk the firmware build. The separation is the point — see
+  `host/requirements.txt`.
 
 The firmware side is immune to that whole class of problem, which is worth understanding: nanopb
 has `protoc` emit a *descriptor set* and generates C from that with its own Python generator. It

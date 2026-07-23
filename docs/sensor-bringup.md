@@ -4,8 +4,8 @@ How the Adafruit **SCD-40** (CO₂ / temperature / humidity) is wired, described
 read on this bench. Terse by intent: decisions, rationale, and the facts you need when the sensor
 path misbehaves. For the concepts underneath — what a `struct device` is, why reading is
 `fetch` + `get`, what `struct sensor_value` is for — see the companion teaching guide,
-[`sensor-api-guide.md`](../notes/sensor-api-guide.md). For the chip's own command codes and
-conversion formulas, see `../../shared_refs/sensor/SCD4x.yaml`.
+[`sensor-api-guide.md`](../notes/sensor-api-guide.md). The chip's own command codes and
+conversion formulas are noted inline in these two docs where they matter.
 
 Builds against the shared global Zephyr workspace — see [`toolchain.md`](toolchain.md).
 
@@ -184,8 +184,8 @@ with `command.py interval 5000`.
 
 Why it stands:
 
-- **Single-shot is not available on this part.** `SCD4x.yaml` lists `single_shot: unavailable` for
-  the SCD40 (SCD41/SCD43 only), which is why the `sensirion,scd40` binding has no `mode` property.
+- **Single-shot is not available on this part.** Single-shot is an SCD41/SCD43 feature; the SCD40
+  lacks it, which is why the `sensirion,scd40` binding has no `mode` property.
   There is no way to command a conversion on demand.
 - **The driver reports no staleness**, and the sensor API exposes no data-ready channel. The only
   in-API detection is comparing the three raw `sensor_value`s against the previous fetch and

@@ -12,8 +12,8 @@ function name (it moves), and Zephyr's by `file:line` against v4.4.1 in `~/zephy
 
 For how the sensor is wired, described and initialised here, see
 [`docs/sensor-bringup.md`](../docs/sensor-bringup.md) — that's the terse reference half.
-This is the concepts half. For the chip's own command codes and conversion formulas, see
-`../../shared_refs/sensor/SCD4x.yaml`.
+This is the concepts half. The chip's own command codes and conversion formulas appear
+inline below, where the driver actually uses them.
 
 **The shape of this document:**
 
@@ -860,8 +860,6 @@ success without new data**, which is the sharpest edge in the path.
 
 - **[`docs/sensor-bringup.md`](../docs/sensor-bringup.md)** — the reference half: the
   overlay, the Kconfig, the deferred-init decision, and the accepted fast-poll limitation.
-- **`../../shared_refs/sensor/SCD4x.yaml`** — chip-level truth: command codes, conversion
-  formulas, CRC-8 parameters. Reach for it when debugging the sensor path.
 - **[`protobuf-guide.md`](protobuf-guide.md)** — what happens to the reading at the second
   boundary in §5, where it becomes bytes.
 - **[`zbus-guide.md`](zbus-guide.md)** — the channel between acquisition and transport.

@@ -38,8 +38,8 @@ const struct device *const scd40 = DEVICE_DT_GET(DT_NODELABEL(scd40));
 /* How long to wait before initialising the sensor.
  *
  * The SCD-40 needs up to 30 ms after VDD crosses its threshold before it will
- * answer on I2C at all (`timing_specifications.power_up_time` in
- * ../../shared_refs/sensor/SCD4x.yaml). The board and the sensor share a rail,
+ * answer on I2C at all (the SCD4x datasheet's power-up time). The board and the
+ * sensor share a rail,
  * so on a cold plug-in the MCU can reach the driver's POST_KERNEL init while the
  * chip is still powering up. Every one of scd4x_init()'s four transfers would
  * then NACK.

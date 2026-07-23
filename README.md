@@ -111,21 +111,17 @@ The last two pair a guide with a **source file** rather than a `docs/` page, bec
 
 Guides without a reference half: [`language-cpp.md`](notes/language-cpp.md) — why C++17, and the C↔C++ boundary.
 
-References without a guide half: [`toolchain.md`](docs/toolchain.md) — both toolchains, build/flash workflow, and the host venv · [`out-of-tree-hardware-overview.md`](docs/out-of-tree-hardware-overview.md) — porting to a board Zephyr doesn't ship.
+References without a guide half: [`toolchain.md`](docs/toolchain.md) — both toolchains, build/flash workflow, and the host venv.
 
 Neither, and deliberately so: [`firmware-mqtt-walkthrough.md`](docs/firmware-mqtt-walkthrough.md) — a guided reading of `firmware/src/main.cpp` that connects the others. It teaches, but it tracks this repo's code, so it lives with the references and must stay in sync when the client changes.
 
 ## References
-Local PDFs live in [`../../Datasheets/sensor/Adafruit_SCD40/`](../../Datasheets/sensor/Adafruit_SCD40/).
 
 **Board (Adafruit SCD-40 breakout, product 5187):**
-- [SCD-40 / SCD-41 learn guide (PDF)](../../Datasheets/sensor/Adafruit_SCD40/adafruit-scd-40-and-scd-41.pdf) — pinouts, wiring, and board schematic (at the end).
 - [Product page](https://www.adafruit.com/product/5187) — specs, pricing, overview.
-- [Downloads page](https://learn.adafruit.com/adafruit-scd-40-and-scd-41/downloads) — schematic + Fab print (labeled SCD-41; the SCD-40 board is identical).
+- [Downloads page](https://learn.adafruit.com/adafruit-scd-40-and-scd-41/downloads) — schematic + Fab print, pinouts, and wiring (labeled SCD-41; the SCD-40 board is identical).
 
-**Sensor (Sensirion SCD4x) — the reference for firmware/driver work:**
-- [`SCD4x.yaml`](../../shared_refs/sensor/SCD4x.yaml) — **structured digest of the datasheet (v1.7)**, and the quickest thing to reach for while coding: I²C command codes (`start_periodic_measurement` `0x21b1`, `read_measurement` `0xec05`, …), the raw-word → CO₂/T/RH conversion formulas, CRC-8 params (poly `0x31`, init `0xFF`, no reflection), execution times, and the SCD40/41/43 variant/accuracy tables. Mostly what the Zephyr driver does under the hood, but essential for understanding and debugging it.
-- [SCD4x datasheet (PDF)](../../Datasheets/sensor/Adafruit_SCD40/Sensirion_SCD4x_Datasheet.pdf) — the full source document behind the YAML (v1.7, April 2025).
+**Sensor (Sensirion SCD4x) — the reference for firmware/driver work:** the chip's I²C command codes, the raw-word → CO₂/T/RH conversion formulas, and the CRC-8 params (poly `0x31`, init `0xFF`, no reflection) are what the Zephyr driver handles under the hood. They are noted inline where they matter in [`sensor-api-guide.md`](notes/sensor-api-guide.md) and [`docs/sensor-bringup.md`](docs/sensor-bringup.md); the full datasheet is published by Sensirion.
 
 **Zephyr:**
 - [MQTT client library](https://docs.zephyrproject.org/latest/connectivity/networking/api/mqtt.html) — `CONFIG_MQTT_LIB`; connect / publish / subscribe / keepalive API. The core of the transport rehearsal.

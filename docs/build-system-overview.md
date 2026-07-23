@@ -8,9 +8,7 @@ structure holds. Regenerate and re-grep rather than trusting a number that looks
 **For the concepts** (the mental model, why it's designed this way, how devicetree and
 Kconfig fit together) see the companion guide,
 [`zephyr-build-system-guide.md`](../notes/zephyr-build-system-guide.md). This file is the lookup
-reference that guide points back to. For the *hard* hardware case — a full out-of-tree board
-for an MCU Zephyr doesn't ship — see [`out-of-tree-hardware-overview.md`](out-of-tree-hardware-overview.md),
-which uses the sibling `../ImpulseZephyr` repo as its reference.
+reference that guide points back to.
 
 ## Workspace & entry point
 
@@ -140,7 +138,7 @@ test `#ifdef CONFIG_SCD4X` with no `#include`.
 
 Everything above the `sample_fetch` row resolves **at compile time**; only the final I²C
 exchange is runtime. The command codes, timings, and CRC-8 params underneath
-`sensor_sample_fetch` are documented in `../../shared_refs/sensor/SCD4x.yaml`, and the
+`sensor_sample_fetch` live in the SCD4x datasheet, and the
 sensor API itself in [`sensor-api-guide.md`](../notes/sensor-api-guide.md).
 
 One extra wrinkle this table does not show: the node carries `zephyr,deferred-init`, so

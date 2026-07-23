@@ -632,9 +632,6 @@ described, already configured, and already bound to its driver.
 - **`firmware/build/zephyr/zephyr.dts` and `.config`** — the two files Exercises 1 and 2
   read. Skimming them once, in full, is worth more than another page of prose about what
   they contain.
-- **[`out-of-tree-hardware-overview.md`](../docs/out-of-tree-hardware-overview.md)** — what
-  changes when the *board* is not in the Zephyr tree either, and you supply the board
-  definition as well as the overlay.
 - **[`language-cpp.md`](language-cpp.md)** — the other half of what `target_sources` does
   here, and why one of this app's three compiled sources is C while two are C++.
 - **Zephyr's own build documentation** — the `west build` reference and the
