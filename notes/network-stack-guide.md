@@ -28,7 +28,7 @@ Here is everything the application does to get on the network:
 (nothing)
 ```
 
-There is no `net_if_up()`, no `socket()` for the interface, no address assignment, no link setup anywhere in `main.cpp`. The first networking call the app makes is `mqtt_connect()`, and by then a fully configured IPv4 interface already exists. Compare the sensor, which `sensor.cpp` explicitly initialises with `device_init()` — the network needs no equivalent.
+There is no `net_if_up()`, no `socket()` for the interface, no address assignment, no link setup anywhere in `main.cpp`. The first networking call the app makes is `mqtt_connect()`, and by then a fully configured IPv4 interface already exists. Compared to the sensor, which `sensor.cpp` explicitly initialises with `device_init()` — the network needs no equivalent.
 
 What produces that interface is three inert-looking things:
 
@@ -42,17 +42,17 @@ The question this guide answers is how those three become a socket you can conne
 
 ## 2. The physical pieces: MAC, PHY, MDIO, RMII
 
-Before the software abstraction, the hardware — because §1's answer hinges on a `net_if` that a *driver* registers, and that driver is talking to two distinct chips wired together in a standard way. The terms the reference doc throws around (MAC, PHY, MDIO, RMII) name the parts of that arrangement, and they are worth pinning down once, because they are the same on every wired-Ethernet MCU you will meet — nothing here is STM32-specific.
+Before the software abstraction, the hardware — because §1's answer hinges on a `net_if` that a *driver* registers, and that driver is talking to two distinct chips wired together in a standard way. The terms the reference doc ([`network-bringup.md`](../docs/network-bringup.md)) throws around (MAC, PHY, MDIO, RMII) name the parts of that arrangement, and they are worth pinning down once, because they are the same on every wired-Ethernet MCU you will meet — nothing here is STM32-specific.
 
 **Ethernet is two halves.** The IEEE-802.3 standard splits a wired link into a *digital* half and an *analog* half, and real silicon splits along the same line — usually into two separate chips:
 
 ```
    STM32H753 (the MCU die)                       LAN8742 (a separate chip)
- ┌──────────────────────────┐                 ┌──────────────────────┐        ┌───────┐
+ ┌───────────────────────────┐                 ┌──────────────────────┐        ┌───────┐
  │ CPU ─ AHB bus ─ MAC       │══ RMII (data) ══│  PHY                 │─ pair ─│ RJ45  │═ cable ═▶
- │                 ("ETH"    │── MDIO (mgmt) ──│  (transceiver)       │─ pair ─│  +    │
- │              peripheral)  │                 │                      │        │ magn. │
- └──────────────────────────┘                 └──────────────────────┘        └───────┘
+ │     ("ETH" peripheral)    │── MDIO (mgmt) ──│  (transceiver)       │─ pair ─│  +    │
+ │                           │                 │                      │        │ magn. │
+ └───────────────────────────┘                 └──────────────────────┘        └───────┘
     digital: frames & DMA       two buses         analog: volts on copper
 ```
 
@@ -89,7 +89,7 @@ A `net_if` (network interface) is Zephyr's in-memory handle for "a way to send a
     device driver     eth_stm32_hal: DMA rings, the MAC peripheral, MDIO to the PHY
          │
     ─────┼──────  the wire  ──────────────────────────────────────────
-      RJ45 → LAN8742 PHY → RMII → STM32 MAC
+      STM32 MAC → RMII → LAN8742 PHY → RJ45
 ```
 
 Two properties of this picture are the whole reason the app is empty:

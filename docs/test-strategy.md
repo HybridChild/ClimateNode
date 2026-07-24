@@ -23,7 +23,7 @@ No board, no broker, no sensor. The script sources the workspace venv and export
 
 **`tests/commands/`** — that `set_interval` and `trigger` reach the bus carrying the right values; that `get_device_info` reports the identity constants; that an unknown `oneof` arm and a `which_payload == 0` both answer `UNSUPPORTED`; that an out-of-range interval is rejected **and leaves the channel unchanged**; that the bounds are inclusive at both ends; and that a duplicate sequence is acked without re-running the side effect, while a fresh one afterwards still acts.
 
-Several of these are claims from the guides turned into assertions — `protobuf-guide.md` §4–§5 and `zbus-guide.md` §6 — so prose and firmware cannot drift apart quietly.
+Several of these are claims from the guides turned into assertions — [`protobuf-guide.md` §4–§5](../notes/protobuf-guide.md) and [`zbus-guide.md` §6](../notes/zbus-guide.md) — so prose and firmware cannot drift apart quietly.
 
 ## Decisions
 
@@ -48,10 +48,10 @@ Two consequences, both accepted:
 
 Not gaps to be filled by more host tests — these are structurally out of reach:
 
-- **`sensor.cpp`** — needs the SCD-40. Timing, the deferred init, the fast-poll republish. Covered by *Bring-up checks* in [`sensor-bringup.md`](sensor-bringup.md) and `sensor-api-guide.md` §11.
+- **`sensor.cpp`** — needs the SCD-40. Timing, the deferred init, the fast-poll republish. Covered by *Bring-up checks* in [`sensor-bringup.md`](sensor-bringup.md) and [`sensor-api-guide.md` §11](../notes/sensor-api-guide.md).
 - **`main.cpp`'s MQTT session** — connect, keepalive, reconnect backoff, the poll loop with its two deadlines. Needs a broker and a socket.
-- **Anything on the wire** — QoS 1 redelivery, retained messages, the Last Will. Covered by `communication-guide.md` §9 and *Testing the Last Will* in [`mqtt-design.md`](mqtt-design.md).
-- **Byte-exact encoded sizes.** The tests assert messages round-trip and fit their generated bounds, never that a specific message is N bytes. Pinning that would break on every legitimate schema change; the worked example in `protobuf-guide.md` §3 is where the exact arithmetic lives.
+- **Anything on the wire** — QoS 1 redelivery, retained messages, the Last Will. Covered by [`communication-guide.md` §9](../notes/communication-guide.md) and *Testing the Last Will* in [`mqtt-design.md`](mqtt-design.md).
+- **Byte-exact encoded sizes.** The tests assert messages round-trip and fit their generated bounds, never that a specific message is N bytes. Pinning that would break on every legitimate schema change; the worked example in [`protobuf-guide.md` §3](../notes/protobuf-guide.md) is where the exact arithmetic lives.
 
 ## Still open
 

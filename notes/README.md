@@ -30,9 +30,9 @@ The order above is a single thread through this lattice. Arrows mean "assumes"; 
                        ┌─▶ sensor-api-guide ──────────────────────────┐
 zephyr-build-system ───┤     the SCD-40                               │
   devicetree, Kconfig  ├─▶ language-cpp   (orthogonal)                ├─▶ zbus-guide ─▶ testing-guide
-  the foundation       └─▶ shell-guide    (off to the side)           │     the two        (last:
-                                                                      │     threads meet    how it's tested)
-        communication-guide ─┬─▶ protobuf-guide ─────────────────────┘
+  the foundation       └─▶ shell-guide    (off to the side)           │     the two        (last: how it's tested)
+                                                                      │     threads meet    
+         communication-guide ─┬─▶ protobuf-guide ─────────────────────┘
            MQTT, the broker   │     the wire format
                               └─▶ network-stack-guide
                                     the socket beneath MQTT

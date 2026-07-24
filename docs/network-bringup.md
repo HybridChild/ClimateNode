@@ -105,7 +105,7 @@ setup_ipv4(iface);                       /* → net_if_ipv4_addr_add(iface, &add
 
 So with **one** interface it needs no configuration to find it — it takes the only one. The address string from `prj.conf` is parsed by `net_addr_pton` and added as a `NET_ADDR_MANUAL` address; the netmask is set the same way. This whole dance runs from a `SYS_INIT` at `APPLICATION` level, which is *after* every `POST_KERNEL` driver, so the `net_if` is guaranteed to exist by the time `net_config` looks for it.
 
-**`CONFIG_NET_CONFIG_AUTO_INIT` is `default y`** (`init.c:565` is compiled in) — which is why `main.cpp` never calls `net_config_init()`. That default has one exception that matters for the swap question; see the guide's §6.
+**`CONFIG_NET_CONFIG_AUTO_INIT` is `default y`** (`init.c:565` is compiled in) — which is why `main.cpp` never calls `net_config_init()`. That default has one exception that matters for the swap question; see [`network-stack-guide.md`](../notes/network-stack-guide.md) §7.
 
 **4. No gateway, on purpose.** `CONFIG_NET_CONFIG_MY_IPV4_GW` is unset. `setup_ipv4()` only adds a default route when that string is non-empty (`init.c:199`), so **no route is installed** — deliberately. The node (`.2`) and the Pi (`.1`) share `192.168.10.0/24`, so every peer is on-link and reachable by ARP alone; a gateway would only be needed to reach *off*-link addresses, and there are none on this direct cable. See [`mqtt-design.md`](mqtt-design.md).
 
@@ -118,7 +118,7 @@ So with **one** interface it needs no configuration to find it — it takes the 
 
 ## Bring-up checks
 
-Verified on hardware. The link needs no sensor and no broker — it comes up on power alone, so these run first when anything network-shaped misbehaves. Direct cable Nucleo↔Pi; the Pi holds `192.168.10.1/24` on `eth0` (see the [bench notes](../notes/README.md) and `mqtt-design.md`).
+Verified on hardware. The link needs no sensor and no broker — it comes up on power alone, so these checks run first when anything network-shaped misbehaves. Direct cable Nucleo↔Pi; the Pi holds `192.168.10.1/24` on `eth0` (see the [bench notes](../notes/README.md) and [`mqtt-design.md`](mqtt-design.md)).
 
 **1. The interface exists and has the address.** At the console:
 
