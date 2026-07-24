@@ -1,6 +1,6 @@
 # Network bring-up — project reference
 
-How the on-board Ethernet comes up on this bench: the LAN8742 PHY, the STM32H7 MAC, and the static IPv4 address — all with **no application code touching the interface**. Terse by intent: decisions, rationale, and the facts you need when the link misbehaves. For the concepts underneath — what a `net_if` is, what an L2 does, why the socket API never names an interface, and how hard it would be to swap Ethernet for USB or Wi-Fi — see the companion teaching guide, [`network-stack-guide.md`](../notes/network-stack-guide.md).
+How the on-board Ethernet comes up on this bench: the LAN8742 PHY, the STM32H7 MAC, and the static IPv4 address — all with **no application code touching the interface**. Terse by intent: decisions, rationale, and the facts you need when the link misbehaves. For the concepts underneath — what the MAC and PHY each are (the digital frame engine vs. the analog line driver), what MDIO and RMII carry, what a `net_if` is, what an L2 does, why the socket API never names an interface, and how hard it would be to swap Ethernet for USB or Wi-Fi — see the companion teaching guide, [`network-stack-guide.md`](../notes/network-stack-guide.md) (§2 defines the hardware terms).
 
 This doc stops at the socket. Everything **above** it — MQTT lifecycle, topics, QoS — is in [`mqtt-design.md`](mqtt-design.md) and the [`firmware-mqtt-walkthrough.md`](firmware-mqtt-walkthrough.md). The seam is exact: this page ends where `mqtt_connect()` calls `zsock_socket()`.
 
