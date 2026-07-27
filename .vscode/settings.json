@@ -1,13 +1,19 @@
 {
   // --- C/C++ IntelliSense via clangd ---------------------------------------
-  // clangd reads firmware/build/compile_commands.json (the real cross-GCC command
-  // line + all generated include paths), so it resolves zephyr/*.h and the
-  // generated CONFIG_*/devicetree headers correctly. This only exists AFTER the
-  // first `west build`. Disable the Microsoft C/C++ engine so the two don't both
-  // parse the file and fight — cpptools' clang chokes on Zephyr's GCC-only flags.
+  // clangd reads the merged compile_commands.json at the repo root (the real
+  // cross-GCC command line + all generated include paths), so it resolves
+  // zephyr/*.h and the generated CONFIG_*/devicetree headers correctly.
+  // scripts/ide-index.sh writes it by merging the firmware build tree with
+  // twister's test build trees — pointing at firmware/build alone would leave
+  // everything under tests/ unparseable, since those TUs appear only in
+  // twister's database. Run that script by hand — it needs a first
+  // scripts/build.sh and scripts/test.sh to have something to merge, and the
+  // wrappers deliberately do not call it (see docs/toolchain.md). Disable the
+  // Microsoft C/C++ engine so the two don't both parse the file and fight —
+  // cpptools' clang chokes on Zephyr's GCC-only flags.
   "C_Cpp.intelliSenseEngine": "disabled",
   "clangd.arguments": [
-    "--compile-commands-dir=${workspaceFolder}/firmware/build",
+    "--compile-commands-dir=${workspaceFolder}",
     // authorise clangd to run the cross-GCC named in .clangd (query driver: it
     // extracts that compiler's system includes + target so <stdio.h> etc. resolve)
     "--query-driver=/Users/esbendn/zephyr-sdk-1.0.1/gnu/arm-zephyr-eabi/bin/arm-zephyr-eabi-*",

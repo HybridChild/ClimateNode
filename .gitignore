@@ -7,6 +7,11 @@ build/
 twister-out/
 twister-out.*/
 
+# Merged clangd database (scripts/ide-index.sh), built from the two trees above.
+# Editor-only, and full of machine-specific absolute paths. Regenerate it by
+# running that script; nothing in the build reads it.
+/compile_commands.json
+
 # Python
 __pycache__/
 *.pyc

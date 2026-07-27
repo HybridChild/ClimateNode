@@ -49,6 +49,17 @@ west flash -r openocd --build-dir <repo>/firmware/build
 - **`-r openocd` is required for flashing.** `nucleo_h753zi` defaults to the `stm32cubeprogrammer` runner, which is not installed. OpenOCD (bundled in the SDK hosttools; ST-LINK over SWD) works. Forced by `flash.sh` rather than baked into the app as a default runner — overriding `board.cmake` for an in-tree board would mean carrying a board fragment in this repo purely to change one default, and a one-line `-r` in the wrapper is the smaller cost.
 - **`-p always`** (the wrapper's `-p`) forces a pristine build — use it after devicetree or Kconfig changes.
 
+### Editor index (clangd)
+
+`.vscode/settings.json` points clangd at **`compile_commands.json` at the repo root**, which `./scripts/ide-index.sh` writes by merging the two build trees that exist here: `firmware/build/` (the app, from `build.sh`) and `twister-out/**` (the test suites, from `test.sh`). Run it by hand — once after a first build, then only when the editor reports missing headers in a file that compiles fine.
+
+- **Why merged.** A test TU's compile command exists *only* in twister's database. Point clangd at `firmware/build` alone and everything under `tests/` fails to resolve `<zephyr/ztest.h>`, which cascades into an error on nearly every line — real-looking diagnostics with no build problem behind them.
+- **Why not automatic.** `build.sh` and `test.sh` stay thin `exec` wrappers. A compile database goes stale only when the set of files or the flags changes — a new source file, a new suite, a Kconfig or devicetree edit — so refreshing on every build would tax every build for a result that changes a few times a month.
+- **First build required.** Neither database exists on a fresh clone, so clangd has nothing until the first `build.sh` or `test.sh`, and then the merge. The merged file is generated, machine-specific (absolute paths) and `.gitignore`d.
+- **Duplicates resolve to the firmware.** Both trees compile much of Zephyr itself under different Kconfig, so shared kernel sources appear twice; the merge keeps the firmware's entry, which is the configuration that ships.
+- **clangd must be restarted to notice a changed `--compile-commands-dir`** — *clangd: Restart language server* in the command palette. It picks up *content* changes to the database on its own.
+- Flag/diagnostic tweaks (query driver, GCC-only flags, `-Wvla`, `-Wsection`) live in `.clangd`, commented there and in [`../notes/language-cpp.md`](../notes/language-cpp.md) §11.
+
 ### Hardware / connection facts
 
 - Board: ST **Nucleo-H753ZI** (STM32H753ZI, Cortex-M7). ST-LINK **V3**.
