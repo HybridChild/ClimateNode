@@ -4,9 +4,11 @@
 # Linux-only and development happens on macOS. It is listed anyway so a Linux CI
 # runner can use it, where it is considerably faster than emulation.
 #
-# The M3 has no FPU, so the float fields go through soft-float here and through
-# hardware float on the STM32H7. IEEE-754 makes that distinction invisible to
-# the encoded bytes, which is why the same assertions hold on both.
+# The float fields go through soft-float both here and on the STM32H7: the M3
+# has no FPU, and although the H7's Cortex-M7 does, this app leaves CONFIG_FPU
+# unset, so both link the same __aeabi_* helpers. native_sim uses the host FPU
+# instead, and IEEE-754 is what keeps the encoded bytes identical there -- the
+# same guarantee that would cover the H7 if CONFIG_FPU were ever enabled.
 common:
   tags:
     - unit

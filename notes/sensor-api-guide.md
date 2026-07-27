@@ -255,7 +255,7 @@ Zephyr targets range from Cortex-M0 upward, and **most of that range has no FPU*
 
 Two `int32_t`s are free everywhere. This is fixed-point arithmetic with a fixed scale of 10⁻⁶ — enough precision for any physical sensor, and range up to ±2 billion in the integer part.
 
-Your board (STM32H753, Cortex-M7) *does* have an FPU, so this is a cost you personally aren't paying. The API is designed for the whole family, not for the best case.
+Your board (STM32H753, Cortex-M7) has an FPU in silicon — FPv5-D16, single *and* double precision — but this app does not turn it on: nothing in `firmware/prj.conf` sets `CONFIG_FPU`, so the build compiles soft-float and `zephyr.elf` links `__aeabi_fadd`, `__aeabi_fmul` and friends. The cost the API is avoiding is one you are currently paying anyway. Enabling it is `CONFIG_FPU=y`, plus `CONFIG_FPU_SHARING=y` because both the sensor thread and `main` touch floats — but the fixed-point API means the driver path itself would barely notice; only your own conversions and the protobuf float fields would speed up. The API is designed for the whole family, not for the best case.
 
 ### The sign rule — the one real trap
 

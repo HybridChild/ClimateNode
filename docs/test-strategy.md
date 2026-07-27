@@ -32,7 +32,7 @@ Several of these are claims from the guides turned into assertions — [`protobu
 Two consequences, both accepted:
 
 - Tests cross-compile with the same `arm-zephyr-eabi-g++`, `-fno-exceptions`, freestanding runtime and warnings-as-errors as the firmware. Higher fidelity than a host build.
-- The M3 has no FPU, so `float` is soft-float here and hardware float on the H7. IEEE-754 makes the encoded bytes identical, which is what the float assertions rely on.
+- `float` is soft-float in QEMU *and* on the H7. The M3 has no FPU; the H7's Cortex-M7 does (FPv5-D16) but `CONFIG_FPU` is unset here, so `zephyr.elf` links the same `__aeabi_*` helpers — verify with `nm firmware/build/zephyr/zephyr.elf | grep __aeabi_fadd`. On `native_sim` the host FPU runs them instead, and IEEE-754 is what keeps the encoded bytes identical; that same guarantee would cover the H7 if `CONFIG_FPU=y` were ever set.
 
 **The four-way source split.** `main.cpp` was 713 lines carrying the MQTT session, event handling, wire encoding, command semantics and zbus glue; nothing in it could be compiled without the network stack. It is now `main.cpp` (MQTT session), `protocol.cpp` (wire format), `commands.cpp` (command semantics) and `sensor.cpp` (acquisition, unchanged). Every function moved essentially verbatim — no seam was carved and no test-only parameter added. Each file is justifiable without mentioning tests, which is the test of whether the split was design or damage. Cost: FLASH +72 B, RAM unchanged.
 

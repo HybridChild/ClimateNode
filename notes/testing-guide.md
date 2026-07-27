@@ -124,7 +124,7 @@ The trade runs top to bottom: the further down, the faster the loop and the furt
 Two things fall out of that choice, both worth understanding rather than working around:
 
 - **The tests cross-compile with the same `arm-zephyr-eabi-g++` the firmware uses**, so they are subject to the same `-fno-exceptions`, the same freestanding runtime, and the same warnings-as-errors. Code that compiles for the test genuinely compiles for the target. `native_sim` would use the host compiler and lose that.
-- **A Cortex-M3 has no FPU**, so `float` arithmetic runs in software here and in hardware on the STM32H7's Cortex-M7. IEEE-754 makes the two produce identical bit patterns, which is why assertions on encoded floats hold on both. That is a real property of the format, not luck — but it is the kind of thing worth knowing you are relying on.
+- **`float` arithmetic runs in software on both platforms**, so assertions on encoded floats hold identically. A Cortex-M3 has no FPU at all; the STM32H753's Cortex-M7 *does* (FPv5-D16), but this app never enables it — `CONFIG_FPU` is unset, so the target links the same `__aeabi_fadd`/`__aeabi_fmul` helpers QEMU does. Two layers of safety net, then: today it is literally the same code, and if you ever set `CONFIG_FPU=y` the results would still match because IEEE-754 pins the bit patterns. Worth knowing which one you are relying on.
 
 `testcase.yaml` lists both platforms, so a Linux CI runner can use the faster one later without touching the tests.
 
