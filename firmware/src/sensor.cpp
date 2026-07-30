@@ -171,6 +171,21 @@ void sensor_thread(void *, void *, void *)
 				break; /* timed out: the period elapsed */
 			}
 
+			/* Redundant: sensor_cmd_sub observes one channel,
+			 * so `chan` is always &chan_sensor_cmd and `cmd`
+			 * is the right type by construction. Kept as a
+			 * demonstration: with a second observed channel
+			 * this becomes the dispatch, since all of them
+			 * feed this one queue and no type tag travels
+			 * with the message. Even then it would guard the
+			 * interpretation only — the copy is sized by the
+			 * source channel and has already happened. */
+			if (chan != &chan_sensor_cmd) {
+				LOG_WRN("ignoring message from %s",
+					zbus_chan_name(chan));
+				continue; /* re-wait on the rest of the period */
+			}
+
 			/* Exhaustive on purpose: with no `default`, a new command
 			 * kind is a -Wswitch warning here rather than something
 			 * that silently lands in the set-interval path. The flag
@@ -257,7 +272,9 @@ ZBUS_CHAN_DEFINE(chan_telemetry, struct sensor_reading,
  * nobody, so the sensor thread never receives it. It matches the period the
  * thread starts from on purpose, so a reader of either one is not misled about
  * the other. */
-ZBUS_CHAN_DEFINE(chan_sensor_cmd, struct sensor_cmd, sensor_cmd_valid, nullptr,
+ZBUS_CHAN_DEFINE(chan_sensor_cmd, struct sensor_cmd,
+		 sensor_cmd_valid,
+		 nullptr,
 		 ZBUS_OBSERVERS(sensor_cmd_sub),
 		 ZBUS_MSG_INIT(SENSOR_CMD_SET_INTERVAL, SAMPLE_PERIOD_DEFAULT_MS));
 
