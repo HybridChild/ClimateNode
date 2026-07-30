@@ -2,12 +2,13 @@
 # Merge every compile_commands.json in the repo into one at the repo root, for clangd.
 #
 # Why this exists: clangd needs a compile command for each file it parses, and
-# this repo produces *two* independent build trees:
+# this repo produces *three* independent sets of build trees:
 #
-#   firmware/build/compile_commands.json   the app       (scripts/build.sh)
-#   twister-out/**/compile_commands.json   the tests     (scripts/test.sh)
+#   firmware/build/compile_commands.json      the gateway app  (scripts/build.sh)
+#   sensor-node/build/compile_commands.json   the peer node    (scripts/build.sh -a sensor-node)
+#   twister-out/**/compile_commands.json      the tests        (scripts/test.sh)
 #
-# Pointing clangd at either one leaves the other's sources unparseable -- it
+# Pointing clangd at any one of them leaves the others' sources unparseable -- it
 # falls back to a guessed command line with no Zephyr include paths, so
 # <zephyr/ztest.h> "does not exist" and every symbol after it cascades into an
 # error. Merging gives one database covering both, which .vscode/settings.json
@@ -35,12 +36,22 @@ import json, pathlib, sys
 
 repo = pathlib.Path(sys.argv[1])
 
-# Firmware first: the app and the tests both compile large parts of Zephyr
-# itself (kernel/, subsys/) but with different Kconfig, so the same source
-# appears in both databases with different flags. First entry per file wins,
-# and for shared Zephyr sources the firmware's configuration is the one that
-# actually ships -- so that is the one worth reading the code under.
-sources = [repo / "firmware" / "build" / "compile_commands.json"]
+# Order matters, because every tree compiles large parts of Zephyr itself
+# (kernel/, subsys/) but under different Kconfig, so the same source appears in
+# several databases with different flags. First entry per file wins.
+#
+# firmware/ (the H753ZI gateway) goes first deliberately: it is the biggest
+# configuration -- networking, MQTT, two threads -- so it is the one under which
+# reading shared Zephyr code is most informative, and it is what runs on the
+# main target. sensor-node/ follows, which means files unique to the F072 app
+# (its own main.cpp/sensor.cpp) still get correct flags while the Zephyr sources
+# both apps share stay indexed under the gateway's config. Tests come last: they
+# are the narrowest configuration and exist to cover the app's own TUs, which
+# the app trees have already claimed.
+sources = [
+    repo / "firmware" / "build" / "compile_commands.json",
+    repo / "sensor-node" / "build" / "compile_commands.json",
+]
 sources += sorted((repo / "twister-out").glob("**/compile_commands.json"))
 
 merged, seen = [], set()

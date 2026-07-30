@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-# Open the Nucleo-H753ZI's serial console (ST-LINK VCP) with screen.
+# Open a Nucleo's serial console (ST-LINK VCP) with screen.
 #
 # The VCP enumerates as /dev/cu.usbmodem* on macOS; the trailing digits come from
 # the ST-LINK serial number and change if the board or USB port changes, so we
 # glob for it rather than hardcode. Zephyr's console + shell run at 115200 8N1.
+#
+# With both Nucleos attached there are two matching ports -- one per ST-LINK --
+# and auto-detection deliberately refuses to guess. It prints both, and you pick:
+# the H753ZI gateway is the one running the shell with `net` and `can` commands,
+# the F072RB peer node logs but has no shell (it has no RAM to spare for one).
 #
 # Quitting screen matters here: Ctrl-A then K (then y) terminates the session and
 # frees the port. Ctrl-A then D only *detaches* — the port stays busy and the next
