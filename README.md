@@ -97,13 +97,14 @@ Split by *kind*, not by topic: **`notes/`** holds from-first-principles teaching
 | Topic | Guide (`notes/`) | Reference (`docs/`) |
 |---|---|---|
 | Communication (MQTT, QoS, topics) | [`communication-guide.md`](notes/communication-guide.md) | [`mqtt-design.md`](docs/mqtt-design.md) |
+| CAN (frames, arbitration, ISO-TP) | [`can-guide.md`](notes/can-guide.md) | [`can-bringup.md`](docs/can-bringup.md) |
 | Zephyr build system | [`zephyr-build-system-guide.md`](notes/zephyr-build-system-guide.md) | [`build-system-overview.md`](docs/build-system-overview.md) |
 | Sensor API + shell | [`sensor-api-guide.md`](notes/sensor-api-guide.md) | [`sensor-bringup.md`](docs/sensor-bringup.md) |
 | Protobuf / nanopb | [`protobuf-guide.md`](notes/protobuf-guide.md) | [`proto/node.proto`](proto/node.proto) (decisions inline) |
 | zbus (the internal bus) | [`zbus-guide.md`](notes/zbus-guide.md) | [`firmware/src/app_channels.h`](firmware/src/app_channels.h) (decisions in the header comment) |
 | Testing (host-side, no hardware) | [`testing-guide.md`](notes/testing-guide.md) | [`test-strategy.md`](docs/test-strategy.md) |
 
-The last two pair a guide with a **source file** rather than a `docs/` page, because in both cases the decisions belong next to the thing they constrain: the field-numbering and evolution rules live in the schema, and the observer-kind choice lives in the header both threads include.
+The Protobuf and zbus rows pair a guide with a **source file** rather than a `docs/` page, because in both cases the decisions belong next to the thing they constrain: the field-numbering and evolution rules live in the schema, and the observer-kind choice lives in the header both threads include.
 
 Guides without a reference half: [`language-cpp.md`](notes/language-cpp.md) — why C++17, and the C↔C++ boundary.
 
