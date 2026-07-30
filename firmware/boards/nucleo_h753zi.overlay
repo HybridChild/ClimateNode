@@ -1,3 +1,20 @@
+/* CAN link to the F072RB peer node.
+ *
+ * Unlike i2c1/scd40 below, there is no node to add: the board dts already sets
+ * fdcan1 to "okay" on PD0/PD1 (pinctrl fdcan1_rx_pd0 / fdcan1_tx_pd1) and makes
+ * it `chosen { zephyr,canbus }`, and `can` is in the board's supported list.
+ *
+ * What the board dts does NOT set is a bitrate -- so without this stanza the
+ * controller silently comes up at CONFIG_CAN_DEFAULT_BITRATE, which is 125000.
+ * The peer node runs at 500 kbit/s, and a bitrate mismatch is a completely dead
+ * bus in which every layer above looks correctly configured. The rate lives here
+ * rather than in prj.conf because it is a property of the wire both nodes share,
+ * not of this app: the F072RB overlay states the same number for the same reason.
+ */
+&fdcan1 {
+	bitrate = <500000>;
+};
+
 /* Adafruit SCD-40 on I2C1 (SCL=PB8, SDA=PB9). The board dts already enables
  * i2c1 with the right pinctrl, so we add only the sensor child node. */
 &i2c1 {
