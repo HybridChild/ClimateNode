@@ -47,10 +47,6 @@ message Telemetry {
   // the reading was taken, or the zbus channel overwrote it before the MQTT
   // thread got to it. All three are the same fact to the host, which is the
   // whole reason telemetry carries a sequence at all.
-  //
-  // Verified on the bench 2026-07-21: a 66 s broker outage at a 5 s cadence
-  // produced a jump of exactly 13, matching the node's own coalesced-reading
-  // count.
   uint32 sequence = 2;
 
   // Milliseconds since boot. Wraps after ~49.7 days; the host must treat a

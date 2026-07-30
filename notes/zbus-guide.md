@@ -96,7 +96,7 @@ This is where the interesting thinking lives. The question to ask is: **if two m
 
 **Subscribers and message subscribers run in their own thread**, which waits on a queue. They can block, take their time, and do real work.
 
-The difference between the two queue-based kinds is what the queue carries. A plain **subscriber** gets a pointer to the channel and then reads it — so by the time it looks, the value may have been overwritten twice. It learns *that* something changed, not *what* it was. A **message subscriber** gets a private copy taken at publish time, so nothing is ever collapsed.
+The difference between the two queue-based kinds is what the queue carries. A plain **subscriber** gets a pointer to the channel and then reads it — so by the time it looks, the value may have been overwritten twice. It learns that *something* changed, not *what* it was. A **message subscriber** gets a private copy taken at publish time, so nothing is ever collapsed.
 
 So the choice maps onto the semantics of the data:
 
