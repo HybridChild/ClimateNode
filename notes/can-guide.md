@@ -142,7 +142,7 @@ A filter is an ID and a mask. The mask selects which bits of the ID must match: 
 Two behaviours matter more than the concept, and both are hardware-specific rather than architectural:
 
 - **Filter slots are finite and small.** The H7's FDCAN offers 28 standard and 8 extended slots; smaller parts offer far fewer, and bxCAN on the F072 counts them in banks whose capacity depends on whether you use standard or extended IDs. Filter budget is a real design constraint.
-- **Overlapping filters do not all fire.** Zephyr documents this as hardware-dependent (`include/zephyr/drivers/can.h:1335`), and on M_CAN the list is evaluated in order and **matching stops at the first match**. Install three filters for the same ID and you get three slots, three callbacks, and exactly one of them invoked. This has a sharp practical edge that §10's Exercise 3 demonstrates.
+- **Overlapping filters do not all fire.** Zephyr documents this as hardware-dependent (`include/zephyr/drivers/can.h:1335`), and on M_CAN the list is evaluated in order and **matching stops at the first match**. Install three filters for the same ID and you get three slots, three callbacks, and exactly one of them invoked — §10's Exercise 2 measures exactly that. The sharp practical edge is what it does to `can dump`, which §10 takes up after the exercises.
 
 ## 8. Eight bytes, and what ISO-TP does about it
 
@@ -266,24 +266,21 @@ Each `filter add` reports a distinct `filter ID` — 0, 1, 2 — so three hardwa
 
 **Proves:** filter matching stops at the first match on this hardware, and Zephyr does not deduplicate (`can_mcan_add_rx_filter_std()`, `drivers/can/can_mcan.c`). Two of those three slots are dead weight. The alternative design — every matching filter firing — would make overlapping subscriptions composable, and would also mean one frame could wake several handlers, which is exactly what a filter is supposed to prevent.
 
-### Exercise 3 — Make `can dump` lie to you
+### A note on `can dump`, and why the shadowing is not demonstrable here
 
-*Demonstrates §7, and why the previous exercise is not academic.*
+`can dump <device>` is the shell's sniffer: it installs one filter that matches every standard ID and another that matches every extended one — `id = 0, mask = 0`, so every bit is a don't-care (§7) — and prints each frame that arrives until you stop it. It is the command you reach for when you want to know *whether anything at all is on this bus*, without having to guess an ID first, which is exactly the question you have when a link is not working.
 
-Still in loopback, with the `0x702` filters installed:
+The obvious third exercise follows from that: start `can dump`, send a frame, and watch its catch-all lose to the specific `0x702` filter already in a lower slot. It cannot be run, for two independent reasons, and both are worth knowing before you reach for the command on a live bus.
 
-```
-uart:~$ can dump can@4000a000
-uart:~$ can send can@4000a000 0x702 11 22 33
-```
+**`can dump` takes the console away.** Its last act is `shell_set_bypass(sh, can_shell_dump_bypass_cb, dev)` (`drivers/can/can_shell.c:526`), which routes every keystroke to a callback that looks for one byte, `0x03` (`:447`). There is no parser and no prompt while a dump runs, so nothing else can be typed at it — including `can send`. Ctrl+C restores the shell and removes the two filters the dump installed; it leaves the controller running if it was already started, since `cmd_can_dump()` records whether its own `can_start()` returned `-EALREADY`.
 
-`can dump` installs a catch-all filter — `id = 0, mask = 0` (`drivers/can/can_shell.c:481`) — which should match everything. Watch which handler actually prints, and note that the catch-all landed in a *higher* slot than the specific filters from Exercise 1, because slots are allocated lowest-free-first.
+**And even with a frame source, the two cases look identical.** `can dump` and `can filter add` register the *same* callback, `can_shell_rx_callback`. With first-match semantics one filter fires and prints once; with all-match semantics several fire and — printing identically — you would still be reading one line per matching filter, which is what Exercise 2 already measured. The shadowing only becomes *visible* when the filter in the lower slot belongs to application code and prints nothing. That is `relay.cpp`'s heartbeat filter, installed at boot, and it does not exist yet.
 
-**Proves:** a specific filter installed earlier shadows a later catch-all completely. Once the relay's heartbeat filter occupies slot 0 at boot, `can dump` can show **nothing at all** while heartbeats arrive perfectly. This is the practical reason to reach for `can filter add <id>` rather than `can dump` when debugging a live node — and the reason an empty dump must never be read as a dead bus.
+So the fact is established by Exercise 2 plus the source: those two catch-alls go in through `can_add_rx_filter()` (`drivers/can/can_shell.c:498` and `:504`), the same lowest-free-slot allocator every other filter uses, and Exercise 2 showed that an earlier slot wins outright. Once the relay owns slot 0, `can dump` will show **nothing at all** while heartbeats arrive perfectly. Reach for `can filter add <dev> <id>` when debugging a live node, and never read an empty dump as a dead bus.
 
 ### Once the transceivers arrive
 
-Three more exercises belong here and are deliberately not written yet, because a procedure nobody has run is not a procedure: the two-node round trip at 500 kbit/s, deliberately mismatching the bitrate to see what a misconfigured bus looks like from both ends, and watching the error counters climb toward bus-off on a node whose peer is powered down (§5, §6). They arrive with the hardware.
+Four more exercises belong here and are deliberately not written yet, because a procedure nobody has run is not a procedure: the two-node round trip at 500 kbit/s; deliberately mismatching the bitrate to see what a misconfigured bus looks like from both ends; watching the error counters climb toward bus-off on a node whose peer is powered down (§5, §6); and — once `relay.cpp` holds a silent filter on the heartbeat ID — running `can dump` against a peer that is transmitting once a second and watching it print nothing, which is the observation this section cannot make today. They arrive with the hardware.
 
 ## 11. The model in one paragraph
 
