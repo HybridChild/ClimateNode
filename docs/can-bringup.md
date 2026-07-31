@@ -171,13 +171,15 @@ Note the subcommand is `can filter add`, not `can add`; a bare `can add` prints 
 
 ```
 *** Booting Zephyr OS build v4.4.1 ***
-<inf> node: node 2 on CAN: heartbeat 0x702, isotp rx 0x7e0 tx 0x7e8
-<inf> node_sensor: BME280 online
-<wrn> node: gateway unreachable (heartbeat failed: -5) — backing off, still sampling
-<inf> node: sensor readings OK (seq 0)
+[00:00:00.009,000] <inf> node: node 2 on CAN: heartbeat 0x702, isotp rx 0x7e0 tx 0x7e8
+[00:00:00.009,000] <inf> node_sensor: BME280 online
+[00:00:00.010,000] <wrn> node: gateway unreachable (heartbeat failed: -5) — backing off, still sampling
+[00:00:01.009,000] <inf> node: sensor readings OK (seq 0)
 ```
 
-Then silence. The node beats once a second and publishes every five, and none of that is logged once the states above stop changing — every remaining message is emitted on a *transition*. There is no shell here to ask it anything, which is the trade `sensor-node/prj.conf` documents.
+Then silence.
+
+The timestamps are worth a second look, because two of them confirm design decisions rather than just marking time. Everything to do with bring-up lands inside **10 ms** — the BME280 needs no power-up window, unlike the SCD-40 on the gateway, which is why this node has no `zephyr,deferred-init` and no wait. And the first reading is reported at **1.009 s**, not at 9 ms: the sensor thread published it almost immediately, but `main` was parked in `isotp_recv()` until the heartbeat came due. That one-second gap *is* the up-to-one-beat telemetry latency `src/main.cpp` documents, visible on the console. The node beats once a second and publishes every five, and none of that is logged once the states above stop changing — every remaining message is emitted on a *transition*. There is no shell here to ask it anything, which is the trade `sensor-node/prj.conf` documents.
 
 Line by line, because each one is a check:
 
