@@ -59,6 +59,12 @@
 
 LOG_MODULE_REGISTER(node, LOG_LEVEL_INF);
 
+/* This app's half of the identity seam commands.h declares. At global scope and
+ * externally linked on purpose: commands.cpp refers to it by name, and internal
+ * linkage would stop the two from meeting (notes/language-cpp.md §6). The topic
+ * literals below have to agree with it -- both say node 1. */
+const char *const kNodeClientId = "nucleo-1";
+
 namespace {
 
 /* ---- configuration -------------------------------------------------------- */

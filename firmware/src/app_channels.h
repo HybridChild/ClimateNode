@@ -29,6 +29,29 @@
  * Both channels are defined in sensor.cpp: the sensor module owns the readings
  * it produces *and* the sample period the commands adjust, so the bounds and
  * the validator live with the code they constrain.
+ *
+ * ---------------------------------------------------------------------------
+ * Two applications now share this header
+ * ---------------------------------------------------------------------------
+ *
+ * The H753ZI gateway (firmware/) and the F072RB peer node (sensor-node/) both
+ * include it, and both DEFINE these two channels — each in its own sensor.cpp,
+ * for its own sensor. ZBUS_CHAN_DECLARE expands to `extern`, so the header
+ * declares and whoever links supplies the definition; tests/commands/ has been
+ * using that same seam for chan_sensor_cmd all along, and commands.h now uses
+ * it for the node identity.
+ *
+ * That is what makes the description above hold for both nodes without a word
+ * of it being about either one. The SCD-40 fills in CO2, temperature and
+ * humidity; the BME280 fills in temperature, humidity and pressure. Neither is
+ * a subset of the other, which is why struct sensor_reading carries a presence
+ * flag per measurement rather than a value that has to mean "none" — see the
+ * comment on it below, and notes/protobuf-guide.md §5 for the wire half.
+ *
+ * What is NOT here: the CAN link between them. Its address map, its heartbeat
+ * frame and its one-byte message type live in can_link.h, because they are a
+ * contract between two *boards* rather than between two threads, and this
+ * header's whole claim is that nothing in it touches a transport.
  */
 #ifndef APP_CHANNELS_H_
 #define APP_CHANNELS_H_

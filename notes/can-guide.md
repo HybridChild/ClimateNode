@@ -186,16 +186,22 @@ The H753ZI is a **gateway**: MQTT and Ethernet on one side, CAN on the other. Th
                    ▼  encode (nanopb)
              Telemetry bytes
                    │
-                   │  ISO-TP, 0x092  ──────────▶ relay thread
+                   │  ISO-TP, 0x7E8  ──────────▶ relay thread
                    │                                  │  bytes, never decoded
                    │                                  ▼
                    │                            zbus channel ──▶ MQTT ──▶ node/2/telemetry
                    │
              heartbeat, raw ──────────────────▶ rx filter ──▶ liveness ──▶ node/2/status
-             single frame, 0x0A2, 1 Hz                          timeout
+             single frame, 0x702, 1 Hz                          timeout
                    │
-                   ◀── ISO-TP, 0x082 ────────── relayed Command from node/2/command
+                   ◀── ISO-TP, 0x7E0 ────────── relayed Command from node/2/command
 ```
+
+Those three identifiers are not arbitrary, and they are not free-form either. `0x700 + node id` is CANopen's heartbeat convention and `0x7E0`/`0x7E8` is the UDS request/response pair, borrowed so that a trace reads familiarly to anyone who has met a CAN bus. But the *ordering* is doing real work, per §4: the heartbeat's lower identifier wins arbitration against every ISO-TP frame, so liveness can never be starved by a long segmented transfer. That is a property of the numbering rather than of any code, which is why `tests/heartbeat/` asserts it.
+
+They live in [`firmware/src/can_link.h`](../firmware/src/can_link.h), the one file both boards include — because a link is symmetric and neither end can be right on its own. It carries the address map, the heartbeat's byte layout and one more thing worth noticing: **a message type byte at the front of every ISO-TP payload.** ISO-TP has no topic, and §3's rule from the Protobuf side still holds — nothing in a serialised message says which message it is. On MQTT the topic asserts the type for free; here it costs one byte in front of the payload. Same decision, newly visible, because this transport does not subsidise it.
+
+**What exists today.** The peer node's half is written: `sensor-node/` reads the BME280, encodes with the *same* `protocol.cpp` the gateway uses, beats once a second and answers commands. The gateway's `relay thread` in that diagram does not exist yet, and no frame has crossed a real bus — the transceivers are not bought, so everything is loopback and link-time so far. [`can-bringup.md`](../docs/can-bringup.md) is explicit about which is which.
 
 Two payload styles on one bus, chosen by §8's rule:
 

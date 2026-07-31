@@ -1,0 +1,19 @@
+# The CAN link contract: the hand-packed heartbeat frame and the address map.
+#
+# Highest value per line of the suites here, because this is the one wire
+# format in the project that is NOT generated. protobuf's encoder is nanopb's
+# problem; these eight bytes are ours, and a shift in the wrong direction would
+# be invisible until two boards disagreed on a bus.
+#
+# platform_allow rather than `depends_on: can`, deliberately: qemu_cortex_m3
+# does not advertise `can` in its supported list, so a depends_on would filter
+# this suite out silently and it would look like it had passed.
+common:
+  tags:
+    - unit
+    - can
+tests:
+  node.heartbeat:
+    platform_allow:
+      - qemu_cortex_m3
+      - native_sim

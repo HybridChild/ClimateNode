@@ -30,6 +30,14 @@ static bool test_cmd_valid(const void *msg, size_t msg_size)
 ZBUS_CHAN_DEFINE(chan_sensor_cmd, struct sensor_cmd, test_cmd_valid, nullptr,
 		 ZBUS_OBSERVERS_EMPTY, ZBUS_MSG_INIT(SENSOR_CMD_TRIGGER, 0));
 
+/* The same arrangement one level up: commands.h declares the node's identity
+ * and each application defines it, because commands.cpp is now compiled into
+ * two firmwares that are two different nodes. The test is the third linker of
+ * that file, so it supplies its own -- and test_get_device_info compares
+ * against this very string, which makes the assertion about the *mechanism*
+ * rather than about a value baked into the shared header. */
+const char *const kNodeClientId = "test-node";
+
 /* commands.cpp remembers the last sequence number it saw, and that state
  * outlives an individual test. Rather than adding a reset function to the
  * production API purely for the tests, each case takes a fresh sequence; the

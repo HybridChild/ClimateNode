@@ -1,0 +1,71 @@
+/* Devicetree for the F072RB peer node: one CAN controller, one BME280.
+ *
+ * Both nodes need adding here, unlike the H753ZI where the board dts already
+ * enabled fdcan1 -- `can` is not in nucleo_f072rb.yaml's supported list and
+ * can1 arrives from stm32f072.dtsi with status = "disabled". So this file does
+ * for CAN what firmware/boards/nucleo_h753zi.overlay does only for the sensor.
+ */
+
+/* Classic CAN 2.0B on bxCAN. Not FDCAN: this part has no CAN-FD at all, which
+ * is what fixes the whole link at 8 payload bytes per frame and makes ISO-TP
+ * segmentation necessary rather than optional. See notes/can-guide.md §8.
+ *
+ * PA11 (RX) / PA12 (TX), exposed on ST morpho CN10-14 and CN10-12. The
+ * can_rx_pb8 / can_tx_pb9 remap exists but collides with i2c1 below, where the
+ * BME280 lives -- so the choice of pins here is really a choice about the
+ * sensor bus. Note the labels are `can_*`, not `can1_*`, unlike the H7's
+ * `fdcan1_*`; the pinctrl name follows the peripheral's name in the SoC dtsi.
+ *
+ * PA11/PA12 are also USB_DM/USB_DP on this part. That is not a conflict to
+ * resolve, it is a conflict that cannot arise: on STM32F0 the USB and CAN
+ * peripherals share the same 1 KB packet-buffer SRAM (RM0091), so they are
+ * mutually exclusive in hardware. This node uses no USB.
+ */
+&can1 {
+	pinctrl-0 = <&can_rx_pa11 &can_tx_pa12>;
+	pinctrl-names = "default";
+
+	/* The same number the H7's overlay states, for the same reason: a
+	 * bitrate is a property of the wire both nodes share, not of either
+	 * app. Leaving it out would silently select CONFIG_CAN_DEFAULT_BITRATE
+	 * (125000) and produce a completely dead bus with every layer above it
+	 * apparently configured correctly. See docs/can-bringup.md. */
+	bitrate = <500000>;
+
+	status = "okay";
+};
+
+/ {
+	chosen {
+		/* So relay-side code can say DEVICE_DT_GET(DT_CHOSEN(zephyr_canbus))
+		 * and compile unchanged against fdcan1 on the H7, can1 here, and a
+		 * loopback node in a test. The H753ZI board dts already sets this;
+		 * on this board nobody has. */
+		zephyr,canbus = &can1;
+	};
+};
+
+/* Adafruit BME280 on I2C1 (SCL=PB8, SDA=PB9 -- already pinned by the board
+ * dts). Upstream in-tree driver, same posture as the SCD-40 on the gateway:
+ * the devicetree node is what enables CONFIG_BME280, which is `default y` on
+ * DT_HAS_BOSCH_BME280_ENABLED.
+ *
+ * Address 0x77 is the Adafruit breakout's default (SDO pulled high on the
+ * board). Sparkfun and most bare modules use 0x76 instead; if probing finds
+ * nothing, that is the first thing to change. The driver reads the chip id
+ * either way, so a wrong address fails cleanly at init rather than returning
+ * plausible garbage.
+ *
+ * No zephyr,deferred-init here, deliberately. That flag exists on the SCD-40
+ * because it needs 30 ms of power-up before it will answer at all and a failed
+ * init latches permanently (see docs/sensor-bringup.md). The BME280 has no
+ * such window -- it is readable as soon as its supply is up -- so there is
+ * nothing for a delayed init to buy, and the boot sweep can have it.
+ */
+&i2c1 {
+	bme280: bme280@77 {
+		compatible = "bosch,bme280";
+		reg = <0x77>;
+		status = "okay";
+	};
+};
