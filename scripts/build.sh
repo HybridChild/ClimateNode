@@ -17,8 +17,15 @@
 #   scripts/build.sh -p                 # pristine/clean build (after DT/Kconfig edits)
 #   scripts/build.sh -a sensor-node     # build the other app
 #   APP=sensor-node scripts/build.sh    # same thing via the environment
+#   scripts/build.sh -a sensor-node --debug -p   # layer that app's debug.conf on top
 #   BOARD=... scripts/build.sh          # override the app's default board
 #   scripts/build.sh <extra args>       # anything else is passed through to `west build`
+#
+# --debug merges <app>/debug.conf over prj.conf. It exists because the peer node
+# cannot afford an interactive shell in its shipped image -- a stock Zephyr shell
+# takes 95% of its 16 KB -- but very much wants one on the bench. Kconfig
+# fragments merge in order, so debug.conf adds rather than replaces. Switching it
+# on or off changes Kconfig, so pair it with -p.
 set -euo pipefail
 
 WORKSPACE="${ZEPHYR_WORKSPACE:-$HOME/zephyr-workspace}"
@@ -31,10 +38,15 @@ REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Default to an incremental build; -p (our shorthand) forces a pristine rebuild.
 # Both flags are accepted in any order, and everything after them goes to west.
 PRISTINE="auto"
+DEBUG_CONF=""
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 	-p)
 		PRISTINE="always"
+		shift
+		;;
+	--debug)
+		DEBUG_CONF="debug.conf"
 		shift
 		;;
 	-a)
@@ -59,6 +71,11 @@ if [[ ! -f "$APP/CMakeLists.txt" ]]; then
 	exit 2
 fi
 
+if [[ -n "$DEBUG_CONF" && ! -f "$APP/$DEBUG_CONF" ]]; then
+	echo "--debug needs $APP/$DEBUG_CONF, which does not exist." >&2
+	exit 2
+fi
+
 # Each app targets exactly one board, so the board follows from the app rather
 # than being something to remember. BOARD= still wins, for a one-off.
 if [[ -z "${BOARD:-}" ]]; then
@@ -78,4 +95,13 @@ source "$WORKSPACE/.venv/bin/activate"
 export ZEPHYR_BASE="$WORKSPACE/zephyr"
 
 cd "$WORKSPACE"
+
+# Two spelled-out exec lines rather than an argument array: macOS ships bash 3.2,
+# where expanding an empty array under `set -u` is an error rather than nothing
+# (the same trap flash.sh documents).
+if [[ -n "$DEBUG_CONF" ]]; then
+	exec west build -p "$PRISTINE" -b "$BOARD" -s "$APP" -d "$BUILD_DIR" \
+		-- -DEXTRA_CONF_FILE="$DEBUG_CONF" "$@"
+fi
+
 exec west build -p "$PRISTINE" -b "$BOARD" -s "$APP" -d "$BUILD_DIR" "$@"

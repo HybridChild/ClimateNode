@@ -92,7 +92,27 @@ Note what's *absent*, exactly as with the sensor driver: we never set `CONFIG_CA
 - **PA11/PA12 are also USB_DM/USB_DP.** That is not a conflict to resolve but one that cannot arise: on STM32F0 the USB and CAN peripherals share the same 1 KB packet-buffer SRAM (RM0091), so they are mutually exclusive in hardware. This node uses no USB.
 - The bitrate is stated here for the same reason as on the gateway, and the two numbers must match. Verify it landed the same way — see *Bring-up checks* step 1, substituting `can_40006400` for the H7's `can_4000a000`.
 
-**5. The peer's Kconfig — `sensor-node/prj.conf`.** `CONFIG_CAN=y` plus `CONFIG_ISOTP=y`, and deliberately **no shell of any kind**. `can_shell.c` alone was 4356 B of the gateway's flash, and this part has 128 KB and 16 KB of RAM; debugging happens from the gateway's console and the bus, which is also the only option once the node is not on a desk. `CONFIG_ISOTP_USE_TX_BUF` stays off, so `isotp_send()` is called with a null completion callback and blocks until the transfer finishes — see *Driver behaviour worth knowing*.
+**5. The peer's Kconfig — `sensor-node/prj.conf`.** `CONFIG_CAN=y` plus `CONFIG_ISOTP=y`, and **no shell in the default image**, so its console is output-only: log lines out, nothing in. `CONFIG_ISOTP_USE_TX_BUF` stays off, so `isotp_send()` is called with a null completion callback and blocks until the transfer finishes — see *Driver behaviour worth knowing*.
+
+The shell is a **build variant**, not a permanent absence. `sensor-node/debug.conf` layers a trimmed one on top:
+
+```sh
+./scripts/build.sh -a sensor-node --debug -p     # -DEXTRA_CONF_FILE=debug.conf
+```
+
+The measurements that put it there rather than in `prj.conf`, all pristine builds, RAM out of 16 KB:
+
+| Configuration | RAM | Flash |
+|---|---|---|
+| no shell (`prj.conf` alone) | 10 696 B — 65 % | 67 384 B |
+| shell core, stock settings | 15 632 B — 95 % | 97 008 B |
+| + `CONFIG_CAN_SHELL`, stock | 16 092 B — 98 % | 106 268 B |
+| + `CONFIG_SENSOR_SHELL`, stock | **overflows by 5856 B** | — |
+| `debug.conf` (trimmed, with `can`) | 13 532 B — 83 % | 98 680 B |
+
+A stock Zephyr shell takes 95 % of this part's RAM before a single command set is added, which is why the trimming in `debug.conf` — no history, no tab completion, no VT100, 1 KB stack — is what makes it usable rather than a tidy-up. `CONFIG_SENSOR_SHELL` cannot be had at all: it selects `SENSOR_ASYNC_API`, which pulls in RTIO and its pools. Read the BME280 through the telemetry stream instead, which is the path that has to work anyway.
+
+Worth building when a real bus is being brought up for the first time: `can show` on *each* node reports that node's own state and error counters, so "which end is unhappy" stops being a guess. Toggling `--debug` changes Kconfig, so always pair it with `-p`.
 
 **6. Console.** The gateway is `zephyr,console = &usart3`, the peer is `&usart2`, both on their ST-LINK VCP at **115200 8N1**, both opened with `scripts/console.sh -a <app>`. With both Nucleos attached the glob matches two ports and the script refuses to guess — `-a` is how you say which, and `scripts/probe.sh` prints the table it uses. Expect very different things at the far end: the gateway prompts `uart:~$` and has the `can` and `net` commands, while the peer logs at boot and is then silent, because it has no shell. A quiet console on the peer is not a hung peer.
 

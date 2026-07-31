@@ -11,11 +11,22 @@
 #   (nothing)     auto-detect, which works only when exactly one board is attached
 #
 # Zephyr's console runs at 115200 8N1 on both boards. What is on the far end
-# differs, and it is worth knowing before concluding a board is dead: the H753ZI
-# gateway runs a shell with `net` and `can` commands and prompts with `uart:~$`,
-# while the F072RB peer node logs three lines at boot and then goes quiet -- it
-# has no shell at all, deliberately, because it has no RAM to spare for one. A
-# silent console on the peer is the peer working.
+# differs, and it is worth knowing before concluding a board is dead:
+#
+#   firmware (H753ZI)     a shell. Prompts `uart:~$`, takes input, has the `net`
+#                         and `can` command sets.
+#   sensor-node (F072RB)  OUTPUT ONLY. Log lines come out; nothing you type goes
+#                         anywhere, because the default image has no shell -- a
+#                         stock one needs 95% of this part's 16 KB of RAM. It
+#                         logs at boot and on state changes, and is otherwise
+#                         silent. A quiet console there is the node working.
+#
+# For an interactive shell on the peer, build the bench variant:
+#
+#   ./scripts/build.sh -a sensor-node --debug -p
+#
+# which merges sensor-node/debug.conf and gets you a trimmed shell with the `can`
+# commands at 83% RAM. No history and no tab completion -- type it correctly.
 #
 # Quitting screen matters here: Ctrl-A then K (then y) terminates the session and
 # frees the port. Ctrl-A then D only *detaches* — the port stays busy and the next

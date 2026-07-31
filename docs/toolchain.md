@@ -44,6 +44,12 @@ Use the wrappers; they source the workspace venv, export `ZEPHYR_BASE`, and pass
 
 The board follows from the app rather than being something to remember — `firmware` → `nucleo_h753zi`, `sensor-node` → `nucleo_f072rb` — so `-b` is never needed. `BOARD=` still wins for a one-off. `./scripts/cleanup.sh` takes the same flag and removes every app's build dir without it.
 
+`build.sh` also takes **`--debug`**, which merges `<app>/debug.conf` over `prj.conf` via `-DEXTRA_CONF_FILE`. Only `sensor-node` has one today, and it exists because that node's shipped image has no shell — a stock Zephyr shell needs 95 % of its 16 KB of RAM, so an interactive console is a bench variant rather than a default. Kconfig fragments merge in order, so `debug.conf` adds rather than replaces. Toggling it changes Kconfig, so pair it with `-p`:
+
+```sh
+./scripts/build.sh -a sensor-node --debug -p    # trimmed shell + the `can` commands, 83 % RAM
+```
+
 **Two boards attached at once is the normal case now**, and it breaks the two scripts that have to pick one. `./scripts/probe.sh` is what they ask:
 
 ```
