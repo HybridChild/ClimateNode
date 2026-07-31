@@ -92,12 +92,29 @@ void read_scd40(bool device_ok, struct sensor_reading *out)
 	sensor_channel_get(scd40, SENSOR_CHAN_AMBIENT_TEMP, &temp);
 	sensor_channel_get(scd40, SENSOR_CHAN_HUMIDITY, &hum);
 
-	out->co2_ppm = static_cast<uint32_t>(sensor_value_to_double(&co2));
-	out->temperature_c = static_cast<float>(sensor_value_to_double(&temp));
-	out->humidity_rh = static_cast<float>(sensor_value_to_double(&hum));
+	uint32_t co2_ppm = static_cast<uint32_t>(sensor_value_to_double(&co2));
 
 	/* The SCD-40 reports 0 ppm until its first conversion completes. */
-	out->status = (out->co2_ppm == 0) ? SENSOR_READING_WARMING_UP : SENSOR_READING_OK;
+	if (co2_ppm == 0) {
+		out->status = SENSOR_READING_WARMING_UP;
+		return;
+	}
+
+	/* All three come from one conversion, so they are valid together or not at
+	 * all — which is why the presence flags are set here and nowhere else. A
+	 * warming-up or failed read leaves all four false, and the host sees
+	 * "no measurement" rather than a confident 0 it cannot question. That
+	 * distinction is the entire reason the fields are `optional` in
+	 * proto/node.proto. Note what this node never sets: has_pressure_pa. The
+	 * SCD-40 has no barometer, and saying nothing is the honest report. */
+	out->co2_ppm = co2_ppm;
+	out->has_co2_ppm = true;
+	out->temperature_c = static_cast<float>(sensor_value_to_double(&temp));
+	out->has_temperature_c = true;
+	out->humidity_rh = static_cast<float>(sensor_value_to_double(&hum));
+	out->has_humidity_rh = true;
+
+	out->status = SENSOR_READING_OK;
 }
 
 void sensor_thread(void *, void *, void *)

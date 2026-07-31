@@ -70,9 +70,26 @@ struct sensor_reading {
 	 * All three are "you missed one", which is what the field is for. */
 	uint32_t sequence;
 	uint32_t uptime_ms;
+
+	/* The measurements, each paired with a presence flag. A node fills in
+	 * what it can measure and leaves the rest false; nothing has to lie with
+	 * a 0. The SCD-40 node here sets the first three and never has_pressure_pa,
+	 * and a BME280 node is the mirror image of that.
+	 *
+	 * This mirrors -- deliberately, not accidentally -- the `optional` fields
+	 * in proto/node.proto, which exist for the same reason: a measurement of
+	 * zero and no measurement at all are different facts, and a bare scalar
+	 * cannot tell them apart. The flags are the internal half of that
+	 * distinction, and protocol.cpp is where the two halves meet. */
+	bool has_co2_ppm;
 	uint32_t co2_ppm;
+	bool has_temperature_c;
 	float temperature_c;
+	bool has_humidity_rh;
 	float humidity_rh;
+	bool has_pressure_pa;
+	uint32_t pressure_pa;
+
 	enum sensor_reading_status status;
 };
 

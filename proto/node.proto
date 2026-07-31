@@ -17,6 +17,10 @@
 //   - NEVER change or reuse a field number.
 //   - Deleting a field means `reserved`-ing its number, not freeing it.
 //   - Adding a field is always safe; old readers skip what they do not know.
+//   - Adding `optional` to an existing scalar is also safe on the wire: the
+//     tag and wire type are unchanged, so old and new readers parse each
+//     other's bytes. What changes is only whether a *default* value is
+//     transmitted at all -- see the note on the Telemetry measurements below.
 
 syntax = "proto3";
 
@@ -53,11 +57,36 @@ message Telemetry {
   // decrease as a reboot rather than assuming monotonicity.
   uint32 uptime_ms = 3;
 
-  uint32 co2_ppm = 4;
-  float temperature_c = 5;
-  float humidity_rh = 6;
+  // The measurements. All four are `optional` — proto3's *explicit presence* —
+  // and the header fields above deliberately are not. The distinction is
+  // exactly the one the field means: a measurement can be genuinely absent
+  // (this node has no such sensor, or the read failed), whereas a node always
+  // has a sequence and an uptime.
+  //
+  // Without explicit presence a scalar's default is indistinguishable from its
+  // absence: a decoder cannot tell "0 ppm" from "no CO2 sensor here", and it
+  // reports 0 either way. That was harmless with one node measuring all three;
+  // with a second node measuring pressure and no CO2, it is a lie the host has
+  // no way to detect. `optional` makes the encoder emit the field whenever the
+  // sender set it — zero included — and gives the decoder a has_-bit to ask.
+  //
+  // The cost is real and worth naming: an explicitly-set zero now occupies
+  // bytes it used to be free to omit, so proto3's "defaults are free" property
+  // applies only to what is genuinely unset. See notes/protobuf-guide.md §5.
+  optional uint32 co2_ppm = 4;
+  optional float temperature_c = 5;
+  optional float humidity_rh = 6;
 
   SensorStatus sensor_status = 7;
+
+  // Pascals, not kilopascals or a float. Zephyr's SENSOR_CHAN_PRESS gives
+  // kPa in a {val1, val2} pair, and `val1 * 1000 + val2 / 1000` converts to
+  // whole pascals exactly — no rounding, and no soft-float on the M0 peer that
+  // produces it. Atmospheric pressure spans roughly 30 000–110 000 Pa, so a
+  // uint32 is ample and 1 Pa resolution is finer than the sensor's accuracy.
+  //
+  // Field 8 keeps Telemetry inside the 1-15 single-byte-tag budget.
+  optional uint32 pressure_pa = 8;
 }
 
 // ---------------------------------------------------------------------------

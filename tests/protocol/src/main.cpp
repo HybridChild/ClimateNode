@@ -19,7 +19,8 @@
 #include "protocol.h"
 
 /* A reading with nothing at a default value, so every field must appear on the
- * wire. Values match the worked example in notes/protobuf-guide.md §3. */
+ * wire. Values match the worked example in notes/protobuf-guide.md §3. Shaped
+ * like this node: three measurements present, no pressure. */
 static struct sensor_reading full_reading(void)
 {
 	struct sensor_reading r = {};
@@ -27,8 +28,11 @@ static struct sensor_reading full_reading(void)
 	r.sequence = 26404;
 	r.uptime_ms = 136453275;
 	r.co2_ppm = 812;
+	r.has_co2_ppm = true;
 	r.temperature_c = 22.41f;
+	r.has_temperature_c = true;
 	r.humidity_rh = 41.3f;
+	r.has_humidity_rh = true;
 	r.status = SENSOR_READING_OK;
 	return r;
 }
@@ -60,12 +64,47 @@ ZTEST(protocol, test_telemetry_round_trip)
 	zassert_equal(msg.schema_version, kSchemaVersion, "schema version not carried");
 	zassert_equal(msg.sequence, r.sequence, "sequence not carried");
 	zassert_equal(msg.uptime_ms, r.uptime_ms, "uptime not carried");
+	zassert_true(msg.has_co2_ppm, "co2 presence not carried");
 	zassert_equal(msg.co2_ppm, r.co2_ppm, "co2 not carried");
 	/* float32 survives the wire exactly -- protobuf stores the same four
 	 * bytes IEEE-754 gave it, so this is an equality, not an approximation. */
+	zassert_true(msg.has_temperature_c, "temperature presence not carried");
 	zassert_equal(msg.temperature_c, r.temperature_c, "temperature not carried");
+	zassert_true(msg.has_humidity_rh, "humidity presence not carried");
 	zassert_equal(msg.humidity_rh, r.humidity_rh, "humidity not carried");
 	zassert_equal(msg.sensor_status, node_SensorStatus_SENSOR_STATUS_OK, "status not carried");
+
+	/* This node has no barometer, and the absence is on the wire as an
+	 * absence -- not as a 0 the host would have to interpret. */
+	zassert_false(msg.has_pressure_pa, "a node with no barometer claimed a pressure");
+}
+
+ZTEST(protocol, test_telemetry_pressure_only_reading)
+{
+	/* The mirror image: a node that measures pressure and nothing else. The
+	 * same Telemetry message describes both node populations without either
+	 * having to send a field it cannot measure, which is what the `optional`
+	 * fields in proto/node.proto buy. */
+	uint8_t buf[node_Telemetry_size];
+	struct sensor_reading r = {};
+
+	r.sequence = 3;
+	r.uptime_ms = 91000;
+	r.pressure_pa = 101325;
+	r.has_pressure_pa = true;
+	r.status = SENSOR_READING_OK;
+
+	size_t len = encode_telemetry(r, buf, sizeof(buf));
+
+	zassert_not_equal(len, 0, "encode reported failure");
+
+	node_Telemetry msg = decode_telemetry(buf, len);
+
+	zassert_true(msg.has_pressure_pa, "pressure presence not carried");
+	zassert_equal(msg.pressure_pa, 101325, "pressure not carried");
+	zassert_false(msg.has_co2_ppm, "co2 should be absent");
+	zassert_false(msg.has_temperature_c, "temperature should be absent");
+	zassert_false(msg.has_humidity_rh, "humidity should be absent");
 }
 
 ZTEST(protocol, test_telemetry_status_mapping)
@@ -95,12 +134,17 @@ ZTEST(protocol, test_telemetry_status_mapping)
 	}
 }
 
-ZTEST(protocol, test_telemetry_omits_default_fields)
+ZTEST(protocol, test_telemetry_omits_unset_fields)
 {
-	/* proto3 does not transmit fields equal to their default, so a reading
-	 * with nothing measured yet is *shorter* on the wire than a full one --
-	 * a telemetry message is smallest exactly when it has least to say.
-	 * notes/protobuf-guide.md §5. */
+	/* An unset field is not transmitted, so a reading with nothing measured
+	 * yet is *shorter* on the wire than a full one -- a telemetry message is
+	 * smallest exactly when it has least to say. notes/protobuf-guide.md §5.
+	 *
+	 * This assertion predates explicit presence and survived it, but the
+	 * reason it holds has changed underneath: it used to be true because
+	 * every measurement was *zero*, and proto3 omits defaults. Now it is true
+	 * because every measurement is *absent*, which the sensor thread states
+	 * deliberately. The next test is the half that did not survive. */
 	uint8_t full_buf[node_Telemetry_size];
 	uint8_t warm_buf[node_Telemetry_size];
 
@@ -116,13 +160,54 @@ ZTEST(protocol, test_telemetry_omits_default_fields)
 	zassert_true(warm_len < full_len, "warming-up reading (%zu B) not shorter than full (%zu B)",
 		     warm_len, full_len);
 
-	/* And the three zeroed measurements come back as zero, not as garbage:
-	 * absent and zero are indistinguishable for scalars, by design. */
+	/* And what the host sees is *absence*, not three zeros it would have to
+	 * interpret. Before explicit presence this decoded to co2 == 0, which is
+	 * a plausible-looking CO2 concentration and a false one. */
 	node_Telemetry msg = decode_telemetry(warm_buf, warm_len);
 
-	zassert_equal(msg.co2_ppm, 0, "absent co2 did not default to 0");
-	zassert_equal(msg.temperature_c, 0.0f, "absent temperature did not default to 0");
-	zassert_equal(msg.humidity_rh, 0.0f, "absent humidity did not default to 0");
+	zassert_false(msg.has_co2_ppm, "warming-up reading claimed a co2 measurement");
+	zassert_false(msg.has_temperature_c, "warming-up reading claimed a temperature");
+	zassert_false(msg.has_humidity_rh, "warming-up reading claimed a humidity");
+}
+
+ZTEST(protocol, test_telemetry_transmits_an_explicit_zero)
+{
+	/* What explicit presence costs, stated as an assertion rather than left
+	 * as a footnote. proto3's "a default value is free on the wire" rule
+	 * applies to a field that is *unset*; a field explicitly set to its
+	 * default is now written out in full, tag and all.
+	 *
+	 * So the two readings below carry the same numeric information -- zero
+	 * degrees -- and the one that means it is the longer of the two. That is
+	 * the trade: a few bytes for the ability to distinguish "0 C" from "no
+	 * thermometer". notes/protobuf-guide.md §5. */
+	uint8_t said_buf[node_Telemetry_size];
+	uint8_t unsaid_buf[node_Telemetry_size];
+
+	struct sensor_reading said = {};
+
+	said.sequence = 9;
+	said.temperature_c = 0.0f;
+	said.has_temperature_c = true; /* measured, and it really is 0 C */
+	said.status = SENSOR_READING_OK;
+
+	struct sensor_reading unsaid = said;
+
+	unsaid.has_temperature_c = false; /* no thermometer at all */
+
+	size_t said_len = encode_telemetry(said, said_buf, sizeof(said_buf));
+	size_t unsaid_len = encode_telemetry(unsaid, unsaid_buf, sizeof(unsaid_buf));
+
+	zassert_equal(said_len, unsaid_len + 5,
+		      "an explicit 0.0f should cost a 1-byte tag plus 4 bytes of float "
+		      "(%zu vs %zu)",
+		      said_len, unsaid_len);
+
+	/* And the receiver can tell them apart, which is the entire point. */
+	zassert_true(decode_telemetry(said_buf, said_len).has_temperature_c,
+		     "an explicitly measured 0 C decoded as absent");
+	zassert_false(decode_telemetry(unsaid_buf, unsaid_len).has_temperature_c,
+		      "an unmeasured temperature decoded as present");
 }
 
 ZTEST(protocol, test_telemetry_fits_generated_size)
@@ -136,8 +221,15 @@ ZTEST(protocol, test_telemetry_fits_generated_size)
 	r.sequence = UINT32_MAX;
 	r.uptime_ms = UINT32_MAX;
 	r.co2_ppm = UINT32_MAX;
+	r.has_co2_ppm = true;
 	r.temperature_c = -273.15f;
+	r.has_temperature_c = true;
 	r.humidity_rh = 100.0f;
+	r.has_humidity_rh = true;
+	/* No node measures all four today, but the bound has to cover the message
+	 * the schema permits, not the one this firmware happens to send. */
+	r.pressure_pa = UINT32_MAX;
+	r.has_pressure_pa = true;
 	r.status = SENSOR_READING_ERROR;
 
 	size_t len = encode_telemetry(r, buf, sizeof(buf));
@@ -155,6 +247,113 @@ ZTEST(protocol, test_telemetry_rejects_undersized_buffer)
 
 	zassert_equal(encode_telemetry(full_reading(), tiny, sizeof(tiny)), 0,
 		      "encoding into a 4-byte buffer should have failed");
+}
+
+/* ---- schema versioning: old readers and old writers ----------------------- */
+
+/* A decoder for the *previous* Telemetry: no `optional` on the measurements, no
+ * pressure_pa. Written out by hand with nanopb's X-macro so the old schema is a
+ * real, executable participant rather than an assumption -- these two tests are
+ * the "add a field, decode old<->new" exercise the README asks for, and neither
+ * of them can pass by accident.
+ *
+ * Note what is NOT redefined here: the field numbers and wire types are
+ * identical to the current schema, because that is the whole claim being
+ * tested. Adding `optional` and adding field 8 changed what gets written; it
+ * did not renumber anything. */
+struct OldTelemetry {
+	uint32_t schema_version;
+	uint32_t sequence;
+	uint32_t uptime_ms;
+	uint32_t co2_ppm;
+	float temperature_c;
+	float humidity_rh;
+	node_SensorStatus sensor_status;
+};
+
+#define OldTelemetry_FIELDLIST(X, a)                                                               \
+	X(a, STATIC, SINGULAR, UINT32, schema_version, 1)                                          \
+	X(a, STATIC, SINGULAR, UINT32, sequence, 2)                                                \
+	X(a, STATIC, SINGULAR, UINT32, uptime_ms, 3)                                               \
+	X(a, STATIC, SINGULAR, UINT32, co2_ppm, 4)                                                 \
+	X(a, STATIC, SINGULAR, FLOAT, temperature_c, 5)                                            \
+	X(a, STATIC, SINGULAR, FLOAT, humidity_rh, 6)                                              \
+	X(a, STATIC, SINGULAR, UENUM, sensor_status, 7)
+#define OldTelemetry_CALLBACK NULL
+#define OldTelemetry_DEFAULT  NULL
+
+PB_BIND(OldTelemetry, OldTelemetry, AUTO)
+
+/* PB_BIND defines the descriptor object; the generator normally emits this
+ * alias beside it, and pb_encode/pb_decode want the pointer. */
+#define OldTelemetry_fields &OldTelemetry_msg
+
+ZTEST(protocol, test_old_reader_decodes_new_telemetry)
+{
+	/* Forwards compatibility: a host still running the previous schema is
+	 * handed a message from the current firmware, including a pressure_pa it
+	 * has never heard of.
+	 *
+	 * It must not fail. Field 8 arrives as tag 8, wire type 0 -- and an
+	 * unknown varint is skippable without knowing anything about it, which is
+	 * precisely why protobuf can be extended at all. */
+	uint8_t buf[node_Telemetry_size];
+	struct sensor_reading r = full_reading();
+
+	r.pressure_pa = 99400;
+	r.has_pressure_pa = true;
+
+	size_t len = encode_telemetry(r, buf, sizeof(buf));
+	struct OldTelemetry old = {};
+	pb_istream_t stream = pb_istream_from_buffer(buf, len);
+
+	zassert_true(pb_decode(&stream, OldTelemetry_fields, &old),
+		     "the previous schema failed to decode a current message");
+
+	zassert_equal(old.sequence, r.sequence, "sequence not readable by the old schema");
+	zassert_equal(old.co2_ppm, r.co2_ppm, "co2 not readable by the old schema");
+	zassert_equal(old.temperature_c, r.temperature_c, "temperature not readable");
+	zassert_equal(old.sensor_status, node_SensorStatus_SENSOR_STATUS_OK, "status not readable");
+
+	/* pressure_pa is simply gone: it was skipped, not stored anywhere. The
+	 * old host is not wrong about the pressure, it is unaware of it -- which
+	 * is the only outcome an old reader can honestly produce. */
+}
+
+ZTEST(protocol, test_new_reader_decodes_old_telemetry)
+{
+	/* Backwards compatibility, and the asymmetry that makes this interesting.
+	 * A message written by the previous schema decodes cleanly, and the
+	 * has_ bits come out true for what it actually sent.
+	 *
+	 * But an old writer's ZERO is unrecoverable. Under the old schema a
+	 * 0 ppm reading was omitted from the wire, so a new reader sees it as
+	 * absent -- and it is right to, because those bytes carry no evidence
+	 * either way. Explicit presence can only describe what a sender chose to
+	 * state; it cannot retroactively add information to a message that was
+	 * written before anyone was asked to state it. */
+	uint8_t buf[node_Telemetry_size];
+	struct OldTelemetry old = {};
+
+	old.schema_version = kSchemaVersion;
+	old.sequence = 12;
+	old.uptime_ms = 44000;
+	old.co2_ppm = 0; /* the old schema cannot distinguish this from "unmeasured" */
+	old.temperature_c = 19.5f;
+	old.humidity_rh = 44.0f;
+	old.sensor_status = node_SensorStatus_SENSOR_STATUS_OK;
+
+	pb_ostream_t stream = pb_ostream_from_buffer(buf, sizeof(buf));
+
+	zassert_true(pb_encode(&stream, OldTelemetry_fields, &old), "old-schema encode failed");
+
+	node_Telemetry msg = decode_telemetry(buf, stream.bytes_written);
+
+	zassert_equal(msg.sequence, 12, "sequence not carried across schemas");
+	zassert_true(msg.has_temperature_c, "a value the old writer sent decoded as absent");
+	zassert_equal(msg.temperature_c, 19.5f, "temperature not carried across schemas");
+	zassert_false(msg.has_co2_ppm, "an omitted zero cannot decode as a present zero");
+	zassert_false(msg.has_pressure_pa, "the old writer cannot have sent a pressure");
 }
 
 /* ---- command decode ------------------------------------------------------- */

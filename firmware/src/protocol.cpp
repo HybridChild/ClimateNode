@@ -18,9 +18,30 @@ size_t encode_telemetry(const struct sensor_reading &reading, uint8_t *out, size
 	msg.schema_version = kSchemaVersion;
 	msg.sequence = reading.sequence;
 	msg.uptime_ms = reading.uptime_ms;
-	msg.co2_ppm = reading.co2_ppm;
-	msg.temperature_c = reading.temperature_c;
-	msg.humidity_rh = reading.humidity_rh;
+
+	/* Presence copied across field by field. nanopb turns each proto3
+	 * `optional` into a has_ bit beside the value, so the internal flag maps
+	 * onto the wire's one-for-one and a measurement this node cannot take is
+	 * simply not written -- rather than written as a zero the host would have
+	 * to guess about. Copying the value when the flag is false would be
+	 * harmless (nanopb skips it), but is not done: the flag is the only thing
+	 * that decides, and pairing the two makes that obvious. */
+	msg.has_co2_ppm = reading.has_co2_ppm;
+	if (reading.has_co2_ppm) {
+		msg.co2_ppm = reading.co2_ppm;
+	}
+	msg.has_temperature_c = reading.has_temperature_c;
+	if (reading.has_temperature_c) {
+		msg.temperature_c = reading.temperature_c;
+	}
+	msg.has_humidity_rh = reading.has_humidity_rh;
+	if (reading.has_humidity_rh) {
+		msg.humidity_rh = reading.humidity_rh;
+	}
+	msg.has_pressure_pa = reading.has_pressure_pa;
+	if (reading.has_pressure_pa) {
+		msg.pressure_pa = reading.pressure_pa;
+	}
 
 	/* The internal enum and the wire enum are mapped explicitly rather than
 	 * cast. The cost is this switch; the benefit is that the two can be
@@ -41,7 +62,7 @@ size_t encode_telemetry(const struct sensor_reading &reading, uint8_t *out, size
 
 	/* An output stream writing into a caller-supplied buffer. nanopb never
 	 * allocates: if the message does not fit, encoding fails rather than
-	 * growing anything. node_Telemetry_size (36) is the generated upper
+	 * growing anything. node_Telemetry_size (42) is the generated upper
 	 * bound, so a correctly sized buffer cannot overflow here. */
 	pb_ostream_t stream = pb_ostream_from_buffer(out, out_len);
 

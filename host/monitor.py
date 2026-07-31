@@ -25,12 +25,29 @@ def kind(topic: str) -> str:
     return topic.rsplit("/", 1)[-1]
 
 
+def measurement(msg, field: str, fmt: str, width: int) -> str:
+    """Format an optional measurement, or a placeholder if it is absent.
+
+    The measurements in Telemetry are proto3 `optional`, so a node that cannot
+    take one omits it rather than sending 0. Asking HasField() first is what
+    keeps that distinction: printing msg.co2_ppm unconditionally would turn
+    "this node has no CO2 sensor" into a confident "0 ppm", which is exactly
+    the misreading explicit presence was added to prevent.
+    """
+    if not msg.HasField(field):
+        return "--".rjust(width)
+    return format(getattr(msg, field), fmt).rjust(width)
+
+
 def describe_telemetry(msg: node_pb2.Telemetry) -> str:
     status = node_pb2.SensorStatus.Name(msg.sensor_status)
     uptime_s = msg.uptime_ms / 1000.0
     return (
-        f"seq={msg.sequence:<5} co2={msg.co2_ppm:>5} ppm  "
-        f"temp={msg.temperature_c:5.2f} C  rh={msg.humidity_rh:4.1f} %  "
+        f"seq={msg.sequence:<5} "
+        f"co2={measurement(msg, 'co2_ppm', 'd', 5)} ppm  "
+        f"temp={measurement(msg, 'temperature_c', '.2f', 5)} C  "
+        f"rh={measurement(msg, 'humidity_rh', '.1f', 4)} %  "
+        f"p={measurement(msg, 'pressure_pa', 'd', 6)} Pa  "
         f"up={uptime_s:8.1f}s  {status}  (schema v{msg.schema_version})"
     )
 
