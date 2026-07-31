@@ -1,4 +1,4 @@
-/* Unit tests for firmware/src/protocol.cpp -- the wire format.
+/* Unit tests for shared/protocol.cpp -- the wire format.
  *
  * Everything here runs with no hardware: the code under test has no socket,
  * device or bus dependency, which is the whole reason it is its own translation

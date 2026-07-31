@@ -531,7 +531,7 @@ Decoding mirrors it with `pb_istream_from_buffer()` and `pb_decode()`.
 
 ## 10. Reading the firmware
 
-The whole serialisation story lives in one translation unit, `firmware/src/protocol.cpp` — and that it *is* one translation unit is the point. Every byte that crosses between this firmware's own types and the schema crosses here; nothing else in the app includes `pb_encode.h`. Which is also why it can be tested on a laptop with no board attached (see [`testing-guide.md`](testing-guide.md)).
+The whole serialisation story lives in one translation unit, `shared/protocol.cpp` — and that it *is* one translation unit is the point. Every byte that crosses between this firmware's own types and the schema crosses here; nothing else in the app includes `pb_encode.h`. Which is also why it can be tested on a laptop with no board attached (see [`testing-guide.md`](testing-guide.md)).
 
 ### `encode_telemetry()`
 

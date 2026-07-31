@@ -11,7 +11,7 @@ Builds against the shared global Zephyr workspace — see [`toolchain.md`](toolc
 ```
 firmware/boards/nucleo_h753zi.overlay   gateway: the bitrate the board dts leaves unset
 firmware/prj.conf                       gateway: CONFIG_CAN, CONFIG_ISOTP, the CAN shell
-firmware/src/can_link.h                 SHARED: address map, heartbeat frame, message type
+shared/can_link.h                       SHARED: address map, heartbeat frame, message type
 firmware/src/relay.h                    gateway: the relay channels and liveness rule
 firmware/src/relay.cpp                  gateway: the CAN threads
 sensor-node/boards/nucleo_f072rb.overlay  peer: can1 enabled on PA11/PA12, the same bitrate

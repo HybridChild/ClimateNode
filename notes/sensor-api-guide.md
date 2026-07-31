@@ -296,7 +296,7 @@ node_Telemetry            protobuf — the shared contract, on the wire
 
 **Fixed-point ends at the first arrow, not the second.** `read_scd40()` converts into `struct sensor_reading` — a plain application struct that knows nothing about protobuf. The wire format is a *separate* hop, `encode_telemetry()` in `protocol.cpp`, and it is deliberately the only place the two representations meet — a whole translation unit whose job is that one boundary.
 
-That separation is the whole argument in `firmware/src/app_channels.h`: the sensor thread never mentions `node_Telemetry`, so a schema change stops at one function instead of rippling back into acquisition. See [`protobuf-guide.md`](protobuf-guide.md) for what happens at the second arrow, and [`zbus-guide.md`](zbus-guide.md) for the channel the reading crosses in between.
+That separation is the whole argument in `shared/app_channels.h`: the sensor thread never mentions `node_Telemetry`, so a schema change stops at one function instead of rippling back into acquisition. See [`protobuf-guide.md`](protobuf-guide.md) for what happens at the second arrow, and [`zbus-guide.md`](zbus-guide.md) for the channel the reading crosses in between.
 
 There are also unit helpers in the same region of the header — `sensor_ms2_to_g()`, `sensor_rad_to_degrees()` and friends — irrelevant here but the same pattern.
 

@@ -1,4 +1,4 @@
-/* Unit tests for firmware/src/can_link.h -- the CAN link contract.
+/* Unit tests for shared/can_link.h -- the CAN link contract.
  *
  * Two things are pinned here, and both are pinned because nothing else can pin
  * them: the byte layout of the heartbeat frame, and the address map. Everywhere

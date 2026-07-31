@@ -1,4 +1,4 @@
-/* The CAN transport, end to end, with no hardware — firmware/src/can_link.h
+/* The CAN transport, end to end, with no hardware — shared/can_link.h
  * carried over Zephyr's ISO-TP through an emulated controller.
  *
  * ---------------------------------------------------------------------------

@@ -175,17 +175,17 @@ Two lessons generalise from it. First, **the emulated driver is often already in
 The simplest possible case. `protocol.cpp` depends on nanopb and nothing else, so the test compiles it directly:
 
 ```cmake
-set(APP_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../../firmware/src)
+set(SHARED ${CMAKE_CURRENT_SOURCE_DIR}/../../shared)
 
 list(APPEND CMAKE_MODULE_PATH ${ZEPHYR_BASE}/modules/nanopb)
 include(nanopb)
 zephyr_nanopb_sources(app ${CMAKE_CURRENT_SOURCE_DIR}/../../proto/node.proto)
 
-target_sources(app PRIVATE src/main.cpp ${APP_SRC}/protocol.cpp)
-target_include_directories(app PRIVATE ${APP_SRC})
+target_sources(app PRIVATE src/main.cpp ${SHARED}/protocol.cpp)
+target_include_directories(app PRIVATE ${SHARED})
 ```
 
-Note what it does **not** do: copy `protocol.cpp`, or re-declare its functions. It compiles the application's own source, and it regenerates the schema from `proto/node.proto` with the same `zephyr_nanopb_sources()` line the firmware uses. A test that drifts from the code it tests is worse than no test, and the cheapest way to prevent drift is to have only one copy of everything.
+Note what it does **not** do: copy `protocol.cpp`, or re-declare its functions. It compiles the shipped source itself — the same file both applications link, which is why it lives in `shared/` rather than inside either app — and it regenerates the schema from `proto/node.proto` with the same `zephyr_nanopb_sources()` line the firmware uses. A test that drifts from the code it tests is worse than no test, and the cheapest way to prevent drift is to have only one copy of everything.
 
 ### `tests/commands/` — using a seam the design already had
 
@@ -348,7 +348,7 @@ Revert it afterwards. **Proves:** failures are reported with the file, the line,
 
 ### Exercise 3 — Watch a real bug get caught
 
-Break the *code* instead of the test. In `firmware/src/protocol.cpp`, map the warming-up status to the wrong wire enum:
+Break the *code* instead of the test. In `shared/protocol.cpp`, map the warming-up status to the wrong wire enum:
 
 ```c
 case SENSOR_READING_WARMING_UP:
@@ -357,7 +357,7 @@ case SENSOR_READING_WARMING_UP:
 
 Re-run. `test_telemetry_status_mapping` fails and names the case. Revert.
 
-**Proves:** the test is anchored to the firmware, not to a copy of it — the CMakeLists compiles `firmware/src/protocol.cpp` itself. It also shows the class of bug these tests exist for: nothing crashes, nothing looks wrong on the node, and the host quietly displays a sensor fault that never happened.
+**Proves:** the test is anchored to the firmware, not to a copy of it — the CMakeLists compiles `shared/protocol.cpp` itself. It also shows the class of bug these tests exist for: nothing crashes, nothing looks wrong on the node, and the host quietly displays a sensor fault that never happened.
 
 ### Exercise 4 — Prove a negative test can fail
 

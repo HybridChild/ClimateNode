@@ -16,9 +16,9 @@ No board, no broker, no sensor. The script sources the workspace venv and export
 
 | Suite | Code under test | Cases |
 |---|---|---|
-| `tests/protocol/` | `firmware/src/protocol.cpp` — the wire format | 16 |
-| `tests/commands/` | `firmware/src/commands.cpp` — command semantics | 9 |
-| `tests/heartbeat/` | `firmware/src/can_link.h` — the CAN link contract | 8 |
+| `tests/protocol/` | `shared/protocol.cpp` — the wire format | 16 |
+| `tests/commands/` | `shared/commands.cpp` — command semantics | 9 |
+| `tests/heartbeat/` | `shared/can_link.h` — the CAN link contract | 8 |
 | `tests/relay/` | `firmware/src/relay.h` — the gateway's liveness machine | 10 |
 | `tests/isotp_loopback/` | the CAN transport — `can_link.h` through a real driver | 7 |
 

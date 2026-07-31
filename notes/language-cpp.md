@@ -42,7 +42,7 @@ A trap worth knowing up front: **the default standard is C++11**, not something 
 On the CMake side there is nothing special. Give your sources a `.cpp` extension, list them the same way you would a `.c` file, and Zephyr compiles them with `g++`:
 
 ```cmake
-target_sources(app PRIVATE src/main.cpp src/sensor.cpp src/protocol.cpp src/commands.cpp)
+target_sources(app PRIVATE src/main.cpp src/sensor.cpp src/relay.cpp)
 ```
 
 In the build log you will see the payoff. These are the C++-relevant lines out of a 335-step pristine build of this app:

@@ -1,4 +1,4 @@
-/* Unit tests for firmware/src/commands.cpp -- what a Command means.
+/* Unit tests for shared/commands.cpp -- what a Command means.
  *
  * The sensor thread does not exist here. commands.cpp publishes to
  * chan_sensor_cmd, which app_channels.h only DECLARES; this file supplies the

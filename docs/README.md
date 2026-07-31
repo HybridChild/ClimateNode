@@ -17,7 +17,7 @@ Each row is a reference here and the guide it points back to. The guide teaches 
 | [`can-bringup.md`](can-bringup.md) | How the FDCAN controller is clocked and configured, why the bitrate must be stated explicitly, and the filter behaviour that makes `can dump` lie | [`can-guide.md`](../notes/can-guide.md) |
 | [`test-strategy.md`](test-strategy.md) | What this repo tests, where, and what it deliberately leaves to the bench | [`testing-guide.md`](../notes/testing-guide.md) |
 
-Two guides pair with a **source file** instead of a page here, because there the decision belongs next to the thing it constrains: `protobuf-guide.md` with [`../proto/node.proto`](../proto/node.proto) (the field-numbering rules), and `zbus-guide.md` with the [`app_channels.h`](../firmware/src/app_channels.h) header comment (the observer-kind choice).
+Two guides pair with a **source file** instead of a page here, because there the decision belongs next to the thing it constrains: `protobuf-guide.md` with [`../proto/node.proto`](../proto/node.proto) (the field-numbering rules), and `zbus-guide.md` with the [`app_channels.h`](../shared/app_channels.h) header comment (the observer-kind choice).
 
 ## The two without a guide
 

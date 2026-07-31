@@ -12,7 +12,7 @@ Four files, each doing one thing:
 firmware/boards/nucleo_h753zi.overlay   the SCD-40 device on I2C1, marked deferred-init
 firmware/prj.conf                       CONFIG_SENSOR + CONFIG_I2C + the sensor shell
 firmware/src/sensor.cpp                 owns the device: init, the sampling thread, both channels
-firmware/src/app_channels.h             the struct the readings travel in
+shared/app_channels.h                   the struct the readings travel in
 ```
 
 `sensor.cpp` is the only file that talks to the sensor. It publishes each reading to the `chan_telemetry` zbus channel and never mentions MQTT, protobuf or the network; the wire side picks readings up from that channel. That boundary is the point — see the header comment in `app_channels.h`.

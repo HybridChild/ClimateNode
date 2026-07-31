@@ -19,9 +19,16 @@ list(APPEND CMAKE_MODULE_PATH ${ZEPHYR_BASE}/modules/nanopb)
 include(nanopb)
 zephyr_nanopb_sources(app ${CMAKE_CURRENT_SOURCE_DIR}/../proto/node.proto)
 
+set(SHARED ${CMAKE_CURRENT_SOURCE_DIR}/../shared)
+
 target_sources(app PRIVATE src/main.cpp src/sensor.cpp   # `app` target is created by
-               src/protocol.cpp src/commands.cpp)        # Zephyr's kernel.cmake
+               src/relay.cpp                             # Zephyr's kernel.cmake
+               ${SHARED}/protocol.cpp                    # both these are linked by
+               ${SHARED}/commands.cpp)                   # sensor-node/ too
+target_include_directories(app PRIVATE ${SHARED})
 ```
+
+Note the two sources from outside the app directory. `target_sources` takes any path, so sharing a translation unit between two applications needs no library and no install step — but the *generated* `node.pb.h` those two files include comes from the `zephyr_nanopb_sources(app …)` line above, which is this app's alone. Each app therefore regenerates the schema for itself; `shared/` carries no build rules at all.
 
 `find_package(Zephyr)` loads `share/zephyr-package/cmake/ZephyrConfig.cmake`, which prepends `zephyr/cmake/modules` to `CMAKE_MODULE_PATH` and `include(zephyr_default)`.
 
