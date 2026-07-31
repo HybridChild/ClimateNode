@@ -473,14 +473,18 @@ Either way this is a **driver-level surprise**, not something the sensor API's c
 
 ### 8.2 The zero-CO₂ warm-up
 
-`read_scd40()` ends with:
+`read_scd40()` branches on the CO₂ value before it stores anything:
 
 ```c
-/* The SCD-40 reports 0 ppm until its first conversion completes. */
-out->status = (out->co2_ppm == 0) ? SENSOR_READING_WARMING_UP : SENSOR_READING_OK;
+if (co2_ppm == 0) {
+        out->status = SENSOR_READING_WARMING_UP;
+        return;      /* leaves every has_* flag false */
+}
 ```
 
 The first periodic measurement takes ~5 s after power-up, and the chip reports 0 ppm until then. 0 ppm is physically impossible in air (outdoor baseline is ~420 ppm), so it's a safe sentinel — but note it's *this application's* interpretation, not something the sensor API defines.
+
+The early return matters as much as the sentinel. All three channels come from one conversion, so if there is no conversion there are no readings — not three zeros — and `struct sensor_reading` says so by leaving `has_co2_ppm`, `has_temperature_c` and `has_humidity_rh` false. The success path sets each flag beside the value it belongs to. Those flags become proto3 explicit presence at the wire boundary, so a host sees *nothing measured* rather than a room at 0 °C; the reasoning is in [`protobuf-guide.md` §5](protobuf-guide.md).
 
 Note that the status set here is the **internal** `enum sensor_reading_status`, not the protobuf one. `encode_telemetry()` maps it to `node_SensorStatus_SENSOR_STATUS_WARMING_UP` later, at the wire boundary from §5 — which is what lets the two enums be renumbered independently.
 

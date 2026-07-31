@@ -109,7 +109,7 @@ The low three bits are the **wire type**, which tells a decoder *how to read the
 
 **This is why field numbers 1–15 matter.** The tag is itself a varint, and a one-byte varint holds values up to 127. Field 15 produces tags in the range `120`–`127`, whatever its wire type — still one byte. Field 16 with wire type 0 is already `128`, which needs two. So every field numbered 1–15 saves a byte on *every single message that carries it*.
 
-`Telemetry` is the high-rate message here, so `node.proto` deliberately keeps all seven of its fields inside that range. `Command`'s `oneof` arms start at 10 and still fit; the numbering leaves 3–9 free for future fields common to every command (§6).
+`Telemetry` is the high-rate message here, so `node.proto` deliberately keeps all eight of its fields inside that range. `Command`'s `oneof` arms start at 10 and still fit; the numbering leaves 3–9 free for future fields common to every command (§6).
 
 Reading the tags in the packet below:
 
@@ -251,7 +251,33 @@ bool has_device_info;
 node_DeviceInfo device_info;
 ```
 
-and why `command.py` can ask `ack.HasField("device_info")`. Scalars have no `HasField` in proto3 unless explicitly marked `optional`, which re-adds a presence bit at the cost of a generated `has_` field on both sides. Nothing here needs one — but if a future field must distinguish "0" from "not reported", that is the tool.
+and why `command.py` can ask `ack.HasField("device_info")`. Scalars have no `HasField` in proto3 unless explicitly marked `optional` — which is the subject of the next section, because this project reached the point where it needed one.
+
+### Explicit presence, and what it costs
+
+Mark a scalar `optional` and proto3 restores a real presence bit:
+
+```proto
+optional uint32 co2_ppm = 4;
+```
+
+nanopb generates the same shape it already gave `Ack.device_info` — a `has_` flag beside the value — and the Python runtime grows a `HasField("co2_ppm")` that previously did not exist for scalars. **Nothing about the wire format changes.** The field number is still 4, the wire type is still varint, and old and new readers parse each other's bytes without knowing which side used `optional`. What changes is a *sender's* rule about when to write the field: an unset field is still omitted, but a field explicitly set to zero is now written out in full.
+
+That last clause is the cost, and it is worth being precise about it, because "proto3 does not transmit defaults" quietly becomes false in the way people usually remember it. The rule was never "zeros are free"; it was "*unset* fields are free", and without explicit presence those two were the same sentence. With it they come apart:
+
+| Sender's intent | Without `optional` | With `optional` |
+|---|---|---|
+| never measured | omitted | omitted |
+| measured, value is 0 | omitted — indistinguishable from the above | **written**: tag + value |
+| measured, value is nonzero | written | written |
+
+The middle row is the whole trade: five bytes for a `float` that is genuinely 0.0, in exchange for a receiver that can tell "0 °C" from "no thermometer".
+
+**Why this project needed it.** With one node measuring CO₂, temperature and humidity, "everything is zero" only ever meant the SCD-40 was still warming up, and the host could read it that way. A second node measuring pressure and *not* CO₂ breaks that: it would publish a confident `co2_ppm = 0`, which is a plausible-looking concentration and a false one, and nothing in the bytes would let the host object. Presence turns the absence into something the sender states and the receiver can query — `has_co2_ppm == false`, not `co2_ppm == 0`.
+
+So in [`node.proto`](../proto/node.proto) the four **measurements** are `optional` and the **header** fields are not, and that split is the rule rather than a preference: a measurement can be genuinely absent, whereas a node always has a `sequence` and an `uptime_ms`. `sensor_status` stays non-optional too, because §5's other lesson already covers it — `SENSOR_STATUS_UNSPECIFIED = 0` is what an absent enum decodes to, so absence already has a name.
+
+The firmware carries the same distinction internally, one layer earlier: `struct sensor_reading` in `app_channels.h` pairs each measurement with a `has_` flag, and `sensor.cpp` sets them only when a conversion actually completed. A warming-up SCD-40 therefore reports *nothing measured* rather than three zeros, and `protocol.cpp` copies the flags straight across. There is no point in the pipeline where a zero has to stand in for silence.
 
 ### Both rules at once: where a 26-byte `Telemetry` goes
 
@@ -272,9 +298,11 @@ The console logs `published telemetry seq=26404 (26 bytes)`. Reconstructing that
 | `sensor_status = OK` | 7 | varint | 2 | `38 01` |
 | | | | **26** | |
 
-Every tag is one byte, because every field number is ≤ 15. The message is not fixed-size: an early publish, with `sequence = 1` and about six seconds of uptime, is **22 bytes**, and it grows as those two counters do. nanopb's `node_Telemetry_size` is **36** — the worst case, with every varint at its maximum width (§9). The gap between 26 and 36 is the compression varints give you for free on typical values.
+Every tag is one byte, because every field number is ≤ 15. The message is not fixed-size: an early publish, with `sequence = 1` and about six seconds of uptime, is **22 bytes**, and it grows as those two counters do. nanopb's `node_Telemetry_size` is **42** — the worst case, with every varint at its maximum width and every optional field present (§9). The gap between 26 and 42 is partly the compression varints give you for free on typical values, and partly the `pressure_pa` this node never sends.
 
-And a warming-up reading is smaller still, because the absent-defaults rule bites hard: with `co2_ppm`, `temperature_c` and `humidity_rh` all at zero, none of the three is transmitted at all — a telemetry message can be *shorter* precisely when it has least to say.
+Note that these 26 bytes are unchanged by the `optional` markers. All three measurements are present and nonzero, so the same three fields are written either way — presence costs nothing on a message that had something to say.
+
+And a warming-up reading is smaller still. Keep the counters above and drop the three measurements — which is exactly what `sensor.cpp` does before the first conversion completes — and only `08 01`, the 4-byte `sequence`, the 5-byte `uptime_ms` and `38 02` remain: **13 bytes**. A telemetry message is *shortest* precisely when it has least to say. The reason it is short has changed, though, and the difference is the whole of the previous section: it used to be short because those fields were *zero*, and it is now short because they are *unstated*. The bytes are the same; what the host may conclude from them is not.
 
 ---
 
@@ -330,6 +358,7 @@ Some further changes that are safe, and worth knowing because they look risky:
 - **Adding an enum value.** Old readers see an unknown number; in proto3 it is preserved as the raw integer rather than rejected. They must therefore have a sane `default:` branch — which is exactly what `ACK_STATUS_UNSPECIFIED` and the firmware's `UNSUPPORTED` arm are for.
 - **Adding a `oneof` arm.** It is just another field number; old readers skip it and see `which_payload == 0`.
 - **Widening `uint32` to `uint64`**, or `int32` to `int64`. Both are wire type 0 and the varint is the same bytes for values that fit.
+- **Adding `optional` to an existing scalar.** Field number and wire type are untouched, so old and new readers parse each other's bytes exactly as before. This one comes with an asymmetry worth stating, though, because it is the only place in this list where information is genuinely lost: a new reader can see everything an old writer sent, but an old writer's *zeros were never on the wire*, so they arrive as absent and no amount of new schema can recover them. Presence describes what a sender chose to state; it cannot be applied retroactively to bytes written before anyone was asked. `tests/protocol/` pins both directions — see §12.
 
 And the ones that are not, despite decoding cleanly:
 
@@ -420,12 +449,28 @@ The `.options` file is nanopb-only — a separate file precisely because it is a
 nanopb computes the maximum encoded size of each message and emits it as a macro:
 
 ```c
-#define node_Telemetry_size   36
+#define node_Telemetry_size   42
 #define node_Command_size     20
 #define node_Ack_size        140
 ```
 
 These are not magic. Each is the sum of every field's worst case, and working one out makes the whole encoding concrete:
+
+```
+node_Telemetry_size = 42
+  schema_version   1 (tag) + 5 (uint32 varint, worst case)   =  6
+  sequence         1 + 5                                     =  6
+  uptime_ms        1 + 5                                     =  6
+  co2_ppm          1 + 5                                     =  6
+  temperature_c    1 + 4 (float is always 4 bytes)           =  5
+  humidity_rh      1 + 4                                     =  5
+  sensor_status    1 + 1 (enum, max value 3)                 =  2
+  pressure_pa      1 + 5                                     =  6
+                                                              -----
+                                                                 42
+```
+
+Note what the `optional` markers did **not** do to this number: nothing. The worst case already assumed every field was written, so adding presence changed only the *typical* size, never the bound. The whole +6 is `pressure_pa`. That is worth knowing before sizing a buffer around presence — an optional field costs its full worst case in RAM whether or not this particular node ever sets it.
 
 ```
 node_Command_size = 20
@@ -478,7 +523,7 @@ size_t written = stream.bytes_written;
 
 The stream abstraction is what allows encoding straight to a socket or flash without an intermediate buffer. Here it wraps a plain array — and because it knows the bound, a message that does not fit **fails** rather than overflowing. `PB_GET_ERROR(&stream)` returns a human-readable reason, which is what the firmware logs on a decode failure.
 
-Note that `bytes_written` is the *actual* length (26 in §5), while the buffer was sized for the worst case (36). The difference is what gets published.
+Note that `bytes_written` is the *actual* length (26 in §5), while the buffer was sized for the worst case (42). The difference is what gets published.
 
 Decoding mirrors it with `pb_istream_from_buffer()` and `pb_decode()`.
 
@@ -507,11 +552,13 @@ Read the signature first, because it is the design. The input is a `struct senso
 
 The mapping is deliberately explicit rather than a `memcpy` or a shared struct. Its cost is a `switch` translating `SENSOR_READING_OK` into `node_SensorStatus_SENSOR_STATUS_OK`; its benefit is that the internal enum and the wire enum can be renumbered independently, and the compiler flags the mapping when either gains a value.
 
-`node_Telemetry_init_zero` is a generated initialiser — always start from it, so fields added later are not left holding stack garbage. Given §5, this also means any field left untouched costs nothing on the wire.
+`node_Telemetry_init_zero` is a generated initialiser — always start from it, so fields added later are not left holding stack garbage. With explicit presence it does more than tidy up: it clears every `has_` bit, so a field this function forgets to mention is *absent* rather than silently zero. Forgetting a field is still a bug, but it now produces a message that admits it.
 
 `node_Telemetry_fields` is the generated **field descriptor table**: a compact description of the schema that `pb_encode` walks at runtime. The schema exists as *data*, not as generated code per field, which is a large part of why nanopb is small — one encoder walks every message type rather than each message getting its own emitted serialiser.
 
-Note the design choice around failure: a failed sensor read still reaches this function, carrying `SENSOR_READING_ERROR` and zeroed measurements, and is published as `sensor_status = ERROR`. Silence would be ambiguous — the host cannot distinguish a broken sensor from a dead node — whereas an explicit status is a fact it can act on. Note also what §5 does to such a message: the three zeroed measurement fields vanish from the wire entirely, so an error report is one of the smallest messages the node ever sends.
+The measurements are copied flag-first — `msg.has_co2_ppm = reading.has_co2_ppm;` and only then the value — so the internal presence flags from §5 map one-for-one onto the wire's. That is the entire translation; there is no rule here about *when* a measurement counts as present, because that decision belongs to the code that took the reading.
+
+Note the design choice around failure: a failed sensor read still reaches this function, carrying `SENSOR_READING_ERROR` and no measurements at all, and is published as `sensor_status = ERROR`. Silence would be ambiguous — the host cannot distinguish a broken sensor from a dead node — whereas an explicit status is a fact it can act on. And because every measurement is absent rather than zero, an error report is both one of the smallest messages the node ever sends and one a host cannot misread as a room at 0 °C.
 
 ### `decode_command()`
 
@@ -590,7 +637,7 @@ printf '\x08\x01\x10\x2a\x5a\x00' | protoc --decode=node.Command --proto_path=pr
 grep _size firmware/build/node.pb.h
 ```
 
-The last one should print the constants §9 works through by hand — `node_Telemetry_size` 36, `node_Command_size` 20, `node_Ack_size` 140, `node_DeviceInfo_size` 75. If your arithmetic in §9 disagrees with the generator, the generator is right and the interesting question is which field's worst case you mis-counted.
+The last one should print the constants §9 works through by hand — `node_Telemetry_size` 42, `node_Command_size` 20, `node_Ack_size` 140, `node_DeviceInfo_size` 75. If your arithmetic in §9 disagrees with the generator, the generator is right and the interesting question is which field's worst case you mis-counted.
 
 **Exercise A — feel why field numbers are permanent (§7).** Change one field number in `node.proto`, rebuild, and re-run the decode above. The bytes still decode cleanly, exit status 0 — and they mean something entirely different. Nothing anywhere reports an error. That is the single most important property of the format to internalise, and it takes about thirty seconds to prove. Revert afterwards.
 
@@ -603,6 +650,19 @@ done
 ```
 
 All three succeed. **Proves:** a serialised message carries no type identity; the topic it arrived on is what asserts the type, which is why the topic hierarchy is part of the contract and not just housekeeping.
+
+**Exercise C — watch explicit presence appear and disappear (§5).** `protoc --decode` prints only the fields a message actually contains, which makes presence directly visible. Encode a `Telemetry` whose measurements are all zero, once as the schema stands and once with the `optional` markers removed:
+
+```sh
+# co2_ppm = 0, stated explicitly: field 4 is on the wire
+printf '\x08\x01\x20\x00' | protoc --decode=node.Telemetry --proto_path=proto proto/node.proto
+```
+
+That prints `schema_version: 1` and `co2_ppm: 0`. Now delete `optional` from `co2_ppm` in `node.proto` and run it again: the same four bytes still decode, and `co2_ppm: 0` **disappears from the output** — because without presence the decoder cannot report the difference between a zero it was sent and a zero it defaulted. Revert afterwards.
+
+**Proves:** presence is a property of the *reader's schema*, not of the bytes. The same payload means "measured zero" to one side and "said nothing" to the other, which is exactly the failure mode §5 exists to remove.
+
+**Exercise D — decode old↔new without a second board (§7).** `./scripts/test.sh` runs `tests/protocol/` on qemu in about eighteen seconds. Two of its cases, `test_old_reader_decodes_new_telemetry` and `test_new_reader_decodes_old_telemetry`, hand-build a descriptor for the *previous* schema with nanopb's `PB_BIND` X-macro and run both directions against the current one. Read those two tests: they are the shortest statement in the repo of what "additive changes are safe" actually promises, and of the one thing it does not.
 
 ### With the node: the round trip
 
@@ -619,7 +679,7 @@ Start the harness on the Pi (`host/.venv/bin/python host/monitor.py`) and work t
 
 Restore with `command.py interval 5000`.
 
-**Exercise C — the malformed case, and its limits (§8).** Publish something that is not a `Command` at all:
+**Exercise E — the malformed case, and its limits (§8).** Publish something that is not a `Command` at all:
 
 ```sh
 mosquitto_pub -h 192.168.10.1 -t node/1/command -m garbage -q 1
@@ -639,7 +699,7 @@ This one comes back `ACK_STATUS_UNSUPPORTED`, not `MALFORMED`. **Proves:** `MALF
 
 ## 13. The model in one paragraph
 
-A Protobuf message is **fields back to back, each preceded by a tag** packing a field number and a wire type into one varint — no header, no length, no checksum, no type name. That single layout explains the rest. The wire type lets a decoder step over a field it has never heard of, which is the mechanism behind every evolution rule: **adding a field is safe, a field number is permanent, a deleted number must be reserved.** Fields equal to their default are not transmitted at all, so absence and zero are indistinguishable for scalars. What the format does **not** give you is semantics — it enforces structure, so a wrong message type or a redefined unit decodes perfectly and means something else. That gap is why `schema_version` exists, why `UNSUPPORTED` reports capability skew, and why the **MQTT topic is the type discriminator** and therefore part of the contract. nanopb adds one constraint on top: no allocation. Bounds in `.options` turn strings into plain arrays and let the generator emit a worst-case size per message, so buffers come from `node_Telemetry_size` and cannot silently be outgrown.
+A Protobuf message is **fields back to back, each preceded by a tag** packing a field number and a wire type into one varint — no header, no length, no checksum, no type name. That single layout explains the rest. The wire type lets a decoder step over a field it has never heard of, which is the mechanism behind every evolution rule: **adding a field is safe, a field number is permanent, a deleted number must be reserved.** Fields a sender leaves unset are not transmitted at all, so absence and zero are indistinguishable for a plain scalar — and marking one `optional` buys back the distinction, at the price of writing out an explicit zero. What the format does **not** give you is semantics — it enforces structure, so a wrong message type or a redefined unit decodes perfectly and means something else. That gap is why `schema_version` exists, why `UNSUPPORTED` reports capability skew, and why the **MQTT topic is the type discriminator** and therefore part of the contract. nanopb adds one constraint on top: no allocation. Bounds in `.options` turn strings into plain arrays and let the generator emit a worst-case size per message, so buffers come from `node_Telemetry_size` and cannot silently be outgrown.
 
 ## 14. Where to go next
 

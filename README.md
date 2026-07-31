@@ -34,13 +34,13 @@ The app runs **two threads** across **four translation units**, one responsibili
 **Verifying it yourself.** Every claim above is exercised by a lab in the documentation rather than reported as a past result — see the *Exercising…* section of each guide in the table below. Between them they cover telemetry decode, all three commands, out-of-range rejection, duplicate suppression, a malformed payload that must not desynchronise the stream, a broker outage the sensor samples straight through, and the Last Will.
 
 **Still to do:**
-- **Schema-versioning exercise** — add a field and deliberately run old↔new against each other.
+- **A second node over CAN** — a Nucleo-F072RB with a BME280 as a peer node with its own MQTT identity, relayed by the H753ZI acting as a *gateway* that forwards its already-encoded Protobuf without decoding it. Concepts in [`notes/can-guide.md`](notes/can-guide.md), what is actually built in [`docs/can-bringup.md`](docs/can-bringup.md). Today that is the CAN controller proven in internal loopback and nothing above the frame; the transceivers are not bought yet.
 - *(Optional higher-fidelity pass: re-run the harness in C#/.NET on a Windows box to mirror a Windows-side desktop application.)*
 
 ## The things to actually learn (don't skip these)
 1. **MQTT client on Zephyr** — connect/keepalive, QoS levels, topic design (telemetry vs. command topics), and especially **reconnect handling** when the link drops. Uses Zephyr's `CONFIG_MQTT_LIB`. (MQTT frames and delimits messages itself, so the length-prefix / partial-read problem of raw TCP goes away — each payload arrives whole.)
 2. **zbus as the internal bus** — the sensor thread publishes readings to a **zbus channel**; the MQTT thread observes that channel and marshals to nanopb → MQTT publish. Decouples sensing from transport, the way production firmware does. The interesting parts are choosing an observer kind per channel (latest-wins for state, every-message for commands — the same argument as QoS 0 vs 1), and waiting on a channel and a socket in one call.
-3. **Schema versioning & backward-compat** — exercise adding a field and talking old↔new: field numbers, `optional`, unknown-field handling. This is the firmware↔SW-team contract in miniature.
+3. **Schema versioning & backward-compat** — field numbers, `optional`, unknown-field handling. This is the firmware↔SW-team contract in miniature. Done as `pressure_pa` plus explicit presence on the measurements; `tests/protocol/` runs the previous schema against the current one in both directions, so old↔new is an assertion rather than a claim.
 4. **nanopb on a constrained target** — `.proto` → generated C, `.options` files, fixed-size vs callback fields, no-malloc/static allocation.
 
 **Bonus learning from the sensor:** the SCD-40 adds a clean rehearsal of the **Zephyr sensor subsystem + a devicetree I²C overlay** — wiring a real driver instance in a board overlay, reading channels with `sensor_sample_fetch` / `sensor_channel_get`, and turning `struct sensor_value` into wire fields. That's a common shape in production firmware.
@@ -48,7 +48,7 @@ The app runs **two threads** across **four translation units**, one responsibili
 ## Message set
 Three messages, defined in **[`proto/node.proto`](proto/node.proto)** — read that file for the fields, the field-number budget, and the evolution rules; it is the contract, and this summary will drift if it tries to restate it.
 
-- **`Telemetry`** (node → host, periodic) — the sensor readings, plus a `sequence` so the host can spot QoS 0 drops, an `uptime_ms`, and a `sensor_status` distinguishing a warming-up sensor from a failed read. Fixed-size fields only, no dynamic allocation.
+- **`Telemetry`** (node → host, periodic) — the sensor readings, plus a `sequence` so the host can spot QoS 0 drops, an `uptime_ms`, and a `sensor_status` distinguishing a warming-up sensor from a failed read. Fixed-size fields only, no dynamic allocation. The four measurements are proto3 `optional`, so a node reports only what it can actually measure and absence is never dressed up as a zero — the reasoning, and what explicit presence costs, is in [`notes/protobuf-guide.md`](notes/protobuf-guide.md) §5.
 - **`Command`** (host → node) — a `oneof` payload: set the measurement interval, trigger a single-shot measurement, or request device info. The `oneof` is the part worth studying; nanopb turns it into a tagged union with a `which_payload` discriminator.
 - **`Ack`** (node → host) — echoes the command's `sequence` for correlation and reports an `AckStatus`. That enum carries the interesting cases: `UNSUPPORTED` (host newer than the node) and `MALFORMED` (didn't decode at all) are what make the versioning exercise concrete.
 

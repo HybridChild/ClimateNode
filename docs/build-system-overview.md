@@ -90,7 +90,7 @@ All under `firmware/build/zephyr/` unless noted.
 | `.config` | Kconfig ← `prj.conf`+defconfig+tree Kconfig+`Kconfig.dts` | **CMake** (which files to compile) | `CONFIG_SCD4X=y` at 1241; `CONFIG_DT_HAS_SENSIRION_SCD40_ENABLED=y` at 20 |
 | `include/generated/zephyr/autoconf.h` | Kconfig ← `.config` | **every `.c`** via `-imacros` | `#define CONFIG_SCD4X 1` at 421 |
 | `misc/generated/configs.c` | Kconfig | debugger symbol table | `GEN_ABSOLUTE_SYM_KCONFIG(CONFIG_DT_HAS_SENSIRION_SCD40_ENABLED, 1)` |
-| `../node.pb.c` / `../node.pb.h` | nanopb generator ← `proto/node.proto` + `node.options` | `#include <node.pb.h>` in both `.cpp` files | `#define node_Telemetry_size 36` |
+| `../node.pb.c` / `../node.pb.h` | nanopb generator ← `proto/node.proto` + `node.options` | `#include <node.pb.h>` in both `.cpp` files | `#define node_Telemetry_size 42` |
 
 The last row is the one generator this *app* adds; everything above it is Zephyr's own. It follows the same rule as the rest — the input is `proto/node.proto`, the output lives in `build/` and is never checked in or hand-edited. Concepts in [`zephyr-build-system-guide.md`](../notes/zephyr-build-system-guide.md) §8.
 

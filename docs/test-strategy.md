@@ -16,12 +16,14 @@ No board, no broker, no sensor. The script sources the workspace venv and export
 
 | Suite | Code under test | Cases |
 |---|---|---|
-| `tests/protocol/` | `firmware/src/protocol.cpp` — the wire format | 11 |
-| `tests/commands/` | `firmware/src/commands.cpp` — command semantics | 10 |
+| `tests/protocol/` | `firmware/src/protocol.cpp` — the wire format | 16 |
+| `tests/commands/` | `firmware/src/commands.cpp` — command semantics | 9 |
 
-**`tests/protocol/`** — telemetry round-trip; the internal→wire status enum mapping; that a warming-up reading is shorter on the wire because proto3 omits defaults; that the worst case fits `node_Telemetry_size`; that an undersized buffer fails rather than overflows. For commands: `garbage` rejected as structurally invalid, `hi` *accepted* as a legal `Command` with no arm set, oversize refused outright, empty payload decoding to all defaults. For acks: round-trip, `detail` truncating at its 47-character bound, and a worst-case Ack with `DeviceInfo` fitting `node_Ack_size`.
+**`tests/protocol/`** — telemetry round-trip; the internal→wire status enum mapping; that a warming-up reading is shorter on the wire *and* decodes as absent rather than zero; that an explicitly-set zero costs its tag plus value and comes back present; that a pressure-only reading round-trips with the other three absent; that the worst case fits `node_Telemetry_size`; that an undersized buffer fails rather than overflows. For commands: `garbage` rejected as structurally invalid, `hi` *accepted* as a legal `Command` with no arm set, oversize refused outright, empty payload decoding to all defaults. For acks: round-trip, `detail` truncating at its 47-character bound, and a worst-case Ack with `DeviceInfo` fitting `node_Ack_size`.
 
 **`tests/commands/`** — that `set_interval` and `trigger` reach the bus carrying the right values; that `get_device_info` reports the identity constants; that an unknown `oneof` arm and a `which_payload == 0` both answer `UNSUPPORTED`; that an out-of-range interval is rejected **and leaves the channel unchanged**; that the bounds are inclusive at both ends; and that a duplicate sequence is acked without re-running the side effect, while a fresh one afterwards still acts.
+
+Two cases carry the schema-versioning exercise: `test_old_reader_decodes_new_telemetry` and `test_new_reader_decodes_old_telemetry` hand-build a nanopb descriptor for the *previous* Telemetry — no `optional`, no `pressure_pa` — with the `PB_BIND` X-macro, and run both directions against the current schema. The old reader skips the field it has never heard of; the new reader recovers everything the old writer sent, except a zero, which was never on the wire to recover. That asymmetry is the point, and it is why the old schema is an executable participant here rather than a comment.
 
 Several of these are claims from the guides turned into assertions — [`protobuf-guide.md` §4–§5](../notes/protobuf-guide.md) and [`zbus-guide.md` §6](../notes/zbus-guide.md) — so prose and firmware cannot drift apart quietly.
 
