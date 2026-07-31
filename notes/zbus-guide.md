@@ -1,6 +1,6 @@
 # zbus from first principles
 
-What an in-process message bus is, why a firmware app wants one, and how Zephyr's zbus expresses it. Written to be portable beyond this repo — the concepts apply to any event-driven embedded system. For how *this* project wires it up, see [`firmware-mqtt-walkthrough.md`](../docs/firmware-mqtt-walkthrough.md) §11 and the header comment in `firmware/src/app_channels.h`.
+What an in-process message bus is, why a firmware app wants one, and how Zephyr's zbus expresses it. Written to be portable beyond this repo — the concepts apply to any event-driven embedded system. For how *this* project wires it up, see [`firmware-mqtt-walkthrough.md`](../docs/firmware-mqtt-walkthrough.md) §11 and the header comments in `firmware/src/app_channels.h` (the two sensor channels) and `firmware/src/relay.h` (the four relay channels).
 
 The single most important thing up front: **zbus has nothing to do with the network.** It sits next to "MQTT" in this project's concept list, and the vocabulary is identical — publish, subscribe, channels, observers — but it never touches a wire. It is threads inside one MCU talking to each other. Getting that straight early saves a lot of confusion.
 
@@ -167,57 +167,70 @@ Honest accounting, because "add a bus" is not free:
 - **Indirection** — "who handles this?" is answered by a `ZBUS_OBSERVERS()` list rather than by a function call you can follow. Enable `CONFIG_ZBUS_CHANNEL_NAME` and `CONFIG_ZBUS_OBSERVER_NAME` so at least the logs name things.
 - **New failure modes** — publish timeouts, queue-full conditions, and callbacks that block the producer.
 
-For two threads and two channels this is arguably more machinery than a mutex and a semaphore would need. The payoff is at the *next* consumer: adding one is a line in an observers list, with no edit to the producer at all. Whether that trade is worth it depends on whether you expect a third participant. In a learning project, building it once and feeling the shape is the point.
+For the two threads and two channels this project started with, that is arguably more machinery than a mutex and a semaphore would have needed. The payoff is at the *next* consumer: adding one is a line in an observers list, with no edit to the producer at all. Whether that trade is worth it depends on whether you expect a third participant.
+
+This project got to find out. A later phase added a CAN relay — two more threads, four more channels, a second MQTT identity, and a whole second node's traffic passing through the same firmware. `sensor.cpp` was not touched by any of it, and the one edit to the header both sides include changed nothing but a comment. The thread that reads the SCD-40 still publishes one reading to one channel and knows nothing about a peer node, a CAN bus or a second broker connection, because the only thing it was ever coupled to was the channel. The consumer side did change substantially, which is the honest half of the accounting: `main.cpp` grew four listeners and the publish paths behind them. But that is the direction the design promised to make cheap, and the promise held. §9 is what it grew into.
 
 ## 9. What this project wires up
 
-Everything above is general. Here is the whole of this firmware's bus, which is small enough to hold in your head and exercises both halves of §4's argument:
+Everything above is general. Here is the whole of this firmware's bus — six channels across three translation units, with four threads publishing to them. That is more than it was when the guide was written, and the interesting part is what did *not* have to change to accommodate it.
 
 ```
-                sensor.cpp                          main.cpp
-                ──────────                          ────────
-   SCD-40 ──▶ sensor_thread()
-                    │
-                    │  zbus_chan_pub()
-                    ▼
-             ┌──────────────────┐   LISTENER    ┌──────────────────┐
-             │ chan_telemetry   │──────────────▶│ on_telemetry()   │
-             │ sensor_reading   │  telemetry_   │ bumps an eventfd │
-             │ no validator     │  listener     └────────┬─────────┘
-             │                  │                        │
-             │                  │◀───────────────────────┘
-             └──────────────────┘  zbus_chan_read()   MQTT thread wakes,
-                                                      encodes, publishes
+   sensor.cpp                  main.cpp                    relay.cpp
+   ──────────                  ────────                    ─────────
+   sensor_thread()             the MQTT sessions           rx_thread()
+   reads the SCD-40            one thread, one wait,       reads the CAN link
+                               six descriptors             tx_thread()
+                                                           writes it
 
-             ┌──────────────────┐  MSG SUBSCRIBER
-             │ chan_sensor_cmd  │◀───────────────  zbus_chan_pub() from
-             │ sensor_cmd       │                  main.cpp, on a Command
-             │ sensor_cmd_valid │                  arriving off the wire
-             └────────┬─────────┘
-                      │  sensor_cmd_sub — a queue of private copies
-                      ▼
-             sensor_thread() wakes early from zbus_sub_wait_msg()
+ upward — what the network must publish. All LISTENERS, one eventfd each.
+ ┌──────────────────────┐
+ │ chan_telemetry       │◀── sensor_thread()    our own reading
+ ├──────────────────────┤
+ │ chan_relay_telemetry │◀── rx_thread()        the peer's, opaque bytes
+ ├──────────────────────┤
+ │ chan_relay_ack       │◀── rx_thread()        the peer's, opaque bytes
+ ├──────────────────────┤
+ │ chan_relay_status    │◀── rx_thread()        the peer's liveness
+ └──────────┬───────────┘
+            │   four listeners, four eventfds, one zsock_poll() in main()
+            ▼
+      publish to node/1/... and node/2/...
+
+ downward — commands off the wire. All MESSAGE SUBSCRIBERS, a private copy each.
+ ┌──────────────────────┐
+ │ chan_sensor_cmd      │──▶ sensor_thread()    validator: sensor_cmd_valid
+ ├──────────────────────┤
+ │ chan_relay_command   │──▶ tx_thread()        then out over ISO-TP
+ └──────────┬───────────┘
+            ▲
+            │   published by main(), on a Command arriving off the socket
 ```
 
-Two channels, deliberately observed in the two different ways §4 distinguishes:
+| Channel | Direction | Message | Observer | Why that kind |
+|---|---|---|---|---|
+| `chan_telemetry` | sensor → MQTT | `sensor_reading` | **listener** | state; a superseded reading is one the host is better off not getting |
+| `chan_relay_telemetry` | CAN → MQTT | `relay_up` | **listener** | same argument, for a reading this node did not take |
+| `chan_relay_ack` | CAN → MQTT | `relay_up` | **listener** | an event — but at most one is ever outstanding (below) |
+| `chan_relay_status` | CAN → MQTT | `relay_status` | **listener** | liveness is state, and latest-wins is what a retained topic means |
+| `chan_sensor_cmd` | MQTT → sensor | `sensor_cmd` | **message subscriber** | an event with no successor; validated (§6) |
+| `chan_relay_command` | MQTT → CAN | `relay_down` | **message subscriber** | an event with no successor |
 
-| | `chan_telemetry` | `chan_sensor_cmd` |
-|---|---|---|
-| Direction | sensor → MQTT | MQTT → sensor |
-| Message | `struct sensor_reading` | `struct sensor_cmd` |
-| Observer | **listener** (`telemetry_listener`) | **message subscriber** (`sensor_cmd_sub`) |
-| Validator | none — any reading is legal | `sensor_cmd_valid` (§6) |
-| Semantics | **state** — latest wins, loss is fine and accounted | **events** — every one must arrive, none may collapse |
-| Same argument on the wire | telemetry at QoS 0 | command/ack at QoS 1 |
+**The table sorts itself by direction, and that is the finding.** Every channel carrying data *toward* the network is a listener; every channel carrying a command *away* from it is a message subscriber. Nobody imposed that rule — the relay's four channels were chosen one at a time on §4's question ("if two arrive before I handle the first, what should happen?") and landed on the same split the original two had. Data flowing up is state, which has a next one coming. Commands flowing down are events, which do not. And the same split holds one layer out, where telemetry is QoS 0 and command/ack are QoS 1: the argument is about the data, so it reaches the same answer inside the chip and across the wire.
 
-The last row is there because the two columns were decided independently and landed in the same place — see §4.
+**The one row that needed thinking about is `chan_relay_ack`.** An ack is plainly an event, so §4 says message subscriber — yet it is a listener. The justification is not "acks are unimportant" but that **at most one ack is ever outstanding**, guaranteed structurally rather than hoped for: `relay.cpp`'s TX thread calls `isotp_send()` with a null completion callback, which blocks until the whole segmented transfer finishes, and then blocks again waiting for the ack. Command round trips are serialised by construction, and latest-wins cannot collapse a set of one. What makes this honest rather than clever is that the premise is *checked*: §7's eventfd counter returns how many times it was signalled, so a count above one means the invariant broke, and `main.cpp` logs that at ERROR — as against the WARN on the telemetry fd, where coalescing is expected and accounted.
 
-Two details worth noticing in the code:
+**Four eventfds, not one.** A single shared descriptor would say only "something happened", and since `zbus_chan_read()` hands back the channel's current value whether or not it is fresh, the reader would have to read all four channels on every wake and would republish stale ones. `CONFIG_ZVFS_EVENTFD_MAX` is a hard count — the fourth `zvfs_eventfd()` simply fails without it — so this is one of the few places where the design decision shows up directly as a Kconfig number.
 
-- **Both channels are defined in `sensor.cpp`, not in a bus-owning module of their own.** The sensor module owns the readings it produces *and* the sample period the commands adjust, so the bounds and the validator live with the code they constrain — §6's argument about where a rule belongs.
-- **The definitions sit at global scope, outside the file's anonymous namespace.** `ZBUS_CHAN_DEFINE` emits symbols that `ZBUS_CHAN_DECLARE` in `app_channels.h` names from the other translation unit; internal linkage would break the match. See [`language-cpp.md`](language-cpp.md) §6.
+**The observer kinds also decide the RAM, which is §8's cost made concrete.** The message-subscriber net_buf pool is a *single* pool shared across every message-subscriber channel, sized by the largest message on any of them; listener channels store their message in the channel itself and never touch it. `relay_up` is 164 bytes and `relay_down` is 32, so the big upward messages riding listeners is what lets `CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE` stay at 32 rather than 164 — about 130 bytes per buffer. Worth being clear about the direction of causation: the observer kinds were picked on their merits and the RAM saving is the reward, not the reason. Had the argument gone the other way, the right move would have been to pay the 130 bytes.
 
-The header comment in `firmware/src/app_channels.h` is the reference half of this section — it records the decisions; this guide explains the concepts behind them.
+Three details worth noticing in the code:
+
+- **Each module defines the channels it owns.** `sensor.cpp` defines the two sensor channels, `relay.cpp` defines the four relay ones. The sensor module owns the readings it produces *and* the sample period the commands adjust, so the bounds and the validator live with the code they constrain — §6's argument about where a rule belongs. The relay owns the link, so it owns what crosses it.
+- **The observers live with the consumer, not the producer.** All four `ZBUS_LISTENER_DEFINE`s sit in `main.cpp`, because the network side owns the observers that feed the network. A channel definition and its observers being in different files is normal and is most of what the bus is for.
+- **The definitions sit at global scope**, outside each file's anonymous namespace. `ZBUS_CHAN_DEFINE` emits symbols that `ZBUS_CHAN_DECLARE` names from another translation unit; internal linkage would break the match. See [`language-cpp.md`](language-cpp.md) §6.
+
+The reference half of this section is split the same way the code is: the header comment in `firmware/src/app_channels.h` records the decisions behind the two sensor channels, and the one in `firmware/src/relay.h` does the same for the four relay channels — including why they are deliberately *not* in `app_channels.h`, whose stated contract is that nothing in it touches a transport.
 
 ## 10. Exercising the bus
 
