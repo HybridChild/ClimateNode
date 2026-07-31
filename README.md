@@ -103,7 +103,7 @@ host/.venv/bin/python host/command.py trigger       # force a single measurement
 host/.venv/bin/python host/command.py interval 2000 # retune the publish period (ms)
 ```
 
-`./scripts/test.sh` runs 21 host-side unit tests in about 18 seconds with no hardware attached — the wire format and command handling, on `qemu_cortex_m3`. Everything below the socket still needs the bench: verification there is build → flash → observe, via the console, Zephyr's `net` shell commands, or the host harness, and the labs at the end of each guide say what to run and what the result should look like. There is no lint tooling.
+`./scripts/test.sh` runs 50 host-side unit tests in about 31 seconds with no hardware attached, on `qemu_cortex_m3` — the wire format, command handling, the CAN link contract, the gateway's liveness machine, and the CAN transport itself through an emulated controller that genuinely segments and reassembles. Everything below the socket still needs the bench: verification there is build → flash → observe, via the console, Zephyr's `net` shell commands, or the host harness, and the labs at the end of each guide say what to run and what the result should look like. There is no lint tooling.
 
 ## Documentation
 Split by *kind*, not by topic: **`notes/`** holds from-first-principles teaching guides — general concepts, largely portable beyond this repo. **`docs/`** holds terse project references — decisions, verified facts, and what was actually built here. Most topics have one of each.

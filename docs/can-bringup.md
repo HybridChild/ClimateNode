@@ -172,6 +172,8 @@ The **peer node** is the interesting budget, because it is the constrained one: 
 
 No wiring is needed for any of this — internal loopback proves the controller without a transceiver, and stays the way to answer "is it my firmware or my wiring?" later.
 
+**Before any of it, run `./scripts/test.sh`.** `tests/isotp_loopback/` applies the same technique with no board at all: a devicetree overlay gives `qemu_cortex_m3` an emulated `zephyr,can-loopback` controller, and the suite drives the address map, the heartbeat frame and a full 161-byte ISO-TP transfer through it. If the framing is wrong, that says so in thirty seconds without a board attached, and the checks below can then be read as being about *this* hardware rather than about the code. See [`test-strategy.md`](test-strategy.md) for what it covers and what it cannot.
+
 **1. The bitrate actually applied, on both boards.** `can show` deliberately does *not* print the configured bitrate — it prints the controller's *maximum*, which on the H7 is 1 Mbit/s and will look reassuring while the bus is misconfigured. And the peer node has no shell at all. Check the generated devicetree instead, which is the one place the answer is unambiguous for both:
 
 ```sh

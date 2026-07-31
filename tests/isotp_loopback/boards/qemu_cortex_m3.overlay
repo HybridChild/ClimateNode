@@ -1,0 +1,33 @@
+/* A CAN controller for a board that has none.
+ *
+ * `zephyr,can-loopback` is an emulated driver: frames handed to can_send() are
+ * queued to a thread inside the driver and delivered back to this same node's
+ * receive filters, having never reached a pin. That is enough to run the whole
+ * of ISO-TP -- First Frame, Flow Control, Consecutive Frames, the lot -- with no
+ * hardware, no transceiver and no second board.
+ *
+ * It exists in exactly one board file upstream (native_sim.dts), which is the
+ * only reason a suite like this does not build on qemu_cortex_m3 out of the box.
+ * The node below is that file's, copied verbatim; nothing about the driver is
+ * architecture-specific. See drivers/can/Kconfig.loopback -- CAN_LOOPBACK is
+ * `default y` once DT_HAS_ZEPHYR_CAN_LOOPBACK_ENABLED, so declaring the node is
+ * the whole of enabling the driver.
+ *
+ * `zephyr,canbus` is what firmware/src/relay.cpp and sensor-node/src/main.cpp
+ * both resolve with DEVICE_DT_GET(DT_CHOSEN(zephyr_canbus)), and it is why the
+ * same code compiles against fdcan1 on the H753ZI, can1 on the F072RB, and this.
+ * The test names no device either.
+ *
+ * native_sim needs no overlay at all: its board dts already declares this node
+ * and already chooses it.
+ */
+/ {
+	chosen {
+		zephyr,canbus = &can_loopback0;
+	};
+
+	can_loopback0: can_loopback0 {
+		status = "okay";
+		compatible = "zephyr,can-loopback";
+	};
+};

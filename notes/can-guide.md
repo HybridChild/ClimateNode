@@ -234,6 +234,8 @@ The decisions behind all of this — the pin choice, the bitrate, the ID map, th
 
 Most of this needs **no CAN hardware at all** — internal loopback proves the controller against itself. You need the console on the Mac (`./scripts/console.sh`, quit with **Ctrl-A** then **K**), and nothing else. The device is `can@4000a000`; tab completion after `can mode ` will fill it in.
 
+The same trick goes one step further and needs no *board* either. Zephyr ships an emulated CAN controller (`zephyr,can-loopback`) that a test suite can add to its own devicetree, and `tests/isotp_loopback/` uses it to run everything in §7 and §8 — filters, identifiers, segmentation, flow control — under `./scripts/test.sh`. Worth knowing before you start soldering: if the exercises below misbehave, that suite tells you whether the framing or the hardware is at fault. See [`../docs/test-strategy.md`](../docs/test-strategy.md).
+
 ### Exercise 1 — A frame out and back, with no bus
 
 *Demonstrates §3 (the frame), §5 (why loopback is the right first test) and §7 (filters).*

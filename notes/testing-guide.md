@@ -8,7 +8,7 @@ A teaching document. It explains why testing firmware is awkward, what makes a p
 
 - **§1–§2** — why the target is the wrong place to test, and the one property that decides whether code can be tested at all.
 - **§3–§5** — the machinery: Ztest, the four places a test can run, and Twister.
-- **§6** — this repo's two suites, read as worked examples.
+- **§6** — three of this repo's suites, read as worked examples: pure logic, a test-owned channel, and a driver under emulation.
 - **§7–§8** — what to test and what not to, and why regulated industries make this mandatory rather than optional.
 - **§9** — the whole picture, and what host tests structurally cannot catch.
 - **§10–§12** — a lab, the model in one paragraph, and where to go next.
@@ -85,7 +85,7 @@ ZTEST(protocol, test_telemetry_round_trip)
 }
 ```
 
-`ZTEST_SUITE`'s five `NULL`s are optional hooks: a *predicate* deciding whether the suite runs at all, then `setup`, `before`, `after` and `teardown`. `setup` runs once for the suite; `before`/`after` run around **each** test. Use them when tests share expensive state; this repo's suites do not, so all five are `NULL`.
+`ZTEST_SUITE`'s five `NULL`s are optional hooks: a *predicate* deciding whether the suite runs at all, then `setup`, `before`, `after` and `teardown`. `setup` runs once for the suite; `before`/`after` run around **each** test. Use them when tests share expensive state. Most suites here need none of it and pass all five as `NULL`; `tests/isotp_loopback/` is the exception and shows what the hook is actually for — it has a CAN controller to put into loopback mode and start, which is once-per-suite work that every test depends on and none of them owns.
 
 **Assertions are macros that record a failure and return.**
 
@@ -154,6 +154,10 @@ tests:
 
 The important mental shift: **each suite is a complete, independent Zephyr application**, with its own `prj.conf`, its own devicetree, and its own `main`. It is not "your app plus tests" — it is a different program that happens to compile some of your app's source. That is what lets it leave out the network stack entirely.
 
+**"Its own devicetree" is the part with the most left in it**, and it cuts against §4's "no real peripherals" more than you would expect. A suite can drop a `boards/<platform>.overlay` beside its `prj.conf` and *add hardware the platform does not have* — Zephyr ships emulated drivers for several subsystems, and a devicetree node is the whole of enabling one. `tests/isotp_loopback/` does exactly that: five lines declaring a `zephyr,can-loopback` node and choosing it as `zephyr,canbus`, and a board with no CAN controller acquires one that genuinely queues frames, evaluates receive filters and delivers to callbacks. Everything above the wire then runs for real — in that suite's case the whole of ISO-TP's segmentation and flow control.
+
+Two lessons generalise from it. First, **the emulated driver is often already in the tree and merely unreferenced**: `zephyr,can-loopback` is architecture-independent and appears in exactly one board file upstream, which is the only reason a CAN suite does not build on `qemu_cortex_m3` out of the box. Second, **the code under test must not name its device**. `DEVICE_DT_GET(DT_CHOSEN(zephyr_canbus))` is what lets one body of firmware run against three different controllers without an `#ifdef`; a `DT_NODELABEL(fdcan1)` would have made the emulation impossible and the design worse for the same reason.
+
 `scripts/test.sh` wraps the invocation the same way `build.sh` wraps `west build`:
 
 ```sh
@@ -164,7 +168,7 @@ The important mental shift: **each suite is a complete, independent Zephyr appli
 
 ---
 
-## 6. This repo's two suites, read closely
+## 6. Three of this repo's suites, read closely
 
 ### `tests/protocol/` — pure logic
 
@@ -223,11 +227,23 @@ static uint32_t next_seq(void)
 
 Every test takes a fresh sequence; the duplicate-suppression test reuses one deliberately, which is the whole point of that test. No production API exists that only tests call.
 
+### `tests/isotp_loopback/` — testing a path rather than a function
+
+The two suites above compile a `.cpp` of ours and call into it. This one compiles none, and that is what makes it a different *kind* of test worth reading.
+
+What it exercises is not a function but a **path**: this project's CAN framing — an identifier from `can_link.h`, a message-type byte, then an opaque payload — carried over Zephyr's ISO-TP through an emulated controller. Almost every line executing is Zephyr's. The suite's claim is not "our code is correct" but "our code works over the thing it runs on", and those fail in different ways.
+
+That distinction matters because it is where the temptation to over-test lives. §7's rule — assert the promise, not the mechanism — could be read as "so don't test Zephyr's ISO-TP; it has its own conformance suite upstream." True, and beside the point. What is untested is not ISO-TP; it is the **conjunction**: our buffer size against ISO-TP's receive pool, our identifiers against a receive filter, our type byte against where reassembly places the first byte of a First Frame. Each half is fine alone. Nobody had ever run them together.
+
+The concrete example is the buffer bound. The gateway reads into `1 + kRelayUpMax` = 161 bytes; `CONFIG_ISOTP_RX_BUF_COUNT` defaults to 4 buffers of 56, which is 224 and fits; the peer node trims that count to 2 to fit 16 KB of RAM, giving 112, which does not. Both settings are correct because each node reassembles a different direction — and no unit test of any function could have said so, because it is not a property of a function. It is a property of two configuration files and a protocol, and the only way to check it is to run all three.
+
+One practical lesson came out of writing it, and it generalises well beyond CAN. **Two of its tests are negative** — a receiver bound to the wrong identifier hears nothing, a heartbeat filter ignores the ISO-TP identifiers — and negative tests pass for free in a broken environment. The first version of this suite forgot that `CAN_MODE_LOOPBACK` must be set explicitly before `can_start()`, so the driver silently delivered nothing at all, and those two tests were the ones that passed. The fix is not vigilance, it is **mutation**: break the thing on purpose and confirm the test notices. Widening the heartbeat filter's mask to `0` must fail the filter test; binding the "wrong" context to the right address must fail the addressing test. A negative test you have never seen fail is not evidence of anything.
+
 ---
 
 ## 7. What to test, and what not to
 
-The suites here are small — 21 cases — and chosen on one principle: **test behaviour that something outside this code depends on.**
+The suites here are small — 50 cases — and chosen on one principle: **test behaviour that something outside this code depends on.**
 
 What that selected:
 
@@ -264,11 +280,16 @@ None of this makes the technical guidance different. It raises the stakes on §7
 
 ```
    ┌──────────────────────────────────────────────────────────────┐
-   │  no hardware — scripts/test.sh, ~18 s                         │
+   │  no hardware — scripts/test.sh, ~31 s                         │
    │                                                              │
-   │   tests/protocol/ ──▶ protocol.cpp   the wire format          │
-   │   tests/commands/ ──▶ commands.cpp   dispatch, dedupe, bounds │
-   │                       + a test-owned chan_sensor_cmd          │
+   │   tests/protocol/  ──▶ protocol.cpp  the wire format          │
+   │   tests/commands/  ──▶ commands.cpp  dispatch, dedupe, bounds │
+   │                        + a test-owned chan_sensor_cmd         │
+   │   tests/heartbeat/ ──▶ can_link.h    the hand-packed frame    │
+   │   tests/relay/     ──▶ relay.h       the liveness machine     │
+   │   tests/isotp_loopback/              the CAN transport,       │
+   │                        ──▶ an emulated controller in the      │
+   │                            suite's own devicetree overlay     │
    └──────────────────────────────────────────────────────────────┘
                                 │
                    everything below needs the bench
@@ -285,6 +306,7 @@ Host tests cannot catch, and never will:
 - **Timing and concurrency.** That the sensor thread keeps sampling through a 30 s reconnect backoff. That a zbus listener running in the publisher's context does not block it.
 - **The hardware itself.** That the SCD-40 is wired to the right pins, that its 30 ms power-up is respected, that `sensor_sample_fetch()` returns stale data at a fast poll.
 - **Anything above the socket.** That a QoS 1 command is redelivered after a lost PUBACK. That the broker publishes the Last Will on an unclean disconnect.
+- **Anything electrical.** An emulated CAN controller runs the whole protocol and none of the physics: differential levels, 120 Ω termination, a common ground between separately-powered boards, arbitration between two real transmitters, and the in-frame acknowledgement that makes a node alone on a bus unable to transmit at all. This is the sharpest example of the edge, because the emulation is convincing enough to hide it.
 
 Those are exactly what the labs at the end of the other guides cover — the hardware half of the same job, run by hand today. The natural next step is to automate them from the Pi, which already has the broker, the harness and a cable to the board: a **hardware-in-the-loop** suite driving `command.py` and asserting on `monitor.py` output. The split in §2 is what makes that tractable — the HIL suite only has to cover what host tests structurally cannot, which is a much smaller set than "everything".
 
@@ -301,11 +323,11 @@ The suite runs on the Mac with nothing attached.
 ```
 
 ```
-INFO    - 2 of 2 executed test configurations passed (100.00%), 0 built (not run), 0 failed
-INFO    - 21 of 21 executed test cases passed (100.00%)
+INFO    - 5 of 5 executed test configurations passed (100.00%), 0 built (not run), 0 failed
+INFO    - 50 of 50 executed test cases passed (100.00%)
 ```
 
-About eighteen seconds, most of it building two full Zephyr images. **Proves:** the whole loop works with no board, no broker and no sensor — which is the entire point of §1.
+About thirty seconds, most of it building five full Zephyr images. **Proves:** the whole loop works with no board, no broker and no sensor — which is the entire point of §1.
 
 ### Exercise 2 — Make it fail
 
@@ -337,7 +359,30 @@ Re-run. `test_telemetry_status_mapping` fails and names the case. Revert.
 
 **Proves:** the test is anchored to the firmware, not to a copy of it — the CMakeLists compiles `firmware/src/protocol.cpp` itself. It also shows the class of bug these tests exist for: nothing crashes, nothing looks wrong on the node, and the host quietly displays a sensor fault that never happened.
 
-### Exercise 4 — Add one
+### Exercise 4 — Prove a negative test can fail
+
+A test that asserts something *does not* happen also passes when nothing happens at all, which is why §6 insists on mutating them. `tests/isotp_loopback/` has two, and both are one edit away from being checked.
+
+In `tests/isotp_loopback/src/main.cpp`, widen the heartbeat filter in `test_the_heartbeat_filter_ignores_the_isotp_identifiers` so it matches everything:
+
+```c
+.mask = 0,   /* was CAN_STD_ID_MASK */
+```
+
+and in `test_a_receiver_bound_elsewhere_hears_nothing`, bind the "wrong" context to the address the transfer is actually sent to:
+
+```c
+int rc = isotp_bind(&wrong_ctx, can_dev, &id_to_gateway, &id_to_peer, &fc_opts, K_MSEC(200));
+```
+
+```
+ FAIL - test_a_receiver_bound_elsewhere_hears_nothing
+ FAIL - test_the_heartbeat_filter_ignores_the_isotp_identifiers
+```
+
+Revert both. **Proves:** each test fails for the reason it claims to check, rather than because the environment delivers nothing. Try it once with the `can_set_mode(can_dev, CAN_MODE_LOOPBACK)` line in `setup()` removed as well, and watch both mutations pass — that is the failure this exercise exists to rule out, and it is what the suite did on its first run.
+
+### Exercise 5 — Add one
 
 Pick a promise nothing currently asserts and write it. A good candidate: `Ack.detail` is bounded at 48 bytes, and `commands.cpp` writes `"interval %u outside [%u,%u]"` into it with `snprintf`. What happens at `UINT32_MAX` for all three numbers — does the message truncate cleanly, and is it still a valid string?
 
@@ -354,12 +399,12 @@ ZTEST(commands, test_rejection_detail_survives_extreme_values)
 
 ## 11. The model in one paragraph
 
-Firmware is awkward to test because the target is slow, physical and singular — but most firmware logic never needed the target, and the job is to arrange the code so the decisions are separable from the I/O. The wrong way is to carve seams into functions so tests can peer inside; the right way is to notice that untestable code is usually code whose *dependencies* are tangled, and separate by responsibility instead — a change that makes the code easier to explain, with testability as a side effect. **Ztest** provides suites, tests and assertions whose messages are the report you will actually read; **Twister** finds each suite, builds it as a complete standalone Zephyr application, and runs it. Where it runs is a real trade: a real board is total fidelity at seconds per cycle, `native_sim` is milliseconds but Linux-only, and **QEMU sits in between** — same cross-compiler as the firmware, real kernel, no peripherals — which is why this repo uses it. Test the promises other code depends on, not the mechanism, because a test that breaks on every refactor teaches people to ignore failures. And accept the edge: timing, hardware and the network are structurally out of reach here, which is what a hardware-in-the-loop stage is for.
+Firmware is awkward to test because the target is slow, physical and singular — but most firmware logic never needed the target, and the job is to arrange the code so the decisions are separable from the I/O. The wrong way is to carve seams into functions so tests can peer inside; the right way is to notice that untestable code is usually code whose *dependencies* are tangled, and separate by responsibility instead — a change that makes the code easier to explain, with testability as a side effect. **Ztest** provides suites, tests and assertions whose messages are the report you will actually read; **Twister** finds each suite, builds it as a complete standalone Zephyr application, and runs it. Where it runs is a real trade: a real board is total fidelity at seconds per cycle, `native_sim` is milliseconds but Linux-only, and **QEMU sits in between** — same cross-compiler as the firmware, real kernel, and no peripherals except the emulated ones a suite adds to its own devicetree — which is why this repo uses it. Test the promises other code depends on, not the mechanism, because a test that breaks on every refactor teaches people to ignore failures. And accept the edge: timing, hardware and the network are structurally out of reach here, which is what a hardware-in-the-loop stage is for.
 
 ## 12. Where to go next
 
 - **[`test-strategy.md`](../docs/test-strategy.md)** — the reference half: what this project tests, what it deliberately does not, and why `qemu_cortex_m3`.
-- **The labs in the other guides** — [`communication-guide.md`](communication-guide.md) §9, [`zbus-guide.md`](zbus-guide.md) §10, [`sensor-api-guide.md`](sensor-api-guide.md) §11 and [`protobuf-guide.md`](protobuf-guide.md) §12 are the hardware half of this job, run by hand. They are the specification for a future HIL suite.
+- **The labs in the other guides** — [`communication-guide.md`](communication-guide.md) §9, [`can-guide.md`](can-guide.md) §10, [`zbus-guide.md`](zbus-guide.md) §10, [`sensor-api-guide.md`](sensor-api-guide.md) §11 and [`protobuf-guide.md`](protobuf-guide.md) §12 are the hardware half of this job, run by hand. They are the specification for a future HIL suite.
 - **Hardware-in-the-loop from the Pi** — it already has the broker, `command.py`, `monitor.py` and a cable to the board. The gap between §9's two boxes is the work.
 - **CI** — the suites are the hard part and they exist now; a GitHub Actions workflow that builds the firmware and runs `scripts/test.sh` on every push is mostly plumbing. Note that a Linux runner can use `native_sim` and finish in a fraction of the time.
 - **Zephyr's own tests** — `~/zephyr-workspace/zephyr/tests/` is thousands of worked examples. `tests/subsys/zbus/` is the closest to this repo's concerns.

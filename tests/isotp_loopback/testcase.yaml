@@ -1,0 +1,25 @@
+# The CAN transport: our framing through a real controller, with no hardware.
+#
+# This is the only suite here that runs a driver rather than a pure function,
+# and it is the one that shrinks what "unverifiable without a peer" covers. The
+# electrical layer still needs two transceivers; everything above the wire --
+# segmentation, reassembly, flow control, the identifiers in can_link.h and the
+# type byte above ISO-TP -- does not, and is checked here instead.
+#
+# platform_allow rather than `depends_on: can`, and here the distinction really
+# bites: qemu_cortex_m3 does not advertise `can` in its supported list, so a
+# depends_on -- which is what upstream's tests/subsys/canbus/isotp/ uses -- would
+# filter this suite out silently. Twister reports a filtered suite as skipped
+# among a wall of passes, so the failure mode is a test that appears to have run
+# for as long as nobody counts them. Every other suite here avoids it the same
+# way; this is the one where the trap is actually armed.
+common:
+  tags:
+    - unit
+    - can
+    - isotp
+tests:
+  node.isotp_loopback:
+    platform_allow:
+      - qemu_cortex_m3
+      - native_sim
