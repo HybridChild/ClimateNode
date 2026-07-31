@@ -19,7 +19,7 @@ No board, no broker, no sensor. The script sources the workspace venv and export
 | `tests/protocol/` | `shared/protocol.cpp` — the wire format | 16 |
 | `tests/commands/` | `shared/commands.cpp` — command semantics | 9 |
 | `tests/heartbeat/` | `shared/can_link.h` — the CAN link contract | 8 |
-| `tests/relay/` | `firmware/src/relay.h` — the gateway's liveness machine | 10 |
+| `tests/relay/` | `gateway/src/relay.h` — the gateway's liveness machine | 10 |
 | `tests/isotp_loopback/` | the CAN transport — `can_link.h` through a real driver | 7 |
 
 **`tests/protocol/`** — telemetry round-trip; the internal→wire status enum mapping; that a warming-up reading is shorter on the wire *and* decodes as absent rather than zero; that an explicitly-set zero costs its tag plus value and comes back present; that a pressure-only reading round-trips with the other three absent; that the worst case fits `node_Telemetry_size`; that an undersized buffer fails rather than overflows. For commands: `garbage` rejected as structurally invalid, `hi` *accepted* as a legal `Command` with no arm set, oversize refused outright, empty payload decoding to all defaults. For acks: round-trip, `detail` truncating at its 47-character bound, and a worst-case Ack with `DeviceInfo` fitting `node_Ack_size`.
@@ -44,7 +44,7 @@ It runs with no CAN controller, no thread and no passage of time, because `liven
 
 The point of it is what it removes from the bench list rather than what it adds to the table. `tests/heartbeat/` can prove `heartbeat_pack()` produces eight correct bytes and cannot prove those bytes ever reach a filter; the identifiers `can_link.h` computes had never been matched by anything; and ISO-TP's segmentation — the layer this whole phase exists to exercise — had never run. All three are now checked in CI, and what is left needing two transceivers is only what is genuinely electrical.
 
-It also checks a configuration rather than a function. `CONFIG_ISOTP_RX_BUF_COUNT` is 4 by default and `sensor-node/prj.conf` trims it to 2 to fit 16 KB of RAM; two 56-byte buffers hold 112 bytes and would cut a 141-byte Ack short. The two settings are both correct because each node reassembles a different direction, and the 161-byte case is what would catch the peer's number being copied onto the gateway.
+It also checks a configuration rather than a function. `CONFIG_ISOTP_RX_BUF_COUNT` is 4 by default and `peer-node/prj.conf` trims it to 2 to fit 16 KB of RAM; two 56-byte buffers hold 112 bytes and would cut a 141-byte Ack short. The two settings are both correct because each node reassembles a different direction, and the 161-byte case is what would catch the peer's number being copied onto the gateway.
 
 Several of these are claims from the guides turned into assertions — [`protobuf-guide.md` §4–§5](../notes/protobuf-guide.md) and [`zbus-guide.md` §6](../notes/zbus-guide.md) — so prose and firmware cannot drift apart quietly.
 
@@ -55,7 +55,7 @@ Several of these are claims from the guides turned into assertions — [`protobu
 Two consequences, both accepted:
 
 - Tests cross-compile with the same `arm-zephyr-eabi-g++`, `-fno-exceptions`, freestanding runtime and warnings-as-errors as the firmware. Higher fidelity than a host build.
-- `float` is soft-float in QEMU *and* on the H7. The M3 has no FPU; the H7's Cortex-M7 does (FPv5-D16) but `CONFIG_FPU` is unset here, so `zephyr.elf` links the same `__aeabi_*` helpers — verify with `nm firmware/build/zephyr/zephyr.elf | grep __aeabi_fadd`. On `native_sim` the host FPU runs them instead, and IEEE-754 is what keeps the encoded bytes identical; that same guarantee would cover the H7 if `CONFIG_FPU=y` were ever set.
+- `float` is soft-float in QEMU *and* on the H7. The M3 has no FPU; the H7's Cortex-M7 does (FPv5-D16) but `CONFIG_FPU` is unset here, so `zephyr.elf` links the same `__aeabi_*` helpers — verify with `nm gateway/build/zephyr/zephyr.elf | grep __aeabi_fadd`. On `native_sim` the host FPU runs them instead, and IEEE-754 is what keeps the encoded bytes identical; that same guarantee would cover the H7 if `CONFIG_FPU=y` were ever set.
 
 **The four-way source split.** `main.cpp` was 713 lines carrying the MQTT session, event handling, wire encoding, command semantics and zbus glue; nothing in it could be compiled without the network stack. It is now `main.cpp` (MQTT session), `protocol.cpp` (wire format), `commands.cpp` (command semantics) and `sensor.cpp` (acquisition, unchanged). Every function moved essentially verbatim — no seam was carved and no test-only parameter added. Each file is justifiable without mentioning tests, which is the test of whether the split was design or damage. Cost: FLASH +72 B, RAM unchanged.
 

@@ -1,6 +1,6 @@
 /* The CAN session: this node's whole conversation with the gateway.
  *
- * The counterpart of firmware/src/main.cpp, which owns the MQTT session on the
+ * The counterpart of gateway/src/main.cpp, which owns the MQTT session on the
  * gateway. Reading them side by side is the point of the exercise, because the
  * two files do the same job over transports that agree on almost nothing:
  *
@@ -137,7 +137,7 @@ void on_telemetry(const struct zbus_channel *chan)
  * control frame that nobody was going to send. The node was healthy and
  * unreadable.
  *
- * So the rule below is the same one firmware/src/main.cpp applies to a broker
+ * So the rule below is the same one gateway/src/main.cpp applies to a broker
  * that will not accept a connection: back off, stay quiet, keep sampling. The
  * sensor thread never learns about any of this — it publishes to the channel on
  * its own cadence regardless, which is the whole reason the channel is there.

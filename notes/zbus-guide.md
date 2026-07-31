@@ -1,6 +1,6 @@
 # zbus from first principles
 
-What an in-process message bus is, why a firmware app wants one, and how Zephyr's zbus expresses it. Written to be portable beyond this repo — the concepts apply to any event-driven embedded system. For how *this* project wires it up, see [`firmware-mqtt-walkthrough.md`](../docs/firmware-mqtt-walkthrough.md) §11 and the header comments in `shared/app_channels.h` (the two sensor channels) and `firmware/src/relay.h` (the four relay channels).
+What an in-process message bus is, why a firmware app wants one, and how Zephyr's zbus expresses it. Written to be portable beyond this repo — the concepts apply to any event-driven embedded system. For how *this* project wires it up, see [`firmware-mqtt-walkthrough.md`](../docs/firmware-mqtt-walkthrough.md) §11 and the header comments in `shared/app_channels.h` (the two sensor channels) and `gateway/src/relay.h` (the four relay channels).
 
 The single most important thing up front: **zbus has nothing to do with the network.** It sits next to "MQTT" in this project's concept list, and the vocabulary is identical — publish, subscribe, channels, observers — but it never touches a wire. It is threads inside one MCU talking to each other. Getting that straight early saves a lot of confusion.
 
@@ -230,7 +230,7 @@ Three details worth noticing in the code:
 - **The observers live with the consumer, not the producer.** All four `ZBUS_LISTENER_DEFINE`s sit in `main.cpp`, because the network side owns the observers that feed the network. A channel definition and its observers being in different files is normal and is most of what the bus is for.
 - **The definitions sit at global scope**, outside each file's anonymous namespace. `ZBUS_CHAN_DEFINE` emits symbols that `ZBUS_CHAN_DECLARE` names from another translation unit; internal linkage would break the match. See [`language-cpp.md`](language-cpp.md) §6.
 
-The reference half of this section is split the same way the code is: the header comment in `shared/app_channels.h` records the decisions behind the two sensor channels, and the one in `firmware/src/relay.h` does the same for the four relay channels — including why they are deliberately *not* in `app_channels.h`, whose stated contract is that nothing in it touches a transport.
+The reference half of this section is split the same way the code is: the header comment in `shared/app_channels.h` records the decisions behind the two sensor channels, and the one in `gateway/src/relay.h` does the same for the four relay channels — including why they are deliberately *not* in `app_channels.h`, whose stated contract is that nothing in it touches a transport.
 
 ## 10. Exercising the bus
 

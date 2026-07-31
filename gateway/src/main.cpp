@@ -106,7 +106,7 @@ constexpr const char *kTopicStatus = "node/1/status";
  * boot: two sessions presenting the same id make the broker perform a takeover,
  * each CONNECT kicking the other off forever, which reads exactly like a network
  * fault. Note this is the gateway's name FOR the peer — the peer's own
- * commands.h identity is defined in sensor-node/src/main.cpp and reported by
+ * commands.h identity is defined in peer-node/src/main.cpp and reported by
  * GetDeviceInfo; they say the same thing and neither can check the other. */
 constexpr const char *kPeerClientId = "nucleo-2";
 

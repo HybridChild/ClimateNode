@@ -13,10 +13,10 @@
 #
 # Usage:
 #   scripts/cleanup.sh                 # remove every app's build dir
-#   scripts/cleanup.sh -a sensor-node  # remove just that one
+#   scripts/cleanup.sh -a peer-node  # remove just that one
 set -euo pipefail
 
-APPS=(firmware sensor-node)
+APPS=(gateway peer-node)
 
 # Repo root = parent of this script's dir, resolved regardless of where it's called from.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

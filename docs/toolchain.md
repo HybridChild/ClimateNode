@@ -13,7 +13,7 @@ This project builds as a **freestanding Zephyr application** against a **shared 
 ├── bootloader/mcuboot     v2.4.0
 └── tools/                 edtt, net-tools
 ~/zephyr-sdk-1.0.1/        Zephyr SDK, ARM-only (arm-zephyr-eabi), CMake-registered
-EthernetProtobufZephyr/    this repo — pure source (proto/ firmware/ host/ docs/), builds vs. above
+EthernetProtobufZephyr/    this repo — pure source (proto/ shared/ gateway/ peer-node/ host/), builds vs. above
 ```
 
 The workspace is a shared global install, **pinned to Zephyr v4.4.1.** If this project ever needs a different version, give it its own workspace (escape hatch — not needed today; v4.4.1 already ships everything below).
@@ -34,20 +34,20 @@ Use the wrappers; they source the workspace venv, export `ZEPHYR_BASE`, and pass
 ./scripts/console.sh      # serial console @115200; quit with Ctrl-A then K
 ```
 
-**There are two apps now**, and all three take `-a <app>` (or `APP=`), defaulting to `firmware`:
+**There are two apps now**, and all three take `-a <app>` (or `APP=`), defaulting to `gateway`:
 
 ```sh
-./scripts/build.sh   -a sensor-node -p    # the F072RB peer node
-./scripts/flash.sh   -a sensor-node
-./scripts/console.sh -a sensor-node
+./scripts/build.sh   -a peer-node -p    # the F072RB peer node
+./scripts/flash.sh   -a peer-node
+./scripts/console.sh -a peer-node
 ```
 
-The board follows from the app rather than being something to remember — `firmware` → `nucleo_h753zi`, `sensor-node` → `nucleo_f072rb` — so `-b` is never needed. `BOARD=` still wins for a one-off. `./scripts/cleanup.sh` takes the same flag and removes every app's build dir without it.
+The board follows from the app rather than being something to remember — `gateway` → `nucleo_h753zi`, `peer-node` → `nucleo_f072rb` — so `-b` is never needed. `BOARD=` still wins for a one-off. `./scripts/cleanup.sh` takes the same flag and removes every app's build dir without it.
 
-`build.sh` also takes **`--debug`**, which merges `<app>/debug.conf` over `prj.conf` via `-DEXTRA_CONF_FILE`. Only `sensor-node` has one today, and it exists because that node's shipped image has no shell — a stock Zephyr shell needs 95 % of its 16 KB of RAM, so an interactive console is a bench variant rather than a default. Kconfig fragments merge in order, so `debug.conf` adds rather than replaces. Toggling it changes Kconfig, so pair it with `-p`:
+`build.sh` also takes **`--debug`**, which merges `<app>/debug.conf` over `prj.conf` via `-DEXTRA_CONF_FILE`. Only `peer-node` has one today, and it exists because that node's shipped image has no shell — a stock Zephyr shell needs 95 % of its 16 KB of RAM, so an interactive console is a bench variant rather than a default. Kconfig fragments merge in order, so `debug.conf` adds rather than replaces. Toggling it changes Kconfig, so pair it with `-p`:
 
 ```sh
-./scripts/build.sh -a sensor-node --debug -p    # trimmed shell + the `can` commands, 83 % RAM
+./scripts/build.sh -a peer-node --debug -p    # trimmed shell + the `can` commands, 83 % RAM
 ```
 
 **Two boards attached at once is the normal case now**, and it breaks the two scripts that have to pick one. `./scripts/probe.sh` is what they ask:
@@ -55,11 +55,11 @@ The board follows from the app rather than being something to remember — `firm
 ```
 $ ./scripts/probe.sh
 APP           PROBE           SERIAL                    PORT
-firmware      STLINK_V3       0052003D3335510235383531  /dev/cu.usbmodem202144403
-sensor-node   STM32 STLink    066DFF363732594D43162633  /dev/cu.usbmodem202144103
+gateway       STLINK_V3       0052003D3335510235383531  /dev/cu.usbmodem202144403
+peer-node     STM32 STLink    066DFF363732594D43162633  /dev/cu.usbmodem202144103
 ```
 
-It reads the IORegistry for every attached ST-LINK and pairs each with the `/dev/cu.*` that hangs off it, then names it using `scripts/probes.conf`. **The mapping is keyed on the ST-LINK serial**, which is burned into the probe and permanent; the `usbmodemNNNNNN` name comes from the USB topology and changes when the board moves to a different port or hub, which is exactly why it is not what gets written down. `probes.conf` is committed for the same reason the static IPs in `firmware/prj.conf` are — this repo describes one bench, and the real numbers are more use than a placeholder. On a different bench, run `probe.sh` and paste in what it prints.
+It reads the IORegistry for every attached ST-LINK and pairs each with the `/dev/cu.*` that hangs off it, then names it using `scripts/probes.conf`. **The mapping is keyed on the ST-LINK serial**, which is burned into the probe and permanent; the `usbmodemNNNNNN` name comes from the USB topology and changes when the board moves to a different port or hub, which is exactly why it is not what gets written down. `probes.conf` is committed for the same reason the static IPs in `gateway/prj.conf` are — this repo describes one bench, and the real numbers are more use than a placeholder. On a different bench, run `probe.sh` and paste in what it prints.
 
 What the two consumers do with it:
 
@@ -72,8 +72,8 @@ What they wrap, and why each detail matters:
 source ~/zephyr-workspace/.venv/bin/activate
 export ZEPHYR_BASE=~/zephyr-workspace/zephyr
 cd ~/zephyr-workspace                       # west must run from INSIDE the workspace
-west build -p auto -b nucleo_h753zi -s <repo>/firmware -d <repo>/firmware/build
-west flash -r openocd --build-dir <repo>/firmware/build
+west build -p auto -b nucleo_h753zi -s <repo>/gateway -d <repo>/gateway/build
+west flash -r openocd --build-dir <repo>/gateway/build
 ```
 
 - **`cd` into the workspace** — west enumerates modules relative to the workspace topdir; run it from the repo and nanopb and the HALs are invisible.
@@ -83,12 +83,12 @@ west flash -r openocd --build-dir <repo>/firmware/build
 
 ### Editor index (clangd)
 
-`.vscode/settings.json` points clangd at **`compile_commands.json` at the repo root**, which `./scripts/ide-index.sh` writes by merging the three build trees that exist here: `firmware/build/` (the gateway), `sensor-node/build/` (the peer node) and `twister-out/**` (the test suites, from `test.sh`). Run it by hand — once after a first build, then only when the editor reports missing headers in a file that compiles fine.
+`.vscode/settings.json` points clangd at **`compile_commands.json` at the repo root**, which `./scripts/ide-index.sh` writes by merging the three build trees that exist here: `gateway/build/` (the gateway), `peer-node/build/` (the peer node) and `twister-out/**` (the test suites, from `test.sh`). Run it by hand — once after a first build, then only when the editor reports missing headers in a file that compiles fine.
 
-- **Why merged.** A test TU's compile command exists *only* in twister's database. Point clangd at `firmware/build` alone and everything under `tests/` fails to resolve `<zephyr/ztest.h>`, which cascades into an error on nearly every line — real-looking diagnostics with no build problem behind them.
+- **Why merged.** A test TU's compile command exists *only* in twister's database. Point clangd at `gateway/build` alone and everything under `tests/` fails to resolve `<zephyr/ztest.h>`, which cascades into an error on nearly every line — real-looking diagnostics with no build problem behind them.
 - **Why not automatic.** `build.sh` and `test.sh` stay thin `exec` wrappers. A compile database goes stale only when the set of files or the flags changes — a new source file, a new suite, a Kconfig or devicetree edit — so refreshing on every build would tax every build for a result that changes a few times a month.
 - **First build required.** Neither database exists on a fresh clone, so clangd has nothing until the first `build.sh` or `test.sh`, and then the merge. The merged file is generated, machine-specific (absolute paths) and `.gitignore`d.
-- **Duplicates resolve to the gateway.** All three trees compile much of Zephyr itself under different Kconfig, so shared kernel sources appear several times; the merge keeps the first entry, and `firmware/` is listed first because it is the widest configuration — networking, MQTT, two threads — and so the most informative one to read shared Zephyr code under. Files unique to `sensor-node/` still get their own app's flags.
+- **Duplicates resolve to the gateway.** All three trees compile much of Zephyr itself under different Kconfig, so shared kernel sources appear several times; the merge keeps the first entry, and `gateway/` is listed first because it is the widest configuration — networking, MQTT, four threads — and so the most informative one to read shared Zephyr code under. Files unique to `peer-node/` still get their own app's flags, and the two files in `shared/` get the gateway's, which is fine because neither app's Kconfig changes how they parse.
 - **clangd must be restarted to notice a changed `--compile-commands-dir`** — *clangd: Restart language server* in the command palette. It picks up *content* changes to the database on its own.
 - Flag/diagnostic tweaks (query driver, GCC-only flags, `-Wvla`, `-Wsection`) live in `.clangd`, commented there and in [`../notes/language-cpp.md`](../notes/language-cpp.md) §11.
 

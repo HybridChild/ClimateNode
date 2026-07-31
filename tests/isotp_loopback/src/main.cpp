@@ -45,7 +45,7 @@
  * There is no nanopb here and no node.pb.h. The sizes tested are the ones the
  * *transport* changes behaviour at — 7 bytes is the largest Single Frame under
  * standard addressing, 8 is the first size that must segment, and 1 +
- * kRelayUpMax is the largest payload firmware/src/relay.cpp will ever read into.
+ * kRelayUpMax is the largest payload gateway/src/relay.cpp will ever read into.
  *
  * Testing against kRelayUpMax rather than against node_Ack_size is deliberate
  * and is the stronger of the two: 160 is above 140, and the link between the
@@ -93,7 +93,7 @@ const struct isotp_msg_id id_to_peer = {
 
 /* The permissive flow control both applications advertise: take the whole
  * transfer, no minimum gap. Repeated here rather than shared because it is a
- * per-node policy — see the comment on it in sensor-node/src/main.cpp — and a
+ * per-node policy — see the comment on it in peer-node/src/main.cpp — and a
  * test that silently inherited a change to it would stop testing what it says. */
 const struct isotp_fc_opts fc_opts = {
 	.bs = 0,
@@ -229,7 +229,7 @@ ZTEST(isotp_loopback, test_eight_bytes_is_the_first_size_that_segments)
 
 ZTEST(isotp_loopback, test_worst_case_upward_payload_round_trips)
 {
-	/* The headline. 161 bytes is what firmware/src/relay.cpp reads into, so
+	/* The headline. 161 bytes is what gateway/src/relay.cpp reads into, so
 	 * it is the largest thing the gateway can be asked to reassemble: one
 	 * First Frame carrying 6 bytes, a Flow Control, then 23 Consecutive
 	 * Frames of 7. Twenty-five frames, a rolling 4-bit sequence number that
@@ -237,7 +237,7 @@ ZTEST(isotp_loopback, test_worst_case_upward_payload_round_trips)
 	 * chain to hold it.
 	 *
 	 * It also silently checks the pool sizing. CONFIG_ISOTP_RX_BUF_COUNT is 4
-	 * by default and sensor-node/prj.conf trims it to 2 to fit 16 KB of RAM;
+	 * by default and peer-node/prj.conf trims it to 2 to fit 16 KB of RAM;
 	 * two buffers hold 112 bytes and would cut this transfer short. The
 	 * gateway must not inherit that number, and this is what says so. */
 	uint8_t out[kMaxPayload];

@@ -4,9 +4,9 @@
 # Why this exists: clangd needs a compile command for each file it parses, and
 # this repo produces *three* independent sets of build trees:
 #
-#   firmware/build/compile_commands.json      the gateway app  (scripts/build.sh)
-#   sensor-node/build/compile_commands.json   the peer node    (scripts/build.sh -a sensor-node)
-#   twister-out/**/compile_commands.json      the tests        (scripts/test.sh)
+#   gateway/build/compile_commands.json     the gateway app  (scripts/build.sh)
+#   peer-node/build/compile_commands.json   the peer node    (scripts/build.sh -a peer-node)
+#   twister-out/**/compile_commands.json    the tests        (scripts/test.sh)
 #
 # Pointing clangd at any one of them leaves the others' sources unparseable -- it
 # falls back to a guessed command line with no Zephyr include paths, so
@@ -40,17 +40,19 @@ repo = pathlib.Path(sys.argv[1])
 # (kernel/, subsys/) but under different Kconfig, so the same source appears in
 # several databases with different flags. First entry per file wins.
 #
-# firmware/ (the H753ZI gateway) goes first deliberately: it is the biggest
-# configuration -- networking, MQTT, two threads -- so it is the one under which
-# reading shared Zephyr code is most informative, and it is what runs on the
-# main target. sensor-node/ follows, which means files unique to the F072 app
-# (its own main.cpp/sensor.cpp) still get correct flags while the Zephyr sources
-# both apps share stay indexed under the gateway's config. Tests come last: they
-# are the narrowest configuration and exist to cover the app's own TUs, which
-# the app trees have already claimed.
+# gateway/ goes first deliberately: it is the biggest configuration --
+# networking, MQTT, four threads -- so it is the one under which reading shared
+# Zephyr code is most informative, and it is what runs on the main target.
+# peer-node/ follows, which means files unique to the F072 app (its own
+# main.cpp/sensor.cpp) still get correct flags while the Zephyr sources both apps
+# share stay indexed under the gateway's config. That ordering also decides
+# shared/: protocol.cpp and commands.cpp are compiled by both apps, so they get
+# the gateway's flags -- either would do, since neither app's Kconfig changes how
+# those two files parse. Tests come last: they are the narrowest configuration
+# and exist to cover the same TUs, which the app trees have already claimed.
 sources = [
-    repo / "firmware" / "build" / "compile_commands.json",
-    repo / "sensor-node" / "build" / "compile_commands.json",
+    repo / "gateway" / "build" / "compile_commands.json",
+    repo / "peer-node" / "build" / "compile_commands.json",
 ]
 sources += sorted((repo / "twister-out").glob("**/compile_commands.json"))
 

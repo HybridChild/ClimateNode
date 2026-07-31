@@ -9,9 +9,9 @@ Builds against the shared global Zephyr workspace — see [`toolchain.md`](toolc
 Four files, each doing one thing:
 
 ```
-firmware/boards/nucleo_h753zi.overlay   the SCD-40 device on I2C1, marked deferred-init
-firmware/prj.conf                       CONFIG_SENSOR + CONFIG_I2C + the sensor shell
-firmware/src/sensor.cpp                 owns the device: init, the sampling thread, both channels
+gateway/boards/nucleo_h753zi.overlay    the SCD-40 device on I2C1, marked deferred-init
+gateway/prj.conf                        CONFIG_SENSOR + CONFIG_I2C + the sensor shell
+gateway/src/sensor.cpp                  owns the device: init, the sampling thread, both channels
 shared/app_channels.h                   the struct the readings travel in
 ```
 
@@ -19,7 +19,7 @@ shared/app_channels.h                   the struct the readings travel in
 
 ## How it fits together
 
-**1. Devicetree overlay — `firmware/boards/nucleo_h753zi.overlay`.** Declares the sensor as a child of the I²C bus:
+**1. Devicetree overlay — `gateway/boards/nucleo_h753zi.overlay`.** Declares the sensor as a child of the I²C bus:
 
 ```dts
 &i2c1 {
@@ -37,7 +37,7 @@ shared/app_channels.h                   the struct the readings travel in
 - `zephyr,deferred-init` hands the single init attempt to the application — see *Init is deferred to the app* below.
 - Zephyr auto-applies any `boards/<board>.overlay` under the app root when building `-b <board>`, so no `DTC_OVERLAY_FILE` wiring is needed.
 
-**2. Kconfig — `firmware/prj.conf`.** The sensor's share of it:
+**2. Kconfig — `gateway/prj.conf`.** The sensor's share of it:
 
 ```
 CONFIG_SENSOR=y            # the sensor subsystem (sample_fetch / channel_get API)
@@ -48,7 +48,7 @@ CONFIG_CBPRINTF_FP_SUPPORT=y   # %f support (Zephyr strips float printf by defau
 
 Note what's *absent*: we never set `CONFIG_SCD4X`. The driver's Kconfig is `default y` gated on `DT_HAS_SENSIRION_SCD40_ENABLED`, so **adding the overlay node auto-selects the driver** (and it pulls in `I2C` + `CRC`). Verified in the build: `CONFIG_SCD4X=y`, `CONFIG_CRC=y` appear in `build/zephyr/.config` without us asking. The mechanism is the devicetree→Kconfig bridge described in [`build-system-overview.md`](build-system-overview.md).
 
-**3. Application — `firmware/src/sensor.cpp`.**
+**3. Application — `gateway/src/sensor.cpp`.**
 
 - `DEVICE_DT_GET(DT_NODELABEL(scd40))` resolves the overlay's `scd40:` label to a device pointer *at compile time* — if the overlay didn't apply, the build fails rather than crashing at runtime.
 - `sensor_thread()` sleeps `kSensorPowerUpMs`, calls `device_init()`, then latches `device_ok` from `device_is_ready()` once and keeps it `const`. Re-checking per cycle would look like resilience and provide none — readiness cannot change after the first attempt (below).
@@ -72,10 +72,10 @@ Note what's *absent*: we never set `CONFIG_SCD4X`. The driver's Kconfig is `defa
 scripts/build.sh -p     # pristine (after devicetree/Kconfig edits); plain form = incremental
 scripts/flash.sh        # forces -r openocd (nucleo_h753zi defaults to the uninstalled cube runner)
 scripts/console.sh      # serial console @115200; quit with Ctrl-A then K
-                        # add -a firmware to either when the F072RB peer is also plugged in
+                        # add -a gateway to either when the F072RB peer is also plugged in
 ```
 
-Both scripts activate the workspace venv and export `ZEPHYR_BASE` themselves, so no manual `source` is needed. `build.sh` runs `west build` from inside `~/zephyr-workspace` (so west can enumerate modules) with `-s firmware -d firmware/build`.
+Both scripts activate the workspace venv and export `ZEPHYR_BASE` themselves, so no manual `source` is needed. `build.sh` runs `west build` from inside `~/zephyr-workspace` (so west can enumerate modules) with `-s firmware -d gateway/build`.
 
 Footprint of the whole app (sensor + networking + MQTT + protobuf + zbus + shell), as the build's own memory report gives it: **FLASH 219 252 B (10.45 % of 2 MB)**, **RAM 52 000 B (9.92 % of 512 KB)**, plus 16 KB in SRAM3. Read it off the end of a `scripts/build.sh` run rather than trusting this number — it moves with every Kconfig change.
 

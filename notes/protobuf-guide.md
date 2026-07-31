@@ -594,7 +594,7 @@ The same `.proto` feeds two completely independent generators:
 
 | | Firmware | Host |
 |---|---|---|
-| Generator | nanopb, via `zephyr_nanopb_sources()` in `firmware/CMakeLists.txt` | `grpc_tools.protoc`, via `host/generate.sh` |
+| Generator | nanopb, via `zephyr_nanopb_sources()` in `gateway/CMakeLists.txt` | `grpc_tools.protoc`, via `host/generate.sh` |
 | Output | `node.pb.c` / `node.pb.h` (C) | `node_pb2.py` |
 | Runs | Every build, into the build directory | On demand, gitignored |
 | Bounds | Applies `node.options` | Ignores it |
@@ -634,7 +634,7 @@ printf '\x08\x01\x10\x2a\x5a\x00' | protoc --decode_raw
 printf '\x08\x01\x10\x2a\x5a\x00' | protoc --decode=node.Command --proto_path=proto proto/node.proto
 
 # and the size constants nanopb derived from it (after a build)
-grep _size firmware/build/node.pb.h
+grep _size gateway/build/node.pb.h
 ```
 
 The last one should print the constants §9 works through by hand — `node_Telemetry_size` 42, `node_Command_size` 20, `node_Ack_size` 140, `node_DeviceInfo_size` 75. If your arithmetic in §9 disagrees with the generator, the generator is right and the interesting question is which field's worst case you mis-counted.

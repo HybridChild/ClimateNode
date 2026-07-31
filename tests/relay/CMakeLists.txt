@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# Unit tests for the relay's liveness state machine (firmware/src/relay.h).
+# Unit tests for the relay's liveness state machine (gateway/src/relay.h).
 #
 # relay.h is the gateway's own header, not a shared one -- only the gateway
 # relays. can_link.h, which it is tested against, is shared, so this suite needs
@@ -18,6 +18,6 @@ project(relay_test)
 
 target_sources(app PRIVATE src/main.cpp)
 target_include_directories(app PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/../../firmware/src  # relay.h -- gateway-only
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../gateway/src  # relay.h -- gateway-only
   ${CMAKE_CURRENT_SOURCE_DIR}/../../shared        # can_link.h -- both ends
 )

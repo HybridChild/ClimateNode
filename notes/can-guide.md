@@ -201,7 +201,7 @@ Those three identifiers are not arbitrary, and they are not free-form either. `0
 
 They live in [`shared/can_link.h`](../shared/can_link.h), the one file both boards include — because a link is symmetric and neither end can be right on its own. It carries the address map, the heartbeat's byte layout and one more thing worth noticing: **a message type byte at the front of every ISO-TP payload.** ISO-TP has no topic, and §3's rule from the Protobuf side still holds — nothing in a serialised message says which message it is. On MQTT the topic asserts the type for free; here it costs one byte in front of the payload. Same decision, newly visible, because this transport does not subsidise it.
 
-**What exists today.** The peer node's half is written: `sensor-node/` reads the BME280, encodes with the *same* `protocol.cpp` the gateway uses, beats once a second and answers commands. The gateway's `relay thread` in that diagram does not exist yet, and no frame has crossed a real bus — the transceivers are not bought, so everything is loopback and link-time so far. [`can-bringup.md`](../docs/can-bringup.md) is explicit about which is which.
+**What exists today.** The peer node's half is written: `peer-node/` reads the BME280, encodes with the *same* `protocol.cpp` the gateway uses, beats once a second and answers commands. The gateway's `relay thread` in that diagram does not exist yet, and no frame has crossed a real bus — the transceivers are not bought, so everything is loopback and link-time so far. [`can-bringup.md`](../docs/can-bringup.md) is explicit about which is which.
 
 Two payload styles on one bus, chosen by §8's rule:
 

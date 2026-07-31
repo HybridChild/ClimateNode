@@ -31,12 +31,13 @@
  * the validator live with the code they constrain.
  *
  * ---------------------------------------------------------------------------
- * Two applications now share this header
+ * Two applications share this header, which is why it lives in shared/
  * ---------------------------------------------------------------------------
  *
- * The H753ZI gateway (firmware/) and the F072RB peer node (sensor-node/) both
- * include it, and both DEFINE these two channels — each in its own sensor.cpp,
- * for its own sensor. ZBUS_CHAN_DECLARE expands to `extern`, so the header
+ * The H753ZI gateway and the F072RB peer node both include it, and both DEFINE
+ * these two channels — each in its own sensor.cpp, for its own sensor. Neither
+ * app owns this file; that is the whole reason it sits in shared/ rather than
+ * inside one of them. ZBUS_CHAN_DECLARE expands to `extern`, so the header
  * declares and whoever links supplies the definition; tests/commands/ has been
  * using that same seam for chan_sensor_cmd all along, and commands.h now uses
  * it for the node identity.

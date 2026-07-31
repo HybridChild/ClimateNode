@@ -4,7 +4,7 @@
   // cross-GCC command line + all generated include paths), so it resolves
   // zephyr/*.h and the generated CONFIG_*/devicetree headers correctly.
   // scripts/ide-index.sh writes it by merging the firmware build tree with
-  // twister's test build trees — pointing at firmware/build alone would leave
+  // twister's test build trees — pointing at gateway/build alone would leave
   // everything under tests/ unparseable, since those TUs appear only in
   // twister's database. Run that script by hand — it needs a first
   // scripts/build.sh and scripts/test.sh to have something to merge, and the
@@ -31,7 +31,7 @@
 
   // This is a freestanding Zephyr app: configuration is done by `west build`
   // (it sets BOARD, ZEPHYR_BASE and the cross toolchain from ~/zephyr-workspace,
-  // and writes firmware/build/compile_commands.json for clangd). The CMake Tools
+  // and writes gateway/build/compile_commands.json for clangd). The CMake Tools
   // extension can't configure it standalone and would error, so stop it auto-running.
   "cmake.configureOnOpen": false,
   "cmake.automaticReconfigure": false

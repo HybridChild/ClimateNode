@@ -20,6 +20,6 @@ project(isotp_loopback_test)
 
 target_sources(app PRIVATE src/main.cpp)
 target_include_directories(app PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/../../firmware/src  # relay.h -- gateway-only
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../gateway/src  # relay.h -- gateway-only
   ${CMAKE_CURRENT_SOURCE_DIR}/../../shared        # can_link.h -- both ends
 )

@@ -1,7 +1,7 @@
 /* The CAN half of the gateway. See relay.h for what a relay is and why the
  * channels are shaped the way they are.
  *
- * This file is the mirror of sensor-node/src/main.cpp, seen from the other end
+ * This file is the mirror of peer-node/src/main.cpp, seen from the other end
  * of the wire: what that file sends, this one receives, and vice versa. Reading
  * the two together is the clearest statement of the link there is.
  *

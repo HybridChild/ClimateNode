@@ -13,7 +13,7 @@
  * `default y` once DT_HAS_ZEPHYR_CAN_LOOPBACK_ENABLED, so declaring the node is
  * the whole of enabling the driver.
  *
- * `zephyr,canbus` is what firmware/src/relay.cpp and sensor-node/src/main.cpp
+ * `zephyr,canbus` is what gateway/src/relay.cpp and peer-node/src/main.cpp
  * both resolve with DEVICE_DT_GET(DT_CHOSEN(zephyr_canbus)), and it is why the
  * same code compiles against fdcan1 on the H753ZI, can1 on the F072RB, and this.
  * The test names no device either.

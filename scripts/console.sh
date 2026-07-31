@@ -13,9 +13,9 @@
 # Zephyr's console runs at 115200 8N1 on both boards. What is on the far end
 # differs, and it is worth knowing before concluding a board is dead:
 #
-#   firmware (H753ZI)     a shell. Prompts `uart:~$`, takes input, has the `net`
+#   gateway (H753ZI)     a shell. Prompts `uart:~$`, takes input, has the `net`
 #                         and `can` command sets.
-#   sensor-node (F072RB)  OUTPUT ONLY. Log lines come out; nothing you type goes
+#   peer-node (F072RB)  OUTPUT ONLY. Log lines come out; nothing you type goes
 #                         anywhere, because the default image has no shell -- a
 #                         stock one needs 95% of this part's 16 KB of RAM. It
 #                         logs at boot and on state changes, and is otherwise
@@ -23,9 +23,9 @@
 #
 # For an interactive shell on the peer, build the bench variant:
 #
-#   ./scripts/build.sh -a sensor-node --debug -p
+#   ./scripts/build.sh -a peer-node --debug -p
 #
-# which merges sensor-node/debug.conf and gets you a trimmed shell with the `can`
+# which merges peer-node/debug.conf and gets you a trimmed shell with the `can`
 # commands at 83% RAM. No history and no tab completion -- type it correctly.
 #
 # Quitting screen matters here: Ctrl-A then K (then y) terminates the session and
@@ -34,8 +34,8 @@
 # quit` to kill it).
 #
 # Usage:
-#   scripts/console.sh -a sensor-node  # the peer node, whichever port it is on
-#   scripts/console.sh -a firmware     # the gateway
+#   scripts/console.sh -a peer-node  # the peer node, whichever port it is on
+#   scripts/console.sh -a gateway     # the gateway
 #   scripts/console.sh                 # auto-detect; refuses if two are attached
 #   scripts/console.sh /dev/cu.usbXYZ  # explicit port
 #   BAUD=9600 scripts/console.sh       # override the baud rate
@@ -50,7 +50,7 @@ while [[ $# -gt 0 ]]; do
 	case "$1" in
 	-a)
 		if [[ $# -lt 2 ]]; then
-			echo "-a needs an app name (firmware or sensor-node)." >&2
+			echo "-a needs an app name (gateway or peer-node)." >&2
 			exit 2
 		fi
 		APP_NAME="$2"

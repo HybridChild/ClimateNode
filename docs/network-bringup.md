@@ -13,7 +13,7 @@ Unlike the sensor, **no `.cpp` in this repo appears here.** The whole pipe is de
 ```
 dts/arm/st/h7/stm32h7.dtsi          the MAC + MDIO nodes (in Zephyr, status="disabled")
 boards/st/nucleo_h753zi.dts         enables them + the LAN8742 PHY + RMII pins (in Zephyr)
-firmware/prj.conf                   CONFIG_NET_* — which layers compile in, and the address
+gateway/prj.conf                    CONFIG_NET_* — which layers compile in, and the address
 subsys/net/lib/config/init.c        net_config: applies the address at boot (in Zephyr)
 ```
 
@@ -64,9 +64,9 @@ Three things worth reading off this:
 
 - **The PHY is a devicetree node on its own bus.** The MDIO bus (2 wires: `MDC` clock, `MDIO` data) is how the MAC *configures and polls* the PHY — reads link status, sets speed. The RMII pins (`eth_*`) are the separate high-speed path the actual frames travel on. Two buses, two jobs.
 - **`compatible = "ethernet-phy"` is deliberately generic.** It binds to Zephyr's `phy_mii.c` (`DT_DRV_COMPAT ethernet_phy`), the standard IEEE-802.3 clause-22 driver — *not* the LAN8742-specific `phy_microchip_lan8742.c`. The generic driver reads the PHY's ID registers over MDIO and drives it through the standard register set, so it works for the LAN8742 without naming it. (A part needing vendor quirks would use its specific compatible.)
-- **This repo's overlay does none of this.** `firmware/boards/nucleo_h753zi.overlay` adds only the SCD-40 on I²C; the Ethernet nodes above come entirely from the board definition. We inherit a working link and never edit it.
+- **This repo's overlay does none of this.** `gateway/boards/nucleo_h753zi.overlay` adds only the SCD-40 on I²C; the Ethernet nodes above come entirely from the board definition. We inherit a working link and never edit it.
 
-**2. Kconfig — which layers compile in.** The networking block of `firmware/prj.conf`:
+**2. Kconfig — which layers compile in.** The networking block of `gateway/prj.conf`:
 
 ```
 CONFIG_NETWORKING=y

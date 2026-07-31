@@ -21,12 +21,12 @@ To make the telemetry *real* (rather than a hard-coded counter), the node reads 
   - **BME280** on **I²C1, address `0x77`** (`SCL` → **PB8**, `SDA` → **PB9** — the same pins as the gateway's SCD-40, on the other board). Temperature, humidity and **pressure**; no CO₂, which is what makes the schema's `optional` measurements earn their keep.
   - **CAN** on **PA11 (RX) / PA12 (TX)**, ST morpho CN10-14 / CN10-12, at **500 kbit/s** — the same rate the H753ZI's `fdcan1` on PD0/PD1 is set to. Both rates live in devicetree overlays, because a bitrate describes the wire rather than either app.
   - **Still to buy:** two 3.3 V CAN transceiver breakouts (SN65HVD230). They are not optional and not skippable — the MCU peripheral exposes only digital `TX`/`RX`, and the transceiver supplies both the differential pair and the wired-AND behaviour that arbitration and in-frame acknowledgement depend on. Three wires between them: **CANH, CANL and GND**. See [`notes/can-guide.md`](notes/can-guide.md) §2.
-- **Host:** Raspberry Pi 5 (Linux) — native Gigabit Ethernet, wired **direct-cable** to the Nucleo (no switch). Static IPs on both ends in one subnet: Pi `192.168.10.1` / Nucleo `192.168.10.2`, mask `255.255.255.0`, no gateway. On the firmware side this is configured entirely in `firmware/prj.conf` via `CONFIG_NET_CONFIG_SETTINGS` — `net_config` applies it at boot, so **no application code touches interface bring-up**. The Nucleo's LAN8742 PHY has Auto-MDIX, so a normal straight-through cable works. Runs a **Mosquitto MQTT broker** plus the Python test harness (a paho-mqtt client that subscribes to telemetry and publishes commands); can stay permanently wired as a dedicated bench host.
+- **Host:** Raspberry Pi 5 (Linux) — native Gigabit Ethernet, wired **direct-cable** to the Nucleo (no switch). Static IPs on both ends in one subnet: Pi `192.168.10.1` / Nucleo `192.168.10.2`, mask `255.255.255.0`, no gateway. On the firmware side this is configured entirely in `gateway/prj.conf` via `CONFIG_NET_CONFIG_SETTINGS` — `net_config` applies it at boot, so **no application code touches interface bring-up**. The Nucleo's LAN8742 PHY has Auto-MDIX, so a normal straight-through cable works. Runs a **Mosquitto MQTT broker** plus the Python test harness (a paho-mqtt client that subscribes to telemetry and publishes commands); can stay permanently wired as a dedicated bench host.
 
 ## Scope and status
 A Zephyr app on the Nucleo — written in **C++ (C++17)** to match how production firmware of this kind is written; see [`notes/language-cpp.md`](notes/language-cpp.md).
 
-The gateway runs **four threads** across **five translation units**, one responsibility each: `sensor.cpp` (acquisition), `protocol.cpp` (the wire format), `commands.cpp` (command semantics), `relay.cpp` (the CAN side, two threads) and `main.cpp` (the MQTT sessions). They meet on the zbus channels declared in [`shared/app_channels.h`](shared/app_channels.h) and [`firmware/src/relay.h`](firmware/src/relay.h). `main.cpp` is walked through line by line in [`docs/firmware-mqtt-walkthrough.md`](docs/firmware-mqtt-walkthrough.md); the middle two have no hardware dependency, which is what lets [`tests/`](tests/) exercise them on a laptop.
+The gateway runs **four threads** across **five translation units**, one responsibility each: `sensor.cpp` (acquisition), `protocol.cpp` (the wire format), `commands.cpp` (command semantics), `relay.cpp` (the CAN side, two threads) and `main.cpp` (the MQTT sessions). They meet on the zbus channels declared in [`shared/app_channels.h`](shared/app_channels.h) and [`gateway/src/relay.h`](gateway/src/relay.h). `main.cpp` is walked through line by line in [`docs/firmware-mqtt-walkthrough.md`](docs/firmware-mqtt-walkthrough.md); the middle two have no hardware dependency, which is what lets [`tests/`](tests/) exercise them on a laptop.
 
 1. Brings up the network interface and connects as an **MQTT client** to the broker on the Pi. Reconnect is the shape of the program, not error handling bolted on: a forever loop of connect → serve until dropped → back off (1 s doubling to 30 s) → retry, so a cable pull or a downed broker is survivable.
 2. Reads the SCD-40 over I²C via Zephyr's **sensor API** (upstream `sensirion,scd40` driver) on its own thread, at its own cadence: `SENSOR_CHAN_CO2`, `SENSOR_CHAN_AMBIENT_TEMP`, `SENSOR_CHAN_HUMIDITY`. A failed read still publishes, carrying `sensor_status = ERROR` rather than silently going quiet. Because sampling is decoupled from transport, a reconnect backoff never stops the sensor.
@@ -63,8 +63,8 @@ Topics are `node/<id>/{telemetry,command,ack,status}` — telemetry at QoS 0, co
 ## Repository layout
 - `proto/` — the `.proto` schema (shared contract) + nanopb `.options`. **The single source of truth for the wire format**; firmware and host both generate from it. Generated `*.pb.c/.h` are **C** and stay C even though the firmware is C++ (they're included across the C↔C++ boundary; see [`notes/language-cpp.md`](notes/language-cpp.md)).
 - `shared/` — the code **both applications link**, in its own directory precisely so that neither app owns it: `protocol.{h,cpp}` (the wire format), `commands.{h,cpp}` (command semantics), `app_channels.h` (the zbus channels and the reading type) and `can_link.h` (the CAN address map and heartbeat frame, which both ends of the wire must agree on). Not a Zephyr library — each app compiles these files by relative path, because the generated `node.pb.h` they include belongs to the app's own nanopb target. The rule is one definition, no drift: `tests/` builds against these same files, so a suite that passes is a test of what the boards run.
-- `firmware/` — the **H753ZI gateway**: sensor node *and* CAN-to-MQTT relay. A Zephyr application in **C++17** (`prj.conf` with `CONFIG_CPP=y`, `CMakeLists.txt`, `src/*.cpp`, and a **board overlay** defining the I²C bus + `sensirion,scd40` node). Its own four files are `main.cpp`, `sensor.cpp` and `relay.{h,cpp}` — `relay.h` stays here rather than in `shared/` because only the gateway relays. Generates `node.pb.c/.h` at build time so it can't drift from the schema.
-- `sensor-node/` — the **F072RB peer node**, a second Zephyr app beside the first. Only two files are its own: `main.cpp` (the CAN session) and `sensor.cpp` (the BME280) — the session and the sensor are exactly what differs between the nodes. Everything else it needs comes from `shared/`.
+- `gateway/` — the **H753ZI gateway**: sensor node *and* CAN-to-MQTT relay. A Zephyr application in **C++17** (`prj.conf` with `CONFIG_CPP=y`, `CMakeLists.txt`, `src/*.cpp`, and a **board overlay** defining the I²C bus + `sensirion,scd40` node). Its own four files are `main.cpp`, `sensor.cpp` and `relay.{h,cpp}` — `relay.h` stays here rather than in `shared/` because only the gateway relays. Generates `node.pb.c/.h` at build time so it can't drift from the schema.
+- `peer-node/` — the **F072RB peer node**, a second Zephyr app beside the first. Only two files are its own: `main.cpp` (the CAN session) and `sensor.cpp` (the BME280) — the session and the sensor are exactly what differs between the nodes. Everything else it needs comes from `shared/`.
 - `host/` — host test harness on the Pi: a Python **paho-mqtt** monitor and command client that encode/decode Protobuf, plus `generate.sh` for the Python bindings.
 - `scripts/` — the build/flash/console wrappers, plus `probe.sh` and its `probes.conf`, which map each app to its ST-LINK so nothing has to guess with two boards attached. Use these rather than raw `west`; they source the workspace venv and pass the right source/build directories.
 - `docs/` — terse project references: decisions, rationale, and verified facts (e.g. `mqtt-design.md`).
@@ -80,12 +80,12 @@ Topics are `node/<id>/{telemetry,command,ack,status}` — telemetry at QoS 0, co
 ./scripts/console.sh      # serial console @115200 (quit with Ctrl-A then K)
 ```
 
-There are two apps, and every wrapper takes `-a <app>` (or `APP=`), defaulting to `firmware`. The board follows from the app, so `-b` is never needed:
+There are two apps, and every wrapper takes `-a <app>` (or `APP=`), defaulting to `gateway`. The board follows from the app, so `-b` is never needed:
 
 ```sh
-./scripts/build.sh   -a sensor-node -p   # the F072RB peer node
-./scripts/flash.sh   -a sensor-node
-./scripts/console.sh -a sensor-node
+./scripts/build.sh   -a peer-node -p     # the F072RB peer node
+./scripts/flash.sh   -a peer-node
+./scripts/console.sh -a peer-node
 ./scripts/probe.sh                       # which ST-LINK and which /dev/cu.* is which app
 ```
 
@@ -119,7 +119,7 @@ Split by *kind*, not by topic: **`notes/`** holds from-first-principles teaching
 | Zephyr build system | [`zephyr-build-system-guide.md`](notes/zephyr-build-system-guide.md) | [`build-system-overview.md`](docs/build-system-overview.md) |
 | Sensor API (and the `sensor` shell) | [`sensor-api-guide.md`](notes/sensor-api-guide.md) | [`sensor-bringup.md`](docs/sensor-bringup.md) |
 | Protobuf / nanopb | [`protobuf-guide.md`](notes/protobuf-guide.md) | [`proto/node.proto`](proto/node.proto) (decisions inline) |
-| zbus (the internal bus) | [`zbus-guide.md`](notes/zbus-guide.md) | [`shared/app_channels.h`](shared/app_channels.h) and [`relay.h`](firmware/src/relay.h) (decisions in the header comments) |
+| zbus (the internal bus) | [`zbus-guide.md`](notes/zbus-guide.md) | [`shared/app_channels.h`](shared/app_channels.h) and [`relay.h`](gateway/src/relay.h) (decisions in the header comments) |
 | Testing (host-side, no hardware) | [`testing-guide.md`](notes/testing-guide.md) | [`test-strategy.md`](docs/test-strategy.md) |
 
 The Protobuf and zbus rows pair a guide with a **source file** rather than a `docs/` page, because in both cases the decisions belong next to the thing they constrain: the field-numbering and evolution rules live in the schema, and the observer-kind choice lives in the headers the communicating threads include.
@@ -128,7 +128,7 @@ Guides without a reference half: [`language-cpp.md`](notes/language-cpp.md) — 
 
 References without a guide half: [`toolchain.md`](docs/toolchain.md) — both toolchains, build/flash workflow, and the host venv.
 
-Neither, and deliberately so: [`firmware-mqtt-walkthrough.md`](docs/firmware-mqtt-walkthrough.md) — a guided reading of `firmware/src/main.cpp` that connects the others. It teaches, but it tracks this repo's code, so it lives with the references and must stay in sync when the client changes.
+Neither, and deliberately so: [`firmware-mqtt-walkthrough.md`](docs/firmware-mqtt-walkthrough.md) — a guided reading of `gateway/src/main.cpp` that connects the others. It teaches, but it tracks this repo's code, so it lives with the references and must stay in sync when the client changes.
 
 ## References
 

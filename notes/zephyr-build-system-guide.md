@@ -224,7 +224,7 @@ A detail from step 3 that surprises newcomers: your `CMakeLists.txt` says `targe
 
 Step 5 of §7 said CMake decides which sources are in the build. It can also decide to *create* some first — and this is the one place where the machinery described so far stops being purely Zephyr's and becomes something your project extends. Everything generated up to now (`devicetree_generated.h`, `autoconf.h`, the driver Kconfig) came from Zephyr's own scripts. This is your own generator, hooked into the same pipeline.
 
-This repo needs C structs for its wire format, generated from a `.proto` schema, so `firmware/CMakeLists.txt` adds one line before its `target_sources`:
+This repo needs C structs for its wire format, generated from a `.proto` schema, so `gateway/CMakeLists.txt` adds one line before its `target_sources`:
 
 ```cmake
 list(APPEND CMAKE_MODULE_PATH ${ZEPHYR_BASE}/modules/nanopb)
@@ -267,9 +267,9 @@ The arrow from "`&i2c1`" to "the SCD40 driver talking to address `0x62`" was dra
 
 The sensor path is Zephyr's own machinery. Run the §8 generator alongside it and the two are the same shape — which is the point of the module system:
 
-1. **You describe the contract.** `proto/node.proto` is the input, and it lives outside `firmware/` because the host tooling generates from it too.
+1. **You describe the contract.** `proto/node.proto` is the input, and it lives outside `gateway/` because the host tooling generates from it too.
 2. **CMake registers a rule**, not an output. `zephyr_nanopb_sources(app …)` tells the build *how* to produce `node.pb.c`/`node.pb.h` and that the `.c` belongs to `app`. Nothing has been generated yet — this is still the "CMake thinks" half of §3.
-3. **Ninja runs the generator** when it notices `node.proto` is newer than its outputs, exactly as it would re-run a compiler. The outputs land in `firmware/build/`.
+3. **Ninja runs the generator** when it notices `node.proto` is newer than its outputs, exactly as it would re-run a compiler. The outputs land in `gateway/build/`.
 4. **The generated `.c` compiles like any other source** — as **C**, even though the two app sources beside it are C++, because that is the language it was written in:
 
    ```
@@ -309,11 +309,11 @@ Everything above is claims about a pipeline you cannot see. All four exercises b
 *Demonstrates §4.4: `zephyr.dts` is the fully-merged tree.*
 
 ```sh
-grep -A6 'scd40@62' firmware/build/zephyr/zephyr.dts
+grep -A6 'scd40@62' gateway/build/zephyr/zephyr.dts
 ```
 
 ```
-/* node '/soc/i2c@40005400/scd40@62' defined in .../firmware/boards/nucleo_h753zi.overlay:4 */
+/* node '/soc/i2c@40005400/scd40@62' defined in .../gateway/boards/nucleo_h753zi.overlay:4 */
 scd40: scd40@62 {
         compatible = "sensirion,scd40"; /* in .../nucleo_h753zi.overlay:5 */
         reg = < 0x62 >;                 /* in .../nucleo_h753zi.overlay:6 */
@@ -333,8 +333,8 @@ Read the path in the first line: your node was grafted under `/soc/i2c@40005400`
 You never wrote `CONFIG_SCD4X` anywhere — confirm that first, then look at what the build decided:
 
 ```sh
-grep -rn 'CONFIG_SCD4X' firmware/prj.conf          # no matches: you never asked for it
-grep -n 'SENSIRION_SCD40\|CONFIG_SCD4X\|CONFIG_CRC=\|CONFIG_I2C=' firmware/build/zephyr/.config
+grep -rn 'CONFIG_SCD4X' gateway/prj.conf           # no matches: you never asked for it
+grep -n 'SENSIRION_SCD40\|CONFIG_SCD4X\|CONFIG_CRC=\|CONFIG_I2C=' gateway/build/zephyr/.config
 ```
 
 ```
@@ -378,10 +378,10 @@ Eleven steps out of the 335 a pristine build runs. Note carefully what is **abse
 
 *Demonstrates §3's practical consequence: configuration changes are not source changes.*
 
-Append a Kconfig line to `firmware/prj.conf` and rebuild:
+Append a Kconfig line to `gateway/prj.conf` and rebuild:
 
 ```sh
-echo 'CONFIG_ASSERT=y' >> firmware/prj.conf
+echo 'CONFIG_ASSERT=y' >> gateway/prj.conf
 ./scripts/build.sh
 ```
 
@@ -400,6 +400,6 @@ A Zephyr build is a configuration system that generates code and then compiles i
 ## 13. Where to go next
 
 - **[`build-system-overview.md`](../docs/build-system-overview.md)** — the reference half of this guide: the artifact-by-artifact table for *this* build, with real paths and sizes, including the nanopb row §8 describes.
-- **`firmware/build/zephyr/zephyr.dts` and `.config`** — the two files Exercises 1 and 2 read. Skimming them once, in full, is worth more than another page of prose about what they contain.
+- **`gateway/build/zephyr/zephyr.dts` and `.config`** — the two files Exercises 1 and 2 read. Skimming them once, in full, is worth more than another page of prose about what they contain.
 - **[`language-cpp.md`](language-cpp.md)** — the other half of what `target_sources` does here, and why one of this app's three compiled sources is C while two are C++.
 - **Zephyr's own build documentation** — the `west build` reference and the *Application Development* chapter, for `CMakeLists.txt` options this project never needed (`SHIELD`, `EXTRA_CONF_FILE`, sysbuild).

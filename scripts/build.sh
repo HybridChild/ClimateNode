@@ -6,18 +6,19 @@
 #
 # There are two apps, and each has its own board:
 #
-#   firmware/      the H753ZI gateway  (nucleo_h753zi)
-#   sensor-node/   the F072RB peer node (nucleo_f072rb)
+#   gateway/     the H753ZI gateway   (nucleo_h753zi)
+#   peer-node/   the F072RB peer node (nucleo_f072rb)
 #
-# The app defaults to firmware/, so every invocation that worked before this
-# script grew a second app still works unchanged.
+# The app defaults to gateway/, which is the one you build most often. Neither
+# app owns the code they share; that lives in shared/ and is compiled by each
+# app's CMakeLists.txt, so there is nothing to build separately for it.
 #
 # Usage:
-#   scripts/build.sh                    # incremental build of firmware/ (-p auto)
+#   scripts/build.sh                    # incremental build of gateway/ (-p auto)
 #   scripts/build.sh -p                 # pristine/clean build (after DT/Kconfig edits)
-#   scripts/build.sh -a sensor-node     # build the other app
-#   APP=sensor-node scripts/build.sh    # same thing via the environment
-#   scripts/build.sh -a sensor-node --debug -p   # layer that app's debug.conf on top
+#   scripts/build.sh -a peer-node       # build the other app
+#   APP=peer-node scripts/build.sh      # same thing via the environment
+#   scripts/build.sh -a peer-node --debug -p   # layer that app's debug.conf on top
 #   BOARD=... scripts/build.sh          # override the app's default board
 #   scripts/build.sh <extra args>       # anything else is passed through to `west build`
 #
@@ -29,7 +30,7 @@
 set -euo pipefail
 
 WORKSPACE="${ZEPHYR_WORKSPACE:-$HOME/zephyr-workspace}"
-APP_NAME="${APP:-firmware}"
+APP_NAME="${APP:-gateway}"
 
 # Repo root = parent of this script's dir, resolved regardless of where it's called from.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -51,7 +52,7 @@ while [[ $# -gt 0 ]]; do
 		;;
 	-a)
 		if [[ $# -lt 2 ]]; then
-			echo "-a needs an app name (firmware or sensor-node)." >&2
+			echo "-a needs an app name (gateway or peer-node)." >&2
 			exit 2
 		fi
 		APP_NAME="$2"
@@ -80,8 +81,8 @@ fi
 # than being something to remember. BOARD= still wins, for a one-off.
 if [[ -z "${BOARD:-}" ]]; then
 	case "$APP_NAME" in
-	firmware) BOARD="nucleo_h753zi" ;;
-	sensor-node) BOARD="nucleo_f072rb" ;;
+	gateway) BOARD="nucleo_h753zi" ;;
+	peer-node) BOARD="nucleo_f072rb" ;;
 	*)
 		echo "No default board known for '$APP_NAME' — set BOARD=." >&2
 		exit 2

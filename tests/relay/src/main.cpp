@@ -1,4 +1,4 @@
-/* Unit tests for the relay's liveness state machine — firmware/src/relay.h.
+/* Unit tests for the relay's liveness state machine — gateway/src/relay.h.
  *
  * On MQTT, liveness is something you subscribe to: the broker notices a dead
  * client and publishes its Last Will. On CAN there is no broker and no

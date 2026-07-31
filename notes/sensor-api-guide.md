@@ -2,7 +2,7 @@
 
 *A from-first-principles guide to how `sensor_sample_fetch()` turns into I²C traffic, why readings come back as two integers instead of a float, and what the `sensor` shell command is actually doing.*
 
-A teaching document. It builds up from "what is a device in Zephyr" to the handful of sensor calls in [`firmware/src/sensor.cpp`](../firmware/src/sensor.cpp), using this bench's SCD-40 as the running example. Every code reference is real: this repo's code is cited by function name (it moves), and Zephyr's by `file:line` against v4.4.1 in `~/zephyr-workspace` (pinned, so those hold).
+A teaching document. It builds up from "what is a device in Zephyr" to the handful of sensor calls in [`gateway/src/sensor.cpp`](../gateway/src/sensor.cpp), using this bench's SCD-40 as the running example. Every code reference is real: this repo's code is cited by function name (it moves), and Zephyr's by `file:line` against v4.4.1 in `~/zephyr-workspace` (pinned, so those hold).
 
 For how the sensor is wired, described and initialised here, see [`docs/sensor-bringup.md`](../docs/sensor-bringup.md) — that's the terse reference half. This is the concepts half. The chip's own command codes and conversion formulas appear inline below, where the driver actually uses them.
 
@@ -39,7 +39,7 @@ Everything in there is **specific to this chip**: the command word `0xEC05`, the
 
 Zephyr's answer is a **device-class abstraction**. All sensors — accelerometers, thermometers, CO₂ sensors, on any bus — expose the same handful of functions. Your application says "fetch a sample, give me the CO₂ channel." A driver, written once by whoever knows the chip, translates that into the bus traffic above.
 
-The payoff is concrete for this project: `firmware/src/sensor.cpp` contains **zero** I²C calls, zero command codes, and zero conversion constants. Replacing the SCD-40 with a different CO₂ sensor would be an edit to `firmware/boards/nucleo_h753zi.overlay`, not to the application.
+The payoff is concrete for this project: `gateway/src/sensor.cpp` contains **zero** I²C calls, zero command codes, and zero conversion constants. Replacing the SCD-40 with a different CO₂ sensor would be an edit to `gateway/boards/nucleo_h753zi.overlay`, not to the application.
 
 ---
 
@@ -255,7 +255,7 @@ Zephyr targets range from Cortex-M0 upward, and **most of that range has no FPU*
 
 Two `int32_t`s are free everywhere. This is fixed-point arithmetic with a fixed scale of 10⁻⁶ — enough precision for any physical sensor, and range up to ±2 billion in the integer part.
 
-Your board (STM32H753, Cortex-M7) has an FPU in silicon — FPv5-D16, single *and* double precision — but this app does not turn it on: nothing in `firmware/prj.conf` sets `CONFIG_FPU`, so the build compiles soft-float and `zephyr.elf` links `__aeabi_fadd`, `__aeabi_fmul` and friends. The cost the API is avoiding is one you are currently paying anyway. Enabling it is `CONFIG_FPU=y`, plus `CONFIG_FPU_SHARING=y` because both the sensor thread and `main` touch floats — but the fixed-point API means the driver path itself would barely notice; only your own conversions and the protobuf float fields would speed up. The API is designed for the whole family, not for the best case.
+Your board (STM32H753, Cortex-M7) has an FPU in silicon — FPv5-D16, single *and* double precision — but this app does not turn it on: nothing in `gateway/prj.conf` sets `CONFIG_FPU`, so the build compiles soft-float and `zephyr.elf` links `__aeabi_fadd`, `__aeabi_fmul` and friends. The cost the API is avoiding is one you are currently paying anyway. Enabling it is `CONFIG_FPU=y`, plus `CONFIG_FPU_SHARING=y` because both the sensor thread and `main` touch floats — but the fixed-point API means the driver path itself would barely notice; only your own conversions and the protobuf float fields would speed up. The API is designed for the whole family, not for the best case.
 
 ### The sign rule — the one real trap
 
@@ -388,7 +388,7 @@ uart:~$ sensor attr_set scd40@62 co2 scd4x_sensor_altitude 50
 
 ### 7.2 Why your `prj.conf` comment mentions RTIO
 
-The comment on `CONFIG_SENSOR_SHELL` in [`firmware/prj.conf`](../firmware/prj.conf) flags something non-obvious. Here's the full story.
+The comment on `CONFIG_SENSOR_SHELL` in [`gateway/prj.conf`](../gateway/prj.conf) flags something non-obvious. Here's the full story.
 
 Zephyr is migrating sensors toward a second, asynchronous API built on **RTIO** — a submit/complete queue model, like `io_uring` for peripherals. Instead of a blocking `sample_fetch`, you submit a read request; the result lands in a buffer, and a **decoder** interprets the raw bytes later. It exists for high-rate sensors with hardware FIFOs, where blocking per-sample is untenable.
 

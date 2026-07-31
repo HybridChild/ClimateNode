@@ -1,6 +1,6 @@
 # Firmware MQTT client — a walkthrough
 
-A guided reading of `firmware/src/main.cpp`, written to teach the patterns rather than document the file. For the *concepts* underneath (what a broker is, what QoS means, how topics work) see [`communication-guide.md`](../notes/communication-guide.md); for the *decisions* this code implements (which topic, which QoS, and why) see [`mqtt-design.md`](mqtt-design.md). For how the payloads themselves are encoded, see [`protobuf-guide.md`](../notes/protobuf-guide.md). For channels, observers and why the sensor is a separate thread, see [`zbus-guide.md`](../notes/zbus-guide.md).
+A guided reading of `gateway/src/main.cpp`, written to teach the patterns rather than document the file. For the *concepts* underneath (what a broker is, what QoS means, how topics work) see [`communication-guide.md`](../notes/communication-guide.md); for the *decisions* this code implements (which topic, which QoS, and why) see [`mqtt-design.md`](mqtt-design.md). For how the payloads themselves are encoded, see [`protobuf-guide.md`](../notes/protobuf-guide.md). For channels, observers and why the sensor is a separate thread, see [`zbus-guide.md`](../notes/zbus-guide.md).
 
 `main.cpp` owns the **MQTT sessions** and nothing else. The application is five translation units, each with one job:
 
@@ -499,7 +499,7 @@ Two details are worth more than the table.
 
 **The ack channel is a listener despite an ack being an event**, which contradicts the rule the other three follow. It is allowed because the relay serialises command round trips *structurally*: `isotp_send()` blocks until the whole segmented transfer completes, and the TX thread then blocks waiting for the ack, so at most one is ever outstanding and latest-wins cannot collapse a set of one. That is a premise rather than a proof, so the eventfd counter checks it for free — `publish_relayed()` logs a coalesced ack at **ERROR** where it logs coalesced telemetry at WARN. A design that depends on an invariant should say out loud when the invariant breaks.
 
-**What this file does *not* do with the relay's payloads** is the whole point of them: it does not decode them. `publish_relayed()` reads a byte array off a channel and publishes it on a topic. Which channel it came from decides the topic, and that is the entire extent of the gateway's knowledge about the message. See [`relay.h`](../firmware/src/relay.h).
+**What this file does *not* do with the relay's payloads** is the whole point of them: it does not decode them. `publish_relayed()` reads a byte array off a channel and publishes it on a topic. Which channel it came from decides the topic, and that is the entire extent of the gateway's knowledge about the message. See [`relay.h`](../gateway/src/relay.h).
 
 ## 12. What is deliberately missing
 

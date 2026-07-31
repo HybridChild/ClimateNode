@@ -23,22 +23,22 @@
 #
 # STLINK_SERIAL= overrides all of it:
 #
-#   STLINK_SERIAL=0670FF... scripts/flash.sh -a sensor-node
+#   STLINK_SERIAL=0670FF... scripts/flash.sh -a peer-node
 #
 # List the attached probes and their serials with `scripts/probe.sh`. (The
 # openocd runner spells this --serial; the generic --dev-id flag that other
 # runners take is not one of its capabilities.)
 #
 # Usage:
-#   scripts/flash.sh                     # flash firmware/build via openocd
-#   scripts/flash.sh -a sensor-node      # flash the other app
-#   APP=sensor-node scripts/flash.sh     # same thing via the environment
+#   scripts/flash.sh                     # flash gateway/build via openocd
+#   scripts/flash.sh -a peer-node      # flash the other app
+#   APP=peer-node scripts/flash.sh     # same thing via the environment
 #   scripts/flash.sh <extra args>        # anything else is passed through to `west flash`
 set -euo pipefail
 
 WORKSPACE="${ZEPHYR_WORKSPACE:-$HOME/zephyr-workspace}"
 RUNNER="${RUNNER:-openocd}"
-APP_NAME="${APP:-firmware}"
+APP_NAME="${APP:-gateway}"
 
 # Repo root = parent of this script's dir, resolved regardless of where it's called from.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -48,7 +48,7 @@ while [[ $# -gt 0 ]]; do
 	case "$1" in
 	-a)
 		if [[ $# -lt 2 ]]; then
-			echo "-a needs an app name (firmware or sensor-node)." >&2
+			echo "-a needs an app name (gateway or peer-node)." >&2
 			exit 2
 		fi
 		APP_NAME="$2"

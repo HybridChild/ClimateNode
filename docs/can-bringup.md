@@ -9,14 +9,14 @@ Builds against the shared global Zephyr workspace — see [`toolchain.md`](toolc
 ## The CAN path
 
 ```
-firmware/boards/nucleo_h753zi.overlay   gateway: the bitrate the board dts leaves unset
-firmware/prj.conf                       gateway: CONFIG_CAN, CONFIG_ISOTP, the CAN shell
+gateway/boards/nucleo_h753zi.overlay    gateway: the bitrate the board dts leaves unset
+gateway/prj.conf                        gateway: CONFIG_CAN, CONFIG_ISOTP, the CAN shell
 shared/can_link.h                       SHARED: address map, heartbeat frame, message type
-firmware/src/relay.h                    gateway: the relay channels and liveness rule
-firmware/src/relay.cpp                  gateway: the CAN threads
-sensor-node/boards/nucleo_f072rb.overlay  peer: can1 enabled on PA11/PA12, the same bitrate
-sensor-node/prj.conf                    peer: CONFIG_CAN + CONFIG_ISOTP, no shell
-sensor-node/src/main.cpp                peer: the CAN session
+gateway/src/relay.h                     gateway: the relay channels and liveness rule
+gateway/src/relay.cpp                   gateway: the CAN threads
+peer-node/boards/nucleo_f072rb.overlay  peer: can1 enabled on PA11/PA12, the same bitrate
+peer-node/prj.conf                      peer: CONFIG_CAN + CONFIG_ISOTP, no shell
+peer-node/src/main.cpp                  peer: the CAN session
 ```
 
 `can_link.h` is the one file both boards include, and the reason it is a file rather than a comment: a link is symmetric, and neither end is in a position to be right on its own. It carries the address map, the hand-packed heartbeat layout and the one byte of message type above ISO-TP — nothing else, and nothing either side owns alone. `tests/heartbeat/` compiles it with no subsystem at all, which is the evidence that the contract has no dependencies.
@@ -44,7 +44,7 @@ Decisions worth keeping:
 - **The upward message is 164 B and the downward one 32 B, deliberately.** zbus's message-subscriber net_buf pool is a single pool sized by the largest message on *any* such channel; listener channels store their message in the channel. So the big upward messages ride listeners and only `relay_down` touches the pool, which is why `CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE` is 32 rather than 164.
 - **One honest compromise, named.** To correlate an Ack it synthesizes for a command the peer never answered, the gateway must know that command's `sequence` — so `main.cpp` decodes the Command **envelope**, one header field, and never the payload arm. The alternative was to synthesize nothing and let the host time out, which is simpler and strictly worse: the host cannot then distinguish "the peer is gone" from "the gateway dropped it". Recorded in [`mqtt-design.md`](mqtt-design.md).
 
-Kconfig this cost, all in `firmware/prj.conf` and all previously defaults nobody had set: `CONFIG_ISOTP=y`, `CONFIG_ZVFS_EVENTFD_MAX=4` (a hard count — the fourth `zvfs_eventfd()` just fails without it), `CONFIG_ZVFS_POLL_MAX=5`, `CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE` 16 → 32, `CONFIG_MAIN_STACK_SIZE` 2048 → 3072, `CONFIG_SYSTEM_WORKQUEUE_STACK_SIZE` 1024 → 2048 (ISO-TP drives every segmented transfer from `k_work_submit()`, which is the *shared* system workqueue). Total: **+9656 B flash and +7808 B RAM**, to 245 604 B and 60 716 B on a part with 2 MB and 512 KB.
+Kconfig this cost, all in `gateway/prj.conf` and all previously defaults nobody had set: `CONFIG_ISOTP=y`, `CONFIG_ZVFS_EVENTFD_MAX=4` (a hard count — the fourth `zvfs_eventfd()` just fails without it), `CONFIG_ZVFS_POLL_MAX=5`, `CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE` 16 → 32, `CONFIG_MAIN_STACK_SIZE` 2048 → 3072, `CONFIG_SYSTEM_WORKQUEUE_STACK_SIZE` 1024 → 2048 (ISO-TP drives every segmented transfer from `k_work_submit()`, which is the *shared* system workqueue). Total: **+9656 B flash and +7808 B RAM**, to 245 604 B and 60 716 B on a part with 2 MB and 512 KB.
 
 ### The address map
 
@@ -80,7 +80,7 @@ The ordering is load-bearing, though, and not decorative: a lower identifier win
 - The controller is clocked from **PLL2_Q at 80 MHz** — the board dts sets `div-q = <3>` with the comment *"gives 80MHz to the FDCAN"*. `can show` reports that number back, which is the cheapest confirmation that the clock tree is what the dts claims.
 - The board doc's pin table states `CAN/CANFD : PD0, PD1`. Read the physical header position off **UM2407** before soldering; the Zephyr board files name the pins, not the connector.
 
-**2. Devicetree — the one thing we must add.** `firmware/boards/nucleo_h753zi.overlay`:
+**2. Devicetree — the one thing we must add.** `gateway/boards/nucleo_h753zi.overlay`:
 
 ```dts
 &fdcan1 {
@@ -92,7 +92,7 @@ This is the trap worth understanding, because everything above it looks correct 
 
 The rate lives in the overlay rather than `prj.conf` because it describes **the wire both nodes share**, not this app; the F072RB's overlay states the same number for the same reason. Verify it landed rather than assuming — see *Bring-up checks* step 1, and note that `can show` will **not** tell you.
 
-**3. Kconfig — `firmware/prj.conf`.** The CAN share of it:
+**3. Kconfig — `gateway/prj.conf`.** The CAN share of it:
 
 ```
 CONFIG_CAN=y            # the CAN subsystem and controller API
@@ -101,7 +101,7 @@ CONFIG_CAN_SHELL=y      # `can` console commands — see Bring-up checks
 
 Note what's *absent*, exactly as with the sensor driver: we never set `CONFIG_CAN_MCAN` or `CONFIG_CAN_STM32H7_FDCAN`. Both are `default y` gated on the devicetree, so **the board's existing `fdcan1` node auto-selects the driver**. Verified in the build: `CONFIG_CAN_MCAN=y` and `CONFIG_CAN_STM32H7_FDCAN=y` appear in `build/zephyr/.config` without us asking. Same devicetree→Kconfig bridge described in [`build-system-overview.md`](build-system-overview.md).
 
-**4. The peer's devicetree — everything must be added.** `sensor-node/boards/nucleo_f072rb.overlay` is the opposite situation to the gateway's. `can1` arrives from `stm32f072.dtsi` as `status = "disabled"` with no pinctrl, `can` is absent from `nucleo_f072rb.yaml`'s supported list, and nothing sets `chosen { zephyr,canbus }`. So the overlay supplies all four: pinctrl, bitrate, status and the chosen node.
+**4. The peer's devicetree — everything must be added.** `peer-node/boards/nucleo_f072rb.overlay` is the opposite situation to the gateway's. `can1` arrives from `stm32f072.dtsi` as `status = "disabled"` with no pinctrl, `can` is absent from `nucleo_f072rb.yaml`'s supported list, and nothing sets `chosen { zephyr,canbus }`. So the overlay supplies all four: pinctrl, bitrate, status and the chosen node.
 
 ```dts
 &can1 {
@@ -117,12 +117,12 @@ Note what's *absent*, exactly as with the sensor driver: we never set `CONFIG_CA
 - **PA11/PA12 are also USB_DM/USB_DP.** That is not a conflict to resolve but one that cannot arise: on STM32F0 the USB and CAN peripherals share the same 1 KB packet-buffer SRAM (RM0091), so they are mutually exclusive in hardware. This node uses no USB.
 - The bitrate is stated here for the same reason as on the gateway, and the two numbers must match. Verify it landed the same way — see *Bring-up checks* step 1, substituting `can_40006400` for the H7's `can_4000a000`.
 
-**5. The peer's Kconfig — `sensor-node/prj.conf`.** `CONFIG_CAN=y` plus `CONFIG_ISOTP=y`, and **no shell in the default image**, so its console is output-only: log lines out, nothing in. `CONFIG_ISOTP_USE_TX_BUF` stays off, so `isotp_send()` is called with a null completion callback and blocks until the transfer finishes — see *Driver behaviour worth knowing*.
+**5. The peer's Kconfig — `peer-node/prj.conf`.** `CONFIG_CAN=y` plus `CONFIG_ISOTP=y`, and **no shell in the default image**, so its console is output-only: log lines out, nothing in. `CONFIG_ISOTP_USE_TX_BUF` stays off, so `isotp_send()` is called with a null completion callback and blocks until the transfer finishes — see *Driver behaviour worth knowing*.
 
-The shell is a **build variant**, not a permanent absence. `sensor-node/debug.conf` layers a trimmed one on top:
+The shell is a **build variant**, not a permanent absence. `peer-node/debug.conf` layers a trimmed one on top:
 
 ```sh
-./scripts/build.sh -a sensor-node --debug -p     # -DEXTRA_CONF_FILE=debug.conf
+./scripts/build.sh -a peer-node --debug -p       # -DEXTRA_CONF_FILE=debug.conf
 ```
 
 The measurements that put it there rather than in `prj.conf`, all pristine builds, RAM out of 16 KB:
@@ -156,17 +156,17 @@ Worth building when a real bus is being brought up for the first time: `can show
 
 ```sh
 scripts/build.sh -p                       # the gateway; pristine, required after devicetree/Kconfig edits
-scripts/build.sh -a sensor-node -p        # the peer node
-scripts/flash.sh -a sensor-node           # forces -r openocd; both boards default to the uninstalled cube runner
-scripts/console.sh -a sensor-node         # 115200; quit with Ctrl-A then K
+scripts/build.sh -a peer-node -p        # the peer node
+scripts/flash.sh -a peer-node           # forces -r openocd; both boards default to the uninstalled cube runner
+scripts/console.sh -a peer-node         # 115200; quit with Ctrl-A then K
 scripts/probe.sh                          # which ST-LINK and which port is which app
 ```
 
-Every wrapper takes `-a <app>` (or `APP=`) and defaults to `firmware`; the board follows from the app, so `-b` is never needed. **Use `-a` whenever both boards are attached**, which from here on is the normal case: `flash.sh` resolves the app's ST-LINK through `scripts/probes.conf` and passes `--serial`, and refuses rather than flashing at random if it cannot. That refusal is the point — an openocd that picks the wrong probe writes the wrong image to the wrong part and reports success, and on two boards running the same two-node experiment that is a genuinely confusing hour. `STLINK_SERIAL=` still overrides.
+Every wrapper takes `-a <app>` (or `APP=`) and defaults to `gateway`; the board follows from the app, so `-b` is never needed. **Use `-a` whenever both boards are attached**, which from here on is the normal case: `flash.sh` resolves the app's ST-LINK through `scripts/probes.conf` and passes `--serial`, and refuses rather than flashing at random if it cannot. That refusal is the point — an openocd that picks the wrong probe writes the wrong image to the wrong part and reports success, and on two boards running the same two-node experiment that is a genuinely confusing hour. `STLINK_SERIAL=` still overrides.
 
 Enabling CAN on the **gateway** cost **+16 392 B flash** (219 460 → 235 852) and **+908 B RAM** (52 000 → 52 908), on a part with 2 MB and 512 KB. `drivers/can` is 10 804 B of that, split `can_mcan.c` 4392, **`can_shell.c` 4356**, `can_common.c` 1098, with the STM32H7 glue making up the rest — so roughly 40 % of the CAN footprint is a debugging aid.
 
-The **peer node** is the interesting budget, because it is the constrained one: the whole application — CAN, ISO-TP, nanopb, zbus, the BME280 driver, two threads and the shared command handling — is **67 384 B of 128 KB flash (51 %)** and **10 696 B of 16 KB RAM (65 %)**. Comfortable, and it is the absent shell that makes it so. The largest single line item that is *not* the application is deferred logging, at +8748 B flash and +1640 B RAM over `CONFIG_LOG_MODE_MINIMAL` — bought deliberately, because on a node with no shell the console is the only diagnostic there is and minimal mode interleaves concurrent messages within a line. `sensor-node/prj.conf` has the working. Read these off `scripts/build.sh -a sensor-node -t rom_report` rather than trusting the numbers here; they move with every Kconfig change.
+The **peer node** is the interesting budget, because it is the constrained one: the whole application — CAN, ISO-TP, nanopb, zbus, the BME280 driver, two threads and the shared command handling — is **67 384 B of 128 KB flash (51 %)** and **10 696 B of 16 KB RAM (65 %)**. Comfortable, and it is the absent shell that makes it so. The largest single line item that is *not* the application is deferred logging, at +8748 B flash and +1640 B RAM over `CONFIG_LOG_MODE_MINIMAL` — bought deliberately, because on a node with no shell the console is the only diagnostic there is and minimal mode interleaves concurrent messages within a line. `peer-node/prj.conf` has the working. Read these off `scripts/build.sh -a peer-node -t rom_report` rather than trusting the numbers here; they move with every Kconfig change.
 
 ## Bring-up checks
 
@@ -177,8 +177,8 @@ No wiring is needed for any of this — internal loopback proves the controller 
 **1. The bitrate actually applied, on both boards.** `can show` deliberately does *not* print the configured bitrate — it prints the controller's *maximum*, which on the H7 is 1 Mbit/s and will look reassuring while the bus is misconfigured. And the peer node has no shell at all. Check the generated devicetree instead, which is the one place the answer is unambiguous for both:
 
 ```sh
-grep P_bitrate firmware/build/zephyr/include/generated/zephyr/devicetree_generated.h
-grep P_bitrate sensor-node/build/zephyr/include/generated/zephyr/devicetree_generated.h
+grep P_bitrate gateway/build/zephyr/include/generated/zephyr/devicetree_generated.h
+grep P_bitrate peer-node/build/zephyr/include/generated/zephyr/devicetree_generated.h
 ```
 
 Expect `DT_N_S_soc_S_can_4000a000_P_bitrate 500000` from the first and `DT_N_S_soc_S_can_40006400_P_bitrate 500000` from the second — different addresses, **the same number**, which is the thing being checked. A `125000`, or no line at all, means the overlay did not apply; rebuild with `-p`, since devicetree changes need a pristine build.
@@ -226,7 +226,7 @@ Note the subcommand is `can filter add`, not `can add`; a bare `can add` prints 
 
 Then silence.
 
-The timestamps are worth a second look, because two of them confirm design decisions rather than just marking time. Everything to do with bring-up lands inside **10 ms** — the BME280 needs no power-up window, unlike the SCD-40 on the gateway, which is why this node has no `zephyr,deferred-init` and no wait. And the first reading is reported at **1.009 s**, not at 9 ms: the sensor thread published it almost immediately, but `main` was parked in `isotp_recv()` until the heartbeat came due. That one-second gap *is* the up-to-one-beat telemetry latency `src/main.cpp` documents, visible on the console. The node beats once a second and publishes every five, and none of that is logged once the states above stop changing — every remaining message is emitted on a *transition*. There is no shell here to ask it anything, which is the trade `sensor-node/prj.conf` documents.
+The timestamps are worth a second look, because two of them confirm design decisions rather than just marking time. Everything to do with bring-up lands inside **10 ms** — the BME280 needs no power-up window, unlike the SCD-40 on the gateway, which is why this node has no `zephyr,deferred-init` and no wait. And the first reading is reported at **1.009 s**, not at 9 ms: the sensor thread published it almost immediately, but `main` was parked in `isotp_recv()` until the heartbeat came due. That one-second gap *is* the up-to-one-beat telemetry latency `src/main.cpp` documents, visible on the console. The node beats once a second and publishes every five, and none of that is logged once the states above stop changing — every remaining message is emitted on a *transition*. There is no shell here to ask it anything, which is the trade `peer-node/prj.conf` documents.
 
 Line by line, because each one is a check:
 

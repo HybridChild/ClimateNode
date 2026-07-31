@@ -47,7 +47,7 @@ The honest version of the same instinct asks a different question: **why is this
 
 ### This repo, before
 
-`firmware/src/main.cpp` was 713 lines carrying five unrelated jobs: the MQTT session lifecycle, MQTT event handling, protobuf encoding, command semantics, and zbus glue. The protobuf encoder was pure arithmetic — but it lived in a translation unit that could not be compiled without the socket layer and the whole network stack. Nothing in that file was reachable, so nothing in it could be tested.
+`gateway/src/main.cpp` was 713 lines carrying five unrelated jobs: the MQTT session lifecycle, MQTT event handling, protobuf encoding, command semantics, and zbus glue. The protobuf encoder was pure arithmetic — but it lived in a translation unit that could not be compiled without the socket layer and the whole network stack. Nothing in that file was reachable, so nothing in it could be tested.
 
 The problem was never `encode_telemetry()`'s signature. It was that five things shared one file.
 

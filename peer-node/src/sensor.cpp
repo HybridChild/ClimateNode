@@ -1,7 +1,7 @@
 /* Sensor thread: reads the Adafruit BME280 on its own cadence and publishes each
  * reading to the chan_telemetry zbus channel.
  *
- * The gateway's firmware/src/sensor.cpp is the same file for a different sensor,
+ * The gateway's gateway/src/sensor.cpp is the same file for a different sensor,
  * and the two are deliberately NOT shared. What they have in common -- the
  * channels, the period bounds, the reading struct -- is already shared, in
  * app_channels.h; what differs is every line below, because acquisition is

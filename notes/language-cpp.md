@@ -245,14 +245,14 @@ You get the nine lines quoted in §2 and no more. Count them against the 335 tot
 
 *Demonstrates §3 and §5: no `<cXXX>` wrappers, and `-nostdinc++` means they are not merely empty but absent.*
 
-Add the idiomatic C++ spelling to the top of `firmware/src/sensor.cpp`:
+Add the idiomatic C++ spelling to the top of `gateway/src/sensor.cpp`:
 
 ```cpp
 #include <cstdio>
 ```
 
 ```
-firmware/src/sensor.cpp:1:10: fatal error: cstdio: No such file or directory
+gateway/src/sensor.cpp:1:10: fatal error: cstdio: No such file or directory
 ```
 
 Change it to `#include <stdio.h>` and the build succeeds. **Revert both** — `sensor.cpp` needs neither.
@@ -263,7 +263,7 @@ Change it to `#include <stdio.h>` and the build succeeds. **Revert both** — `s
 
 *Demonstrates §6: `ZBUS_*` definitions must stay at global scope.*
 
-In `firmware/src/main.cpp`, move the `ZBUS_LISTENER_DEFINE(telemetry_listener, on_telemetry);` line from below `}  // namespace` to just above it, so it falls inside the anonymous namespace. Compilation still succeeds; the **link** does not:
+In `gateway/src/main.cpp`, move the `ZBUS_LISTENER_DEFINE(telemetry_listener, on_telemetry);` line from below `}  // namespace` to just above it, so it falls inside the anonymous namespace. Compilation still succeeds; the **link** does not:
 
 ```
 ld.bfd: app/libapp.a(sensor.cpp.obj):(._zbus_channel_observation.static.chan_telemetry00_+0x4):
@@ -282,8 +282,8 @@ Read that error closely, because it names the whole mechanism. The complaint com
 
 ```sh
 NM=~/zephyr-sdk-1.0.1/gnu/arm-zephyr-eabi/bin/arm-zephyr-eabi-nm
-$NM firmware/build/zephyr/zephyr.elf | grep -E ' [A-Za-z] (chan_telemetry|telemetry_listener|main)$'
-$NM firmware/build/zephyr/zephyr.elf | grep _GLOBAL__N_1 | head -4
+$NM gateway/build/zephyr/zephyr.elf | grep -E ' [A-Za-z] (chan_telemetry|telemetry_listener|main)$'
+$NM gateway/build/zephyr/zephyr.elf | grep _GLOBAL__N_1 | head -4
 ```
 
 The first command prints plain, undecorated names:
@@ -320,7 +320,7 @@ Zephyr is a C system with C++ available as an application language, and everythi
 
 This guide has no reference half — there is no `docs/` counterpart, because the decisions it would record are visible in the two source files themselves. So:
 
-- **`firmware/src/sensor.cpp` and `firmware/src/main.cpp`** — read them for the idioms in §9 as they actually appear: the anonymous namespace, the `constexpr` constants, the three callbacks of §6, and the one comment explaining why the `ZBUS_*` definitions sit outside the namespace.
+- **`gateway/src/sensor.cpp` and `gateway/src/main.cpp`** — read them for the idioms in §9 as they actually appear: the anonymous namespace, the `constexpr` constants, the three callbacks of §6, and the one comment explaining why the `ZBUS_*` definitions sit outside the namespace.
 - **[`zephyr-build-system-guide.md`](zephyr-build-system-guide.md)** — the companion: what `CONFIG_CPP` and `target_sources` are doing inside the build, and why `node.pb.c` is compiled as C beside them.
 - **[`zbus-guide.md`](zbus-guide.md) §9** — the other side of Exercise 3: what those channel and observer symbols *are*, and why the definitions live in `sensor.cpp`.
 - **`zephyr/lib/cpp/minimal/`** in the workspace — the entire runtime, small enough to read in one sitting. `cpp_new.cpp` is where §7's claim that `operator new` is `malloc` in disguise is settled in about ten lines.

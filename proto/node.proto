@@ -2,7 +2,7 @@
 //
 // THIS FILE IS THE SINGLE SOURCE OF TRUTH. Firmware and host both generate from
 // it; never hand-edit generated code. Firmware generates node.pb.c/.h at build
-// time (firmware/CMakeLists.txt); the host runs host/generate.sh.
+// time (gateway/CMakeLists.txt); the host runs host/generate.sh.
 //
 // This file is the decisions half of the Protobuf documentation: the rationale
 // lives inline in the comments below. For the concepts from first principles --

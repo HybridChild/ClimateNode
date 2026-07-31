@@ -3,7 +3,7 @@
  * Both nodes need adding here, unlike the H753ZI where the board dts already
  * enabled fdcan1 -- `can` is not in nucleo_f072rb.yaml's supported list and
  * can1 arrives from stm32f072.dtsi with status = "disabled". So this file does
- * for CAN what firmware/boards/nucleo_h753zi.overlay does only for the sensor.
+ * for CAN what gateway/boards/nucleo_h753zi.overlay does only for the sensor.
  */
 
 /* Classic CAN 2.0B on bxCAN. Not FDCAN: this part has no CAN-FD at all, which

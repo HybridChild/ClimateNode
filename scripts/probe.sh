@@ -19,9 +19,9 @@
 #
 # Usage:
 #   scripts/probe.sh                        # table of every attached probe
-#   scripts/probe.sh -a sensor-node         # that app's serial and port
-#   scripts/probe.sh -a sensor-node --port  # just the port, for $(...)
-#   scripts/probe.sh -a firmware --serial   # just the serial, for $(...)
+#   scripts/probe.sh -a peer-node         # that app's serial and port
+#   scripts/probe.sh -a peer-node --port  # just the port, for $(...)
+#   scripts/probe.sh -a gateway --serial   # just the serial, for $(...)
 #
 # Exit status: 0 if the requested app resolved, 1 if it did not (with the reason
 # on stderr). macOS only -- it reads the IORegistry, which is where the USB
