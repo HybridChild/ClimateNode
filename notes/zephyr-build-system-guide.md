@@ -8,9 +8,11 @@ This is a teaching document, not project documentation. It explains the concepts
 
 - **§1–§3** — why the build feels strange, the two questions it answers, and the three tools that answer them.
 - **§4–§6** — devicetree (the hardware facts), Kconfig (the software policy), and the bridge that lets the first decide the second. §6 is the heart of the system.
-- **§7–§9** — the build start to finish, how your own generators hook into it, and a worked example following one sensor and one schema all the way through.
-- **§10–§11** — daily habits, and exercises that make the invisible pipeline visible.
-- **§12–§13** — the whole model in a paragraph, and where to go next.
+- **§7–§8** — the build start to finish, and how your own generators hook into it.
+- **§9** — what changes when one repo holds more than one application, and how two of them share code.
+- **§10** — a worked example, following one sensor and one schema all the way through.
+- **§11–§12** — daily habits, and exercises that make the invisible pipeline visible.
+- **§13–§14** — the whole model in a paragraph, and where to go next.
 
 ---
 
@@ -232,10 +234,10 @@ include(nanopb)
 
 zephyr_nanopb_sources(app ${CMAKE_CURRENT_SOURCE_DIR}/../proto/node.proto)
 
-target_sources(app PRIVATE src/main.cpp src/sensor.cpp src/protocol.cpp src/commands.cpp)
+target_sources(app PRIVATE src/main.cpp src/sensor.cpp src/relay.cpp)
 ```
 
-`zephyr_nanopb_sources()` registers a *build rule*: run the generator on `node.proto`, put `node.pb.c`/`node.pb.h` in the build directory, add the `.c` to the `app` target, and add the directory to the include path. Ninja then treats the generated `.c` like any other source, and re-runs the generator whenever the `.proto` changes.
+`zephyr_nanopb_sources()` registers a *build rule*: run the generator on `node.proto`, put `node.pb.c`/`node.pb.h` in the build directory, add the `.c` to the `app` target, and add the directory to the include path. Ninja then treats the generated `.c` like any other source, and re-runs the generator whenever the `.proto` changes. **Note which target all of that attaches to** — `app`, not "the project." §9 is about why that one word decides how two applications can share code.
 
 Two things generalise from this:
 
@@ -244,7 +246,69 @@ Two things generalise from this:
 
 ---
 
-## 9. Worked example: from a node in the tree to bytes on the wire
+## 9. One repo, two applications
+
+Everything so far has assumed one application. Plenty of real projects are not: an application plus a bootloader, a main MCU plus a companion, a shipped image plus a bench variant. This repo is the two-MCU shape — a Cortex-M7 gateway and a Cortex-M0 peer node, in `gateway/` and `peer-node/`, sharing four headers and two translation units out of a third directory, `shared/`.
+
+Zephyr offers four different mechanisms for that, and the interesting part is that the plainest one wins here for a reason you can point at.
+
+### 9.1 What the `app` target actually is
+
+Step 5 of §7 said `include(kernel)` is what creates the `app` target. It is worth being precise about what it creates: **an ordinary CMake library target.** Not a Zephyr abstraction, not a directory, not a manifest — a target, of the same kind you would make yourself with `add_library()`.
+
+That is why `target_sources(app PRIVATE …)` is plain CMake with no Zephyr magic in it, and why it will accept **any path**, including one that leaves the application directory entirely:
+
+```cmake
+set(SHARED ${CMAKE_CURRENT_SOURCE_DIR}/../shared)
+
+target_sources(app PRIVATE src/main.cpp src/sensor.cpp src/relay.cpp
+               ${SHARED}/protocol.cpp ${SHARED}/commands.cpp)
+target_include_directories(app PRIVATE ${SHARED})
+```
+
+The object files are the giveaway that nothing clever is happening. CMake names an object after its source path, and for a source from outside the project it mirrors the whole absolute path underneath the target's directory:
+
+```
+gateway/build/CMakeFiles/app.dir/src/main.cpp.obj
+gateway/build/CMakeFiles/app.dir/Users/.../shared/protocol.cpp.obj
+```
+
+Read that second line as what it is: `protocol.cpp` was compiled **into this application's own target**, not linked in from a library built somewhere else. Build the other app and it happens again, separately, in that app's build tree. One source file, two object files, and no shared binary anywhere — which is the only arrangement that *could* work here, since the two objects are for different instruction sets.
+
+### 9.2 Four mechanisms, and what each one buys
+
+| Mechanism | What it is | Buys you | Costs |
+|---|---|---|---|
+| **`target_sources` with an outside path** | plain CMake, as above | nothing to set up; the file is simply part of each app | no isolation — same flags, no Kconfig of its own |
+| **`zephyr_library()`** | a separate CMake library, linked into the image | its own compile options, and a Kconfig symbol that can switch it per app | a *different target*, so include paths and generated headers must be plumbed to it by hand |
+| **A Zephyr module** | a directory with `zephyr/module.yml`, fetched by west | shares across *repos*, versioned on its own, contributes its own `Kconfig` and DT bindings | a second repo and a manifest entry to maintain |
+| **sysbuild** | builds *several images* in one invocation, with `SB_CONFIG_*` above them | app + MCUboot, or two cores, configured together | a whole extra configuration layer |
+
+The last one is a different axis and worth separating out, because the name suggests otherwise: **sysbuild is not about sharing source, it is about building more than one image at once.** This repo builds one app at a time on purpose — the two boards are flashed independently, and `scripts/build.sh -a <app>` is the whole of its multi-app story.
+
+Note also that you have already met mechanism three. **nanopb is a Zephyr module** (§8) — that is exactly what `${ZEPHYR_BASE}/modules/nanopb` is. So the module system is not exotic; it is what the thing you are calling into is built as.
+
+### 9.3 Why the plainest mechanism wins here
+
+A `zephyr_library` looks like the tidier choice, and it is the wrong one, for a concrete reason: **a generated header is a property of a target, not of a directory.**
+
+`zephyr_nanopb_sources(app …)` attaches both the generated `node.pb.c` *and* its include directory to `app`. `shared/protocol.h` opens with `#include <node.pb.h>`. Move `protocol.cpp` into a `zephyr_library` and that library is a different target — it does not inherit `app`'s include directories, so the generated header is simply not found. You can fix it, by generating per-library or exporting the include directory across targets, but you would be buying plumbing with no benefit attached: both apps want the same flags for these files, and neither needs a Kconfig switch to turn them off.
+
+The corollary is that **each app runs the generator for itself.** Two build trees, two `node.pb.c`, one `.proto`. That is not duplication worth removing — it is §8's discipline applied twice, and it is what makes it impossible for one app to be built against a stale copy of the schema.
+
+### 9.4 The one thing the build system will not check for you
+
+CMake is perfectly happy to let application A reach into application B's directory for a file. It compiles, and nothing warns you. What it costs is not mechanical but architectural: the dependency graph now says *A depends on B*, when the truth is that both depend on a contract neither one owns.
+
+The rule that avoids it is simple enough to apply without thinking: **a file's home is decided by how many applications link it.** Two means `shared/`. One means that app's own `src/`. And nothing in `shared/` may include anything from an application.
+
+That last clause is the only one with any teeth, and it has more than you would expect. Look at the include paths an app actually compiles with — `shared/` is on them, and **the app's own `src/` is not on them at all.** Its own sources reach their neighbours only through the C preprocessor's rule that a quoted `#include` is searched for first in the directory of the file doing the including. Which means a header in `shared/` cannot reach `gateway/src/relay.h` even when the *gateway* is what is being built: the search starts in `shared/`, where the including file lives, and `gateway/src` is on no `-I` flag anywhere. §12's last exercise does this on purpose and reads the error.
+
+So the layout is not merely a convention that a reviewer has to defend. In the direction that matters, it is enforced by include paths — and the third consumer, `tests/`, is the payoff: a suite that compiles `shared/protocol.cpp` is testing the same file both boards run, not a copy of it.
+
+---
+
+## 10. Worked example: from a node in the tree to bytes on the wire
 
 Let us follow this project's sensor all the way through, because it exercises every concept above. The theme to watch for is the **compile-time / runtime boundary** — almost everything happens during the build.
 
@@ -284,7 +348,7 @@ Same discipline as steps 2–3 above: the input is versioned, the output is not,
 
 ---
 
-## 10. Working with the system day to day
+## 11. Working with the system day to day
 
 A few practical habits follow directly from the model:
 
@@ -296,9 +360,9 @@ A few practical habits follow directly from the model:
 
 ---
 
-## 11. Exercising the build system
+## 12. Exercising the build system
 
-Everything above is claims about a pipeline you cannot see. All four exercises below make one part of it visible, and none of them needs the board — only the Mac and a build:
+Everything above is claims about a pipeline you cannot see. All six exercises below make one part of it visible, and none of them needs the board — only the Mac and a build:
 
 ```sh
 ./scripts/build.sh          # incremental; -p forces pristine
@@ -360,17 +424,18 @@ touch proto/node.proto
 ```
 
 ```
-[1/11] Running C++ protocol buffer compiler using nanopb plugin on .../proto/node.proto
-[2/11] Building C object CMakeFiles/app.dir/node.pb.c.obj
-[3/11] Building CXX object CMakeFiles/app.dir/src/commands.cpp.obj
-[4/11] Building CXX object CMakeFiles/app.dir/src/protocol.cpp.obj
-[5/11] Building CXX object CMakeFiles/app.dir/src/main.cpp.obj
-[6/11] Linking CXX static library app/libapp.a
+[1/12] Running C++ protocol buffer compiler using nanopb plugin on .../proto/node.proto
+[2/12] Building C object CMakeFiles/app.dir/node.pb.c.obj
+[3/12] Building CXX object CMakeFiles/app.dir/.../shared/protocol.cpp.obj
+[4/12] Building CXX object CMakeFiles/app.dir/.../shared/commands.cpp.obj
+[5/12] Building CXX object CMakeFiles/app.dir/src/relay.cpp.obj
+[6/12] Building CXX object CMakeFiles/app.dir/src/main.cpp.obj
+[7/12] Linking CXX static library app/libapp.a
 ...
-[11/11] Linking CXX executable zephyr/zephyr.elf
+[12/12] Linking CXX executable zephyr/zephyr.elf
 ```
 
-Eleven steps out of the 335 a pristine build runs. Note carefully what is **absent**: CMake never re-ran (no configuration changed), and `sensor.cpp` was not rebuilt — it is the only application source that never sees `node.pb.h`, because acquisition has no business knowing the wire format.
+Twelve steps out of the 343 a pristine build runs. Note carefully what is **absent**: CMake never re-ran (no configuration changed), and `sensor.cpp` was not rebuilt — it is the only application source that never sees `node.pb.h`, because acquisition has no business knowing the wire format. Steps 3 and 4 are §9's out-of-tree sources, recognisable by the mirrored absolute path.
 
 **Proves:** the generator is an ordinary build rule with ordinary dependency tracking, and the schema genuinely cannot go stale — the only way to get `node.pb.c` is to run the generator on the current `.proto`. It also shows the acquisition/transport boundary from a completely different angle: `sensor.cpp` does not rebuild because it has never heard of the wire format.
 
@@ -391,15 +456,96 @@ The reason is §5.3's second route: `autoconf.h` is force-included into *every* 
 
 **Proves:** editing a `.cpp` is a Ninja-only event while editing `prj.conf` is a configuration event that re-runs the whole front half of §7. That asymmetry is the daily, felt consequence of "CMake thinks, Ninja executes", and it is why the pristine-build advice attaches to devicetree and Kconfig changes specifically.
 
+### Exercise 5 — One source, two instruction sets
+
+*Demonstrates §9.1: `shared/` is source shared between targets, not a library shared between images.*
+
+Build both applications, then ask each build tree how it compiled the *same* file:
+
+```sh
+./scripts/build.sh && ./scripts/build.sh -a peer-node
+
+for app in gateway peer-node; do
+  python3 -c "
+import json
+d = json.load(open('$app/build/compile_commands.json'))
+e = [x for x in d if x['file'].endswith('shared/protocol.cpp')][0]
+print('$app:', *[t for t in e['command'].split() if t.startswith('-mcpu')])
+"
+done
+```
+
+```
+gateway: -mcpu=cortex-m7
+peer-node: -mcpu=cortex-m0
+```
+
+One file, two entirely different processors. Now look at where each object landed:
+
+```sh
+find gateway/build/CMakeFiles/app.dir -name 'protocol.cpp.obj'
+```
+
+```
+gateway/build/CMakeFiles/app.dir/Users/.../shared/protocol.cpp.obj
+```
+
+**Proves:** nothing is shared at the binary level, and nothing could be — a Cortex-M0 cannot run Cortex-M7 code. `shared/` is a directory of *source*, compiled from scratch into each application's own `app` target, which is exactly what §9.1 claims and exactly why the plain `target_sources` mechanism is sufficient. It also shows why the two apps each run the nanopb generator for themselves: the generated `.c` beside these objects has to be compiled for its own part too.
+
+### Exercise 6 — Break the dependency direction on purpose
+
+*Demonstrates §9.4: the layout is enforced by include paths, not by good intentions.*
+
+Reach from shared code into an application's private header. Add one line to `shared/protocol.h`, just below its `#include <node.pb.h>`:
+
+```c
+#include "relay.h"   /* the gateway's own header — a deliberate violation */
+```
+
+Now build the app that *owns* `relay.h`:
+
+```sh
+./scripts/build.sh
+```
+
+```
+In file included from .../shared/protocol.cpp:3:
+.../shared/protocol.h:29:10: fatal error: relay.h: No such file or directory
+```
+
+The **gateway** failed — the app the header belongs to. That is the interesting part, and the reason is worth slowing down for. Ask what `shared/protocol.cpp` actually compiles with:
+
+```sh
+python3 -c "
+import json
+d = json.load(open('gateway/build/compile_commands.json'))
+e = [x for x in d if x['file'].endswith('shared/protocol.cpp')][0]
+print(*[t for t in e['command'].split() if t.startswith('-I') and 'Ethernet' in t], sep='\n')
+"
+```
+
+```
+-I.../gateway/build
+-I.../gateway/../shared
+-I.../gateway/build/zephyr/include/generated/zephyr
+-I.../gateway/build/zephyr/include/generated
+```
+
+`shared/` is there. **`gateway/src/` is not** — it is on no `-I` flag at all. The application's own sources reach their neighbours only through the C preprocessor's rule that a quoted `#include` is searched for *first in the directory of the file doing the including*: `relay.cpp` finds `relay.h` because they sit side by side. A header in `shared/` gets no such help, because the search starts where *it* lives.
+
+Revert with `git checkout shared/protocol.h`.
+
+**Proves:** "nothing in `shared/` may depend on an application" is not a convention a reviewer has to police — it is a rule the preprocessor applies, and it holds even for the app that owns the header. The inverse also holds and is what makes the arrangement useful: both apps *can* reach into `shared/`, because that is the one directory deliberately placed on both include paths. The dependency direction of §9.4 is built out of exactly those two facts.
+
 ---
 
-## 12. The model in one paragraph
+## 13. The model in one paragraph
 
 A Zephyr build is a configuration system that generates code and then compiles it. Two independent systems answer two independent questions: **devicetree** describes the hardware (facts, from the board), and **Kconfig** selects the software (policy, your choice). The devicetree is parsed into `edt.pickle`, which becomes both the C macros your code reads and the values that decide which drivers Kconfig turns on — that shared parsed tree is the bridge between the two halves. CMake runs this entire reconciliation up front and hands a static build plan to Ninja, which does the actual compiling. Your own generators plug into the same seam — a build rule producing sources into `build/`, tracked like any other dependency. And because it all resolves before the target boots, your hardware arrives in `main()` already described, already configured, and already bound to its driver.
 
-## 13. Where to go next
+## 14. Where to go next
 
 - **[`build-system-overview.md`](../docs/build-system-overview.md)** — the reference half of this guide: the artifact-by-artifact table for *this* build, with real paths and sizes, including the nanopb row §8 describes.
 - **`gateway/build/zephyr/zephyr.dts` and `.config`** — the two files Exercises 1 and 2 read. Skimming them once, in full, is worth more than another page of prose about what they contain.
-- **[`language-cpp.md`](language-cpp.md)** — the other half of what `target_sources` does here, and why one of this app's three compiled sources is C while two are C++.
-- **Zephyr's own build documentation** — the `west build` reference and the *Application Development* chapter, for `CMakeLists.txt` options this project never needed (`SHIELD`, `EXTRA_CONF_FILE`, sysbuild).
+- **[`language-cpp.md`](language-cpp.md)** — the other half of what `target_sources` does here, and why exactly one of the gateway's six compiled sources is C while the other five are C++.
+- **Zephyr's own build documentation** — the `west build` reference and the *Application Development* chapter. Worth reading on the two things §9 only sketches: **sysbuild**, if you ever need several images configured together, and `zephyr_library*()`, if shared code ever grows a Kconfig of its own. `EXTRA_CONF_FILE` you have already used — it is what `build.sh --debug` passes.

@@ -28,7 +28,7 @@ target_sources(app PRIVATE src/main.cpp src/sensor.cpp   # `app` target is creat
 target_include_directories(app PRIVATE ${SHARED})
 ```
 
-Note the two sources from outside the app directory. `target_sources` takes any path, so sharing a translation unit between two applications needs no library and no install step — but the *generated* `node.pb.h` those two files include comes from the `zephyr_nanopb_sources(app …)` line above, which is this app's alone. Each app therefore regenerates the schema for itself; `shared/` carries no build rules at all.
+Note the two sources from outside the app directory. `target_sources` takes any path, so sharing a translation unit between two applications needs no library and no install step — but the *generated* `node.pb.h` those two files include comes from the `zephyr_nanopb_sources(app …)` line above, which is this app's alone. Each app therefore regenerates the schema for itself; `shared/` carries no build rules at all. Why that beats a `zephyr_library`, a Zephyr module or sysbuild is in [`zephyr-build-system-guide.md`](../notes/zephyr-build-system-guide.md) §9.
 
 `find_package(Zephyr)` loads `share/zephyr-package/cmake/ZephyrConfig.cmake`, which prepends `zephyr/cmake/modules` to `CMAKE_MODULE_PATH` and `include(zephyr_default)`.
 

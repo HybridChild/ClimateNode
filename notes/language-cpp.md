@@ -2,7 +2,7 @@
 
 *A from-first-principles guide to what actually changes when your application is C++ instead of C.*
 
-This is a teaching document, not project documentation. It explains the concepts, the machinery, and the sharp edges of writing a Zephyr application in C++, in the order that makes them easiest to learn. It uses this repository — a CO₂ sensor node built from four C++ translation units — only as a running example to keep the ideas concrete. For how the build system underneath works at all, see its companion, [`zephyr-build-system-guide.md`](zephyr-build-system-guide.md).
+This is a teaching document, not project documentation. It explains the concepts, the machinery, and the sharp edges of writing a Zephyr application in C++, in the order that makes them easiest to learn. It uses this repository — a CO₂ sensor node built from five C++ translation units — only as a running example to keep the ideas concrete. For how the build system underneath works at all, see its companion, [`zephyr-build-system-guide.md`](zephyr-build-system-guide.md).
 
 **The shape of this document:**
 
@@ -45,24 +45,26 @@ On the CMake side there is nothing special. Give your sources a `.cpp` extension
 target_sources(app PRIVATE src/main.cpp src/sensor.cpp src/relay.cpp)
 ```
 
-In the build log you will see the payoff. These are the C++-relevant lines out of a 335-step pristine build of this app:
+In the build log you will see the payoff. These are the C++-relevant lines out of a 343-step pristine build of this app:
 
 ```
-[16/335] Building C   object CMakeFiles/app.dir/node.pb.c.obj
-[17/335] Building CXX object zephyr/CMakeFiles/zephyr.dir/lib/cpp/minimal/cpp_vtable.cpp.obj
-[20/335] Building CXX object zephyr/CMakeFiles/zephyr.dir/lib/cpp/minimal/cpp_new.cpp.obj
-[26/335] Building CXX object CMakeFiles/app.dir/src/protocol.cpp.obj
-[27/335] Building CXX object CMakeFiles/app.dir/src/commands.cpp.obj
-[30/335] Building CXX object CMakeFiles/app.dir/src/sensor.cpp.obj
-[45/335] Building CXX object CMakeFiles/app.dir/src/main.cpp.obj
-[282/335] Linking CXX static library app/libapp.a
-[335/335] Linking CXX executable zephyr/zephyr.elf
+[18/343] Building C   object CMakeFiles/app.dir/node.pb.c.obj
+[19/343] Building CXX object zephyr/CMakeFiles/zephyr.dir/lib/cpp/minimal/cpp_vtable.cpp.obj
+[20/343] Building CXX object zephyr/CMakeFiles/zephyr.dir/lib/cpp/minimal/cpp_new.cpp.obj
+[25/343] Building CXX object CMakeFiles/app.dir/.../shared/commands.cpp.obj
+[26/343] Building CXX object CMakeFiles/app.dir/.../shared/protocol.cpp.obj
+[27/343] Building CXX object CMakeFiles/app.dir/src/sensor.cpp.obj
+[35/343] Building CXX object CMakeFiles/app.dir/src/relay.cpp.obj
+[46/343] Building CXX object CMakeFiles/app.dir/src/main.cpp.obj
+[290/343] Linking CXX static library app/libapp.a
+[343/343] Linking CXX executable zephyr/zephyr.elf
 ```
 
-Nine lines out of 335 — the other 326 are C. Three details in there are the whole of this document in miniature:
+Ten lines out of 343 — the other 333 are C. Four details in there are the whole of this document in miniature:
 
 - **`lib/cpp/minimal/…`** is Zephyr's C++ runtime compiling itself into your image. Two files: vtable support and `operator new`. That is very nearly the entire runtime you get, and §3 is about what it does and does not contain.
-- **`node.pb.c` is built as a C object inside the app target.** Generated nanopb code is C and stays C, sitting in the same target as two C++ files. §10 returns to this.
+- **`node.pb.c` is built as a C object inside the app target.** Generated nanopb code is C and stays C, sitting in the same target as five C++ files. §10 returns to this.
+- **Two of those C++ objects have a long path.** `commands.cpp` and `protocol.cpp` live in `shared/`, outside the application, and are compiled into this app's target from there — the peer node compiles the same two files for a Cortex-M0. See [`zephyr-build-system-guide.md`](zephyr-build-system-guide.md) §9.
 - **Only your own sources are CXX.** C++ here is an application language grafted onto a C system, which is §1's founding claim, visible in the build log.
 
 Because `CONFIG_CPP` is a Kconfig change, it ripples through generated configuration — do a pristine build (`-p`) the first time you add it.
