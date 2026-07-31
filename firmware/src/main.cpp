@@ -1,16 +1,18 @@
 /* MQTT client node: publishes SCD-40 readings to a Mosquitto broker on the
- * Raspberry Pi, and answers commands from it.
+ * Raspberry Pi, answers commands from it, and relays a peer node's traffic.
  *
- * This file owns the MQTT session and nothing else. The application is four
+ * This file owns the MQTT sessions and nothing else. The application is five
  * translation units, each with one responsibility:
  *
  *   sensor.cpp     acquisition — owns the SCD-40, the sample period, the bounds
  *   protocol.cpp   the wire format — the only place internal types meet protobuf
  *   commands.cpp   command semantics — dispatch, duplicate suppression, identity
+ *   relay.cpp      the CAN side — heartbeat liveness, ISO-TP in both directions
  *   main.cpp       this file: connect, poll, publish, reconnect
  *
- * sensor.cpp and main.cpp meet on the zbus channels declared in app_channels.h —
- * see that header for why the two channels use different observer styles.
+ * sensor.cpp and main.cpp meet on the zbus channels declared in app_channels.h;
+ * relay.cpp and main.cpp meet on the ones in relay.h. See those headers for why
+ * each channel uses the observer style it does.
  *
  * The split is what makes the logic testable without hardware: protocol.cpp and
  * commands.cpp carry no socket or device dependency, so tests/ compiles them on
@@ -25,14 +27,33 @@
  *                      "offline" published by the BROKER via the Last Will if we
  *                      drop without a clean DISCONNECT
  *
+ *   node/2/...         the same four, for the F072RB peer node reached over CAN.
+ *                      Their payloads are produced and consumed by that node;
+ *                      this file only carries them (relay.h).
+ *
  * Telemetry, Command and Ack payloads are nanopb-encoded Protobuf, generated from
  * proto/node.proto at build time. `status` stays plain ASCII: the broker itself
  * writes it as the will, so firmware cannot encode it.
  *
- * Structure: main() owns a forever loop of "connect, serve until dropped, back
- * off, retry". Reconnect is not error handling bolted on the side — it is the
- * shape of the program, because a node that cannot survive a cable pull is not
- * finished (see the README's learning goals).
+ * ---------------------------------------------------------------------------
+ * Structure: N sessions, one thread, one wait
+ * ---------------------------------------------------------------------------
+ *
+ * Every piece of connection state lives in a `struct node_session`, and main()
+ * steps an array of them. Each session is independently in one of three states —
+ * waiting out a backoff, awaiting its CONNACK, or serving — so one can be
+ * reconnecting while another publishes.
+ *
+ * There is still exactly ONE thread and ONE wait. The poll set is assembled from
+ * whichever sessions currently have a socket, plus the eventfds of the sessions
+ * that are actually serving, and the timeout is the nearest deadline across all
+ * of them. The alternative — a thread per session — would keep the old
+ * run_session() nearly unchanged at the cost of another stack and the loss of
+ * the "one wait" property this program is built around.
+ *
+ * Reconnect is not error handling bolted on the side; it is the shape of the
+ * program, because a node that cannot survive a cable pull is not finished (see
+ * the README's learning goals).
  *
  * The interface itself needs no code: net_config applies the static IPv4 address
  * at boot from prj.conf.
@@ -63,8 +84,7 @@ LOG_MODULE_REGISTER(node, LOG_LEVEL_INF);
 
 /* This app's half of the identity seam commands.h declares. At global scope and
  * externally linked on purpose: commands.cpp refers to it by name, and internal
- * linkage would stop the two from meeting (notes/language-cpp.md §6). The topic
- * literals below have to agree with it -- both say node 1. */
+ * linkage would stop the two from meeting (notes/language-cpp.md §6). */
 const char *const kNodeClientId = "nucleo-1";
 
 namespace {
@@ -79,16 +99,9 @@ constexpr const char *kTopicCommand = "node/1/command";
 constexpr const char *kTopicAck = "node/1/ack";
 constexpr const char *kTopicStatus = "node/1/status";
 
-/* The peer node's topics. Published by this client, on this connection, for now
- * — nothing in MQTT requires the publisher of the node/2 topics to *be* node 2.
- *
- * That is a deliberate intermediate rather than the end state. A second MQTT
- * connection buys exactly one thing: MQTT 3.1.1 allows one Last Will per
- * connection, so only a client that *is* node 2 can have the broker flip
- * node/2/status to offline when the GATEWAY dies. Everything else here is
- * identical either way, because the broker can never observe the peer's own
- * liveness — "peer dead, gateway alive" is firmware-published in both designs.
- * Deferred so that this step can be verified on its own. */
+/* The peer node's topics. Its payloads are produced by the F072RB and carried
+ * here; nothing in MQTT requires the publisher of a topic to *be* the thing the
+ * topic names, and the peer has no IP stack at all. */
 constexpr const char *kPeerTopicTelemetry = "node/2/telemetry";
 constexpr const char *kPeerTopicCommand = "node/2/command";
 constexpr const char *kPeerTopicAck = "node/2/ack";
@@ -106,32 +119,103 @@ constexpr uint16_t kKeepaliveSec = 60;
 constexpr int kBackoffMinMs = 1000;
 constexpr int kBackoffMaxMs = 30000;
 
+/* How long a CONNECT may go unanswered before we give up on it. */
+constexpr int kConnackTimeoutMs = 5000;
+
+/* ---- the session ---------------------------------------------------------- */
+
+enum session_state {
+	/* Not connected; waiting for `retry_at`. Holds no socket, so it
+	 * contributes nothing to the poll set. */
+	SESSION_IDLE,
+	/* CONNECT sent, CONNACK outstanding, deadline in `connack_due`. */
+	SESSION_CONNECTING,
+	/* CONNACK received. The only state in which anything may be published. */
+	SESSION_SERVING,
+};
+
+/* Everything that used to be a file-scope singleton, and one thing that used to
+ * be worse than that.
+ *
+ * The will structures are the reason this is a struct rather than four parallel
+ * arrays. They were function-local `static`s inside client_setup(), which is
+ * correct for exactly one client and silently wrong for two: both would register
+ * the same will topic, so one status topic would get two wills and the other
+ * none. Nothing would report it, and it is observable only when a node actually
+ * dies. Moving them in here is the fix, not a tidy-up.
+ *
+ * `next_message_id` moves in for a smaller but similar reason: MQTT packet ids
+ * are scoped to a connection, so one shared counter was wrong on principle even
+ * while it worked. */
+struct node_session {
+	/* Configuration, fixed at startup. */
+	const char *client_id;
+	const char *topic_telemetry;
+	const char *topic_ack;
+	const char *topic_status;
+	/* Command topics this session subscribes to. More than one because a
+	 * single connection can legitimately serve several nodes' command
+	 * topics — which is exactly what this gateway does today. */
+	const char *command_topics[2];
+	uint8_t command_topic_count;
+
+	/* MQTT state. */
+	struct mqtt_client client;
+	struct sockaddr_in broker;
+	uint8_t rx[256];
+	uint8_t tx[256];
+	struct mqtt_topic will_topic;
+	struct mqtt_utf8 will_message;
+	uint16_t next_message_id;
+
+	/* Written by the event callback, read by the loop. */
+	volatile bool connected;
+	volatile bool connect_failed;
+
+	enum session_state state;
+	int backoff_ms;
+	int64_t retry_at;
+	int64_t connack_due;
+};
+
+/* One session today. Everything above is already plural; adding the peer's own
+ * identity is a matter of another row here and one constant below. */
+node_session sessions[] = {
+	{
+		.client_id = kNodeClientId,
+		.topic_telemetry = kTopicTelemetry,
+		.topic_ack = kTopicAck,
+		.topic_status = kTopicStatus,
+		.command_topics = {kTopicCommand, kPeerTopicCommand},
+		.command_topic_count = 2,
+	},
+};
+
+constexpr size_t kSessionCount = ARRAY_SIZE(sessions);
+
+/* Which session carries which node's topics. Both are session 0 while there is
+ * only one connection; separating the *names* now is what lets the second
+ * identity be a one-line change rather than a hunt through the file. */
+constexpr uint8_t kOwnSession = 0;
+constexpr uint8_t kPeerSession = 0;
+
 /* ---- state ---------------------------------------------------------------- */
-
-uint8_t rx_buffer[256];
-uint8_t tx_buffer[256];
-struct mqtt_client client;
-struct sockaddr_in broker;
-
-/* Set from the MQTT event callback, read by the serve loop. */
-volatile bool connected;
-volatile bool connect_failed;
 
 /* How the sensor thread wakes this one.
  *
- * The serve loop must wait on two unrelated things at once: bytes from the
- * broker, and a fresh reading from the bus. zsock_poll() only understands file
- * descriptors, and a zbus channel is not one — so the zbus listener writes to an
- * eventfd, which *is* a descriptor and can sit in the same poll set as the
- * socket. That keeps the loop fully blocking: no timed wakeups just to check
- * whether the bus has something.
+ * The serve loop must wait on several unrelated things at once: bytes from the
+ * broker, and fresh work from two other threads. zsock_poll() only understands
+ * file descriptors, and a zbus channel is not one — so each zbus listener writes
+ * to an eventfd, which *is* a descriptor and can sit in the same poll set as the
+ * sockets. That keeps the loop fully blocking: no timed wakeups just to check
+ * whether a bus has something.
  *
- * -1 until main() creates it. The sensor thread starts at boot and may publish
- * before then; the listener checks, and a reading lost before the network is
- * even up is of no consequence. */
+ * -1 until main() creates them. The producer threads start at boot and may
+ * publish before then; the listeners check, and a reading lost before the
+ * network is even up is of no consequence. */
 int telemetry_evt_fd = -1;
 
-/* One eventfd per relay channel, three more descriptors in the same poll set.
+/* One eventfd per relay channel.
  *
  * A single shared fd would have been cheaper and wrong: it would only say
  * "something happened", and since zbus_chan_read() returns the channel's current
@@ -144,8 +228,8 @@ int relay_status_evt_fd = -1;
 
 /* ---- MQTT plumbing -------------------------------------------------------- */
 
-/* Defined below, after the client struct it operates on. */
-int publish(const char *topic, const uint8_t *payload, size_t payload_len,
+/* Defined below, after the session struct it operates on. */
+int publish(node_session *s, const char *topic, const uint8_t *payload, size_t payload_len,
 	    mqtt_qos qos, bool retain);
 
 /* Does an MQTT topic (length-delimited, not NUL-terminated) equal this literal?
@@ -157,11 +241,10 @@ bool topic_is(const struct mqtt_utf8 *topic, const char *literal)
 	return topic->size == n && memcmp(topic->utf8, literal, n) == 0;
 }
 
-/* Encode and publish an Ack on a given topic. Best effort: a failure here is
- * logged, not propagated, because the command itself may already have taken
- * effect. */
-void publish_ack(const char *topic, uint32_t seq, node_AckStatus status, const char *detail,
-		 const node_DeviceInfo *info)
+/* Encode and publish an Ack. Best effort: a failure here is logged, not
+ * propagated, because the command itself may already have taken effect. */
+void publish_ack(node_session *s, const char *topic, uint32_t seq, node_AckStatus status,
+		 const char *detail, const node_DeviceInfo *info)
 {
 	uint8_t buf[node_Ack_size];
 	size_t len = encode_ack(seq, status, detail, info, buf, sizeof(buf));
@@ -169,14 +252,7 @@ void publish_ack(const char *topic, uint32_t seq, node_AckStatus status, const c
 	if (len == 0) {
 		return;
 	}
-	publish(topic, buf, len, MQTT_QOS_1_AT_LEAST_ONCE, false);
-}
-
-/* This node's own Ack topic — the overwhelming majority of calls. */
-void send_ack(uint32_t seq, node_AckStatus status, const char *detail,
-	      const node_DeviceInfo *info)
-{
-	publish_ack(kTopicAck, seq, status, detail, info);
+	publish(s, topic, buf, len, MQTT_QOS_1_AT_LEAST_ONCE, false);
 }
 
 /* Hand a command addressed to the peer node to the relay, unmodified.
@@ -195,8 +271,9 @@ void forward_to_peer(const uint8_t *payload, size_t len, uint32_t sequence)
 		/* Cannot happen while node_Command_size fits (relay.cpp
 		 * static_asserts it), but the buffer is not the schema's to
 		 * guarantee. */
-		publish_ack(kPeerTopicAck, sequence, node_AckStatus_ACK_STATUS_FAILED,
-			    "command too large to relay", nullptr);
+		publish_ack(&sessions[kPeerSession], kPeerTopicAck, sequence,
+			    node_AckStatus_ACK_STATUS_FAILED, "command too large to relay",
+			    nullptr);
 		return;
 	}
 
@@ -211,8 +288,8 @@ void forward_to_peer(const uint8_t *payload, size_t len, uint32_t sequence)
 
 	if (rc != 0) {
 		LOG_ERR("chan_relay_command publish failed: %d", rc);
-		publish_ack(kPeerTopicAck, sequence, node_AckStatus_ACK_STATUS_FAILED,
-			    "relay busy", nullptr);
+		publish_ack(&sessions[kPeerSession], kPeerTopicAck, sequence,
+			    node_AckStatus_ACK_STATUS_FAILED, "relay busy", nullptr);
 	}
 }
 
@@ -224,7 +301,7 @@ void forward_to_peer(const uint8_t *payload, size_t len, uint32_t sequence)
  * decoded as the next packet's fixed header and desync the connection — an
  * oversized command would corrupt the stream, not merely be truncated. So we
  * keep the first sizeof(payload)-1 bytes and drain the remainder. */
-void handle_incoming_publish(struct mqtt_client *c,
+void handle_incoming_publish(node_session *s, struct mqtt_client *c,
 			     const struct mqtt_publish_param *pub)
 {
 	uint8_t payload[128];
@@ -261,7 +338,11 @@ void handle_incoming_publish(struct mqtt_client *c,
 	/* Commands are QoS 1, so the broker expects a PUBACK from us. Without it
 	 * the broker redelivers (with DUP set) until it gets one. Send it before
 	 * doing any work: the PUBACK is a transport-level "I have the bytes", not
-	 * an application-level "I executed it" — that is what the Ack is for. */
+	 * an application-level "I executed it" — that is what the Ack is for.
+	 *
+	 * With a relayed command that distinction stops being academic: this
+	 * PUBACK says the *gateway* has the bytes and nothing about whether the
+	 * peer ever saw them. QoS is hop-by-hop; the Ack is end to end. */
 	if (pub->message.topic.qos == MQTT_QOS_1_AT_LEAST_ONCE) {
 		struct mqtt_puback_param puback = {};
 
@@ -269,11 +350,11 @@ void handle_incoming_publish(struct mqtt_client *c,
 		mqtt_publish_qos1_ack(c, &puback);
 	}
 
-	/* Which node was this addressed to? Two command topics arrive on one
-	 * connection, and the topic is the only thing that distinguishes them —
-	 * the payloads are the same message type, and nothing inside a Command
-	 * says which node it is for. Exactly the point notes/protobuf-guide.md §4
-	 * makes about the topic being part of the contract. */
+	/* Which node was this addressed to? The topic is the only thing that
+	 * distinguishes them — the payloads are the same message type, and
+	 * nothing inside a Command says which node it is for. Exactly the point
+	 * notes/protobuf-guide.md §4 makes about the topic being part of the
+	 * contract. */
 	bool for_peer = topic_is(&pub->message.topic.topic, kPeerTopicCommand);
 
 	/* From here the transport is done with the bytes: protocol.cpp decides
@@ -285,11 +366,11 @@ void handle_incoming_publish(struct mqtt_client *c,
 		/* sequence 0: we could not read one, so there is nothing to
 		 * correlate against. The host learns the message was garbage.
 		 *
-		 * Answered by the gateway even when it was addressed to the
-		 * peer, and that is right: bytes that are not a Command cannot
-		 * be forwarded as one, and the gateway is the only party in a
+		 * Answered by the gateway even when addressed to the peer, and
+		 * that is right: bytes that are not a Command cannot be
+		 * forwarded as one, and the gateway is the only party in a
 		 * position to say so. */
-		publish_ack(for_peer ? kPeerTopicAck : kTopicAck, 0,
+		publish_ack(s, for_peer ? kPeerTopicAck : s->topic_ack, 0,
 			    node_AckStatus_ACK_STATUS_MALFORMED,
 			    oversized ? "payload too large" : "decode failed", nullptr);
 		return;
@@ -304,42 +385,50 @@ void handle_incoming_publish(struct mqtt_client *c,
 
 	handle_command(cmd, &result);
 
-	send_ack(cmd.sequence, result.status, result.detail[0] != '\0' ? result.detail : nullptr,
-		 result.has_info ? &result.info : nullptr);
+	publish_ack(s, s->topic_ack, cmd.sequence, result.status,
+		    result.detail[0] != '\0' ? result.detail : nullptr,
+		    result.has_info ? &result.info : nullptr);
 }
 
+/* One callback for every session, so it has to recover which one it was invoked
+ * for. mqtt_client's final member is a `void *user_data` the library never
+ * touches (include/zephyr/net/mqtt.h), set to the owning session in
+ * client_setup(). One cast, no CONTAINER_OF, and no dependence on the session
+ * struct's layout. */
 void mqtt_evt_handler(struct mqtt_client *const c, const struct mqtt_evt *evt)
 {
+	node_session *s = static_cast<node_session *>(c->user_data);
+
 	switch (evt->type) {
 	case MQTT_EVT_CONNACK:
 		if (evt->result != 0) {
-			LOG_ERR("CONNACK refused: %d", evt->result);
-			connect_failed = true;
+			LOG_ERR("[%s] CONNACK refused: %d", s->client_id, evt->result);
+			s->connect_failed = true;
 			break;
 		}
-		LOG_INF("connected to broker");
-		connected = true;
+		LOG_INF("[%s] connected to broker", s->client_id);
+		s->connected = true;
 		break;
 
 	case MQTT_EVT_DISCONNECT:
-		LOG_WRN("disconnected: %d", evt->result);
-		connected = false;
+		LOG_WRN("[%s] disconnected: %d", s->client_id, evt->result);
+		s->connected = false;
 		break;
 
 	case MQTT_EVT_PUBLISH:
-		handle_incoming_publish(c, &evt->param.publish);
+		handle_incoming_publish(s, c, &evt->param.publish);
 		break;
 
 	case MQTT_EVT_PUBACK:
-		LOG_DBG("PUBACK id %u", evt->param.puback.message_id);
+		LOG_DBG("[%s] PUBACK id %u", s->client_id, evt->param.puback.message_id);
 		break;
 
 	case MQTT_EVT_SUBACK:
-		LOG_INF("subscribed to %s and %s", kTopicCommand, kPeerTopicCommand);
+		LOG_INF("[%s] subscribed", s->client_id);
 		break;
 
 	case MQTT_EVT_PINGRESP:
-		LOG_DBG("PINGRESP");
+		LOG_DBG("[%s] PINGRESP", s->client_id);
 		break;
 
 	default:
@@ -347,53 +436,56 @@ void mqtt_evt_handler(struct mqtt_client *const c, const struct mqtt_evt *evt)
 	}
 }
 
-void client_setup(void)
+void client_setup(node_session *s)
 {
-	mqtt_client_init(&client);
+	mqtt_client_init(&s->client);
 
-	broker = {};
-	broker.sin_family = AF_INET;
-	broker.sin_port = htons(kBrokerPort);
-	zsock_inet_pton(AF_INET, kBrokerAddr, &broker.sin_addr);
+	s->broker = {};
+	s->broker.sin_family = AF_INET;
+	s->broker.sin_port = htons(kBrokerPort);
+	zsock_inet_pton(AF_INET, kBrokerAddr, &s->broker.sin_addr);
 
-	client.broker = &broker;
-	client.evt_cb = mqtt_evt_handler;
-	client.client_id.utf8 = reinterpret_cast<uint8_t *>(const_cast<char *>(kNodeClientId));
-	client.client_id.size = strlen(kNodeClientId);
-	client.user_name = nullptr;
-	client.password = nullptr;
-	client.protocol_version = MQTT_VERSION_3_1_1;
-	client.keepalive = kKeepaliveSec;
+	s->client.broker = &s->broker;
+	s->client.evt_cb = mqtt_evt_handler;
+	s->client.client_id.utf8 = reinterpret_cast<uint8_t *>(const_cast<char *>(s->client_id));
+	s->client.client_id.size = strlen(s->client_id);
+	s->client.user_name = nullptr;
+	s->client.password = nullptr;
+	s->client.protocol_version = MQTT_VERSION_3_1_1;
+	s->client.keepalive = kKeepaliveSec;
 	/* Clean session: we want no server-side queue replayed on reconnect —
 	 * stale telemetry is worse than none (docs/mqtt-design.md). */
-	client.clean_session = 1;
+	s->client.clean_session = 1;
 
-	client.rx_buf = rx_buffer;
-	client.rx_buf_size = sizeof(rx_buffer);
-	client.tx_buf = tx_buffer;
-	client.tx_buf_size = sizeof(tx_buffer);
-	client.transport.type = MQTT_TRANSPORT_NON_SECURE;
+	/* How the shared event callback finds its way back here. */
+	s->client.user_data = s;
+
+	s->client.rx_buf = s->rx;
+	s->client.rx_buf_size = sizeof(s->rx);
+	s->client.tx_buf = s->tx;
+	s->client.tx_buf_size = sizeof(s->tx);
+	s->client.transport.type = MQTT_TRANSPORT_NON_SECURE;
 
 	/* Last Will: registered at CONNECT, held by the broker, and published on
 	 * our behalf if we vanish without a clean DISCONNECT. This is how the host
-	 * learns about a crash or cable pull — no firmware runs in that path. */
-	static struct mqtt_topic will_topic;
-	static struct mqtt_utf8 will_message;
+	 * learns about a crash or cable pull — no firmware runs in that path.
+	 *
+	 * Per session, not per file. See the note on struct node_session. */
+	s->will_topic.topic.utf8 =
+		reinterpret_cast<uint8_t *>(const_cast<char *>(s->topic_status));
+	s->will_topic.topic.size = strlen(s->topic_status);
+	s->will_topic.qos = MQTT_QOS_1_AT_LEAST_ONCE;
+	s->will_message.utf8 = reinterpret_cast<uint8_t *>(const_cast<char *>("offline"));
+	s->will_message.size = strlen("offline");
 
-	will_topic.topic.utf8 = reinterpret_cast<uint8_t *>(const_cast<char *>(kTopicStatus));
-	will_topic.topic.size = strlen(kTopicStatus);
-	will_topic.qos = MQTT_QOS_1_AT_LEAST_ONCE;
-	will_message.utf8 = reinterpret_cast<uint8_t *>(const_cast<char *>("offline"));
-	will_message.size = strlen("offline");
-
-	client.will_topic = &will_topic;
-	client.will_message = &will_message;
-	client.will_retain = 1;
+	s->client.will_topic = &s->will_topic;
+	s->client.will_message = &s->will_message;
+	s->client.will_retain = 1;
 }
 
 /* Payload is a length-delimited byte range, not a C string: protobuf output is
  * binary and routinely contains NUL bytes, so strlen() would truncate it. */
-int publish(const char *topic, const uint8_t *payload, size_t payload_len,
+int publish(node_session *s, const char *topic, const uint8_t *payload, size_t payload_len,
 	    mqtt_qos qos, bool retain)
 {
 	struct mqtt_publish_param param = {};
@@ -406,71 +498,52 @@ int publish(const char *topic, const uint8_t *payload, size_t payload_len,
 	/* message_id is only meaningful for QoS 1/2 — at QoS 0 there is no PUBACK
 	 * to correlate, and the field is not even put on the wire. A counter is
 	 * enough here: it only has to be non-zero and distinct among *in-flight*
-	 * messages, and we never have more than one outstanding. */
-	static uint16_t next_message_id;
-
+	 * messages, and we never have more than one outstanding. Per session,
+	 * because packet ids are scoped to a connection. */
 	if (qos == MQTT_QOS_0_AT_MOST_ONCE) {
 		param.message_id = 0;
 	} else {
-		next_message_id++;
-		if (next_message_id == 0) {
-			next_message_id = 1;
+		s->next_message_id++;
+		if (s->next_message_id == 0) {
+			s->next_message_id = 1;
 		}
-		param.message_id = next_message_id;
+		param.message_id = s->next_message_id;
 	}
 	param.dup_flag = 0;
 	param.retain_flag = retain ? 1 : 0;
 
-	return mqtt_publish(&client, &param);
+	return mqtt_publish(&s->client, &param);
 }
 
 /* Convenience for the one topic that stays plain ASCII: `status` is also written
  * by the broker as our Last Will, so it cannot be protobuf (docs/mqtt-design.md). */
-int publish_text(const char *topic, const char *text, mqtt_qos qos, bool retain)
+int publish_text(node_session *s, const char *topic, const char *text, mqtt_qos qos, bool retain)
 {
-	return publish(topic, reinterpret_cast<const uint8_t *>(text), strlen(text),
-		       qos, retain);
+	return publish(s, topic, reinterpret_cast<const uint8_t *>(text), strlen(text), qos,
+		       retain);
 }
 
-/* Both command topics, in one SUBSCRIBE. A wildcard `node/+/command` would also
- * work and is deliberately not used: it would silently accept a node/9/command
- * this gateway has no route for, and the set of nodes it can reach is a fact
- * worth stating rather than discovering. */
-int subscribe_to_commands(void)
+/* A session subscribes to its own command topics, in one SUBSCRIBE. A wildcard
+ * `node/+/command` would also work and is deliberately not used: it would
+ * silently accept a node/9/command this gateway has no route for, and the set of
+ * nodes it can reach is a fact worth stating rather than discovering. */
+int subscribe_to_commands(node_session *s)
 {
-	struct mqtt_topic topics[2] = {};
+	struct mqtt_topic topics[ARRAY_SIZE(s->command_topics)] = {};
 	struct mqtt_subscription_list list = {};
 
-	topics[0].topic.utf8 = reinterpret_cast<uint8_t *>(const_cast<char *>(kTopicCommand));
-	topics[0].topic.size = strlen(kTopicCommand);
-	topics[0].qos = MQTT_QOS_1_AT_LEAST_ONCE;
-
-	topics[1].topic.utf8 = reinterpret_cast<uint8_t *>(const_cast<char *>(kPeerTopicCommand));
-	topics[1].topic.size = strlen(kPeerTopicCommand);
-	topics[1].qos = MQTT_QOS_1_AT_LEAST_ONCE;
+	for (uint8_t i = 0; i < s->command_topic_count; i++) {
+		topics[i].topic.utf8 =
+			reinterpret_cast<uint8_t *>(const_cast<char *>(s->command_topics[i]));
+		topics[i].topic.size = strlen(s->command_topics[i]);
+		topics[i].qos = MQTT_QOS_1_AT_LEAST_ONCE;
+	}
 
 	list.list = topics;
-	list.list_count = ARRAY_SIZE(topics);
+	list.list_count = s->command_topic_count;
 	list.message_id = 1U;
 
-	return mqtt_subscribe(&client, &list);
-}
-
-/* Block until the socket has data or the timeout expires. Returns the poll
- * result; the MQTT library owns the socket, we only wait on it. */
-int wait_for_input(int timeout_ms)
-{
-	struct zsock_pollfd fds[1];
-
-	fds[0].fd = client.transport.tcp.sock;
-	fds[0].events = ZSOCK_POLLIN;
-
-	int rc = zsock_poll(fds, 1, timeout_ms);
-
-	if (rc < 0) {
-		LOG_ERR("poll: %d", errno);
-	}
-	return rc;
+	return mqtt_subscribe(&s->client, &list);
 }
 
 /* ---- telemetry: from the bus to the wire ---------------------------------- */
@@ -496,7 +569,7 @@ void on_telemetry(const struct zbus_channel *chan)
 
 /* Drain the eventfd, read the newest reading off the bus, encode it, publish it.
  * Returns an mqtt_publish() result, or 0 if there was nothing to send. */
-int publish_pending_telemetry(void)
+int publish_pending_telemetry(node_session *s)
 {
 	zvfs_eventfd_t signalled = 0;
 
@@ -526,7 +599,7 @@ int publish_pending_telemetry(void)
 		return 0;
 	}
 
-	rc = publish(kTopicTelemetry, payload, len, MQTT_QOS_0_AT_MOST_ONCE, false);
+	rc = publish(s, s->topic_telemetry, payload, len, MQTT_QOS_0_AT_MOST_ONCE, false);
 	if (rc == 0) {
 		LOG_INF("published telemetry seq=%u (%zu bytes)", reading.sequence, len);
 	}
@@ -570,8 +643,8 @@ void on_relay_status(const struct zbus_channel *chan)
  * it arrived on is what decides the topic, which is the whole of the gateway's
  * knowledge about it. That is the dumb-gateway property, and it is one function
  * long on purpose. */
-int publish_relayed(int fd, const struct zbus_channel *chan, const char *topic, mqtt_qos qos,
-		    const char *what)
+int publish_relayed(node_session *s, int fd, const struct zbus_channel *chan, const char *topic,
+		    mqtt_qos qos, const char *what)
 {
 	zvfs_eventfd_t signalled = 0;
 
@@ -602,7 +675,7 @@ int publish_relayed(int fd, const struct zbus_channel *chan, const char *topic, 
 		return 0;
 	}
 
-	rc = publish(topic, up.bytes, up.len, qos, false);
+	rc = publish(s, topic, up.bytes, up.len, qos, false);
 	if (rc == 0) {
 		LOG_INF("relayed %s from node %u (%u bytes)", what, up.node_id, up.len);
 	}
@@ -612,7 +685,7 @@ int publish_relayed(int fd, const struct zbus_channel *chan, const char *topic, 
 /* The peer's liveness, as plain ASCII on a retained topic — the same shape the
  * gateway's own status uses, because a host should not have to care which node
  * published its liveness or how that node learned it. */
-int publish_relayed_status(void)
+int publish_relayed_status(node_session *s)
 {
 	zvfs_eventfd_t signalled = 0;
 
@@ -628,162 +701,130 @@ int publish_relayed_status(void)
 		return 0;
 	}
 
-	return publish_text(kPeerTopicStatus, st.online ? "online" : "offline",
+	return publish_text(s, kPeerTopicStatus, st.online ? "online" : "offline",
 			    MQTT_QOS_1_AT_LEAST_ONCE, true);
 }
 
-/* ---- the session ---------------------------------------------------------- */
+/* ---- session lifecycle ----------------------------------------------------- */
 
-/* Connect, then serve the connection until it drops. Returns when disconnected
- * for any reason; the caller backs off and calls again.
+/* Give up on a session and schedule the next attempt.
  *
- * Returns true if the session ever reached CONNACK. The caller uses that to
- * reset its backoff: a link that worked and then dropped deserves a fast retry,
- * while one that never connected at all should keep backing off. */
-bool run_session(void)
+ * `reached_connack` is what decides the backoff: a link that worked and then
+ * dropped deserves a fast retry, while one that never connected at all should
+ * keep doubling, so a down broker or an unplugged cable is retried patiently
+ * instead of in a hot loop. */
+void session_drop(node_session *s, bool reached_connack, const char *why)
 {
-	client_setup();
-	connected = false;
-	connect_failed = false;
+	if (s->state == SESSION_SERVING) {
+		/* Best-effort clean teardown. A clean DISCONNECT deliberately
+		 * suppresses the will — we only want "offline" published when we
+		 * die unexpectedly. */
+		mqtt_disconnect(&s->client, nullptr);
+	} else if (s->state == SESSION_CONNECTING) {
+		mqtt_abort(&s->client);
+	}
 
-	int rc = mqtt_connect(&client);
+	s->backoff_ms = reached_connack ? kBackoffMinMs
+					: MIN(s->backoff_ms * 2, kBackoffMaxMs);
+	s->state = SESSION_IDLE;
+	s->connected = false;
+	s->retry_at = k_uptime_get() + s->backoff_ms;
+
+	LOG_WRN("[%s] %s — reconnecting in %d ms", s->client_id, why, s->backoff_ms);
+}
+
+/* Send CONNECT. The CONNACK arrives asynchronously, so this only moves the
+ * session to CONNECTING and arms a deadline; the main loop pumps input. */
+void session_connect(node_session *s)
+{
+	client_setup(s);
+	s->connected = false;
+	s->connect_failed = false;
+
+	int rc = mqtt_connect(&s->client);
 
 	if (rc != 0) {
 		/* No TCP connection: broker down, or 192.168.10.1 unreachable. */
-		LOG_ERR("mqtt_connect: %d", rc);
-		return false;
+		s->state = SESSION_IDLE;
+		session_drop(s, false, "mqtt_connect failed");
+		return;
 	}
 
-	/* mqtt_connect() only sends CONNECT — the CONNACK arrives asynchronously,
-	 * so pump input until the callback flips `connected`. */
-	for (int waited = 0; !connected && !connect_failed && waited < 5000; waited += 100) {
-		if (wait_for_input(100) > 0) {
-			mqtt_input(&client);
-		}
-	}
+	s->state = SESSION_CONNECTING;
+	s->connack_due = k_uptime_get() + kConnackTimeoutMs;
+}
 
-	if (!connected) {
-		LOG_ERR("no CONNACK — aborting");
-		mqtt_abort(&client);
-		return false;
-	}
+/* CONNACK arrived: announce ourselves and subscribe. Retained status, so a
+ * harness starting later immediately learns we are up; the will (also retained)
+ * overwrites it if we die. */
+void session_serving(node_session *s)
+{
+	s->state = SESSION_SERVING;
+	s->backoff_ms = kBackoffMinMs;
 
-	/* Announce ourselves. Retained, so a harness starting later immediately
-	 * learns we are up; the will (also retained) overwrites it if we die. */
-	publish_text(kTopicStatus, "online", MQTT_QOS_1_AT_LEAST_ONCE, true);
-	subscribe_to_commands();
+	publish_text(s, s->topic_status, "online", MQTT_QOS_1_AT_LEAST_ONCE, true);
+	subscribe_to_commands(s);
+}
 
-	while (connected) {
-		/* Five descriptors, one wait, one deadline. Before zbus this loop
-		 * also owned the sample clock, so the timeout had to be the
-		 * minimum of "next sample due" and "keepalive due"; now every
-		 * producer keeps its own cadence and says so through a
-		 * descriptor, leaving exactly one deadline here — the keepalive.
-		 *
-		 * That is the property worth noticing as the node count grows.
-		 * Four of these five come from threads with entirely unrelated
-		 * clocks — a sensor at 5 s, a peer heartbeat at 1 Hz, a command
-		 * round trip at 2 s — and not one of them made this loop harder.
-		 * Each new source of work is one more fd and one more `if`, never
-		 * another timeout to reconcile against the keepalive. */
-		struct zsock_pollfd fds[5] = {};
+/* The nearest deadline across every session, or -1 for "no deadline at all".
+ *
+ * mqtt_keepalive_time_left() returns -1 when keepalive is 0 (subsys/net/lib/
+ * mqtt/mqtt.c), meaning "never". Folding that into a minimum would turn "never"
+ * into "immediately" and spin the loop, so negatives are skipped rather than
+ * compared. Unreachable while every session sets a keepalive, and one line. */
+int next_deadline_ms(int64_t now)
+{
+	int64_t best = -1;
 
-		fds[0].fd = client.transport.tcp.sock;
-		fds[0].events = ZSOCK_POLLIN;
-		fds[1].fd = telemetry_evt_fd;
-		fds[1].events = ZSOCK_POLLIN;
-		fds[2].fd = relay_telemetry_evt_fd;
-		fds[2].events = ZSOCK_POLLIN;
-		fds[3].fd = relay_ack_evt_fd;
-		fds[3].events = ZSOCK_POLLIN;
-		fds[4].fd = relay_status_evt_fd;
-		fds[4].events = ZSOCK_POLLIN;
+	for (size_t i = 0; i < kSessionCount; i++) {
+		node_session *s = &sessions[i];
+		int64_t due;
 
-		if (zsock_poll(fds, ARRAY_SIZE(fds), mqtt_keepalive_time_left(&client)) < 0) {
-			LOG_ERR("poll: %d", errno);
+		switch (s->state) {
+		case SESSION_IDLE:
+			due = s->retry_at - now;
+			break;
+		case SESSION_CONNECTING:
+			due = s->connack_due - now;
+			break;
+		case SESSION_SERVING: {
+			int left = mqtt_keepalive_time_left(&s->client);
+
+			if (left < 0) {
+				continue;
+			}
+			due = left;
 			break;
 		}
-
-		if (fds[0].revents & ZSOCK_POLLIN) {
-			rc = mqtt_input(&client);
-			if (rc != 0) {
-				LOG_ERR("mqtt_input: %d", rc);
-				break;
-			}
+		default:
+			continue;
 		}
 
-		/* Sends PINGREQ when due, and surfaces a dead connection. */
-		rc = mqtt_live(&client);
-		if (rc != 0 && rc != -EAGAIN) {
-			LOG_ERR("mqtt_live: %d", rc);
-			break;
+		if (due < 0) {
+			due = 0;
 		}
-
-		/* A command handled by mqtt_input() above may have triggered a
-		 * measurement; the sensor thread runs and signals the eventfd, so
-		 * the next pass picks it up. Nothing here needs to know that. */
-		if (fds[1].revents & ZSOCK_POLLIN) {
-			rc = publish_pending_telemetry();
-			if (rc != 0) {
-				LOG_ERR("publish: %d", rc);
-				break;
-			}
-		}
-
-		/* The relay's three. Same QoS choices as this node's own topics,
-		 * for the same reasons: telemetry at 0 because a stale reading is
-		 * worse than a missing one, ack at 1 because it is the answer to a
-		 * command, status retained because a harness that connects later
-		 * still needs to know. docs/mqtt-design.md. */
-		if (fds[2].revents & ZSOCK_POLLIN) {
-			rc = publish_relayed(relay_telemetry_evt_fd, &chan_relay_telemetry,
-					     kPeerTopicTelemetry, MQTT_QOS_0_AT_MOST_ONCE,
-					     "telemetry");
-			if (rc != 0) {
-				LOG_ERR("publish: %d", rc);
-				break;
-			}
-		}
-		if (fds[3].revents & ZSOCK_POLLIN) {
-			rc = publish_relayed(relay_ack_evt_fd, &chan_relay_ack, kPeerTopicAck,
-					     MQTT_QOS_1_AT_LEAST_ONCE, "ack");
-			if (rc != 0) {
-				LOG_ERR("publish: %d", rc);
-				break;
-			}
-		}
-		if (fds[4].revents & ZSOCK_POLLIN) {
-			rc = publish_relayed_status();
-			if (rc != 0) {
-				LOG_ERR("publish: %d", rc);
-				break;
-			}
+		if (best < 0 || due < best) {
+			best = due;
 		}
 	}
-
-	/* Best-effort clean teardown. A clean DISCONNECT deliberately suppresses
-	 * the will — we only want "offline" published when we die unexpectedly. */
-	mqtt_disconnect(&client, nullptr);
-	return true;
+	return static_cast<int>(best);
 }
 
 }  // namespace
 
 /* At global scope: the observation records ZBUS_CHAN_DEFINE emits in sensor.cpp
- * refer to this symbol by name. */
+ * and relay.cpp refer to these symbols by name. The relay's three are defined
+ * here rather than in relay.cpp for the same reason the sensor's one is: the
+ * network side owns the observers that feed the network. */
 ZBUS_LISTENER_DEFINE(telemetry_listener, on_telemetry);
-
-/* The relay's three, defined here rather than in relay.cpp for the same reason:
- * the network side owns the observers that feed the network. relay.cpp names
- * them in its ZBUS_CHAN_DEFINEs; this is where they exist. */
 ZBUS_LISTENER_DEFINE(relay_telemetry_listener, on_relay_telemetry);
 ZBUS_LISTENER_DEFINE(relay_ack_listener, on_relay_ack);
 ZBUS_LISTENER_DEFINE(relay_status_listener, on_relay_status);
 
 int main(void)
 {
-	/* Counter starts at 0 and never blocks a reader, so a poll on it is
-	 * simply "has the sensor thread published since I last looked". */
+	/* Counters start at 0 and never block a reader, so a poll on one is
+	 * simply "has that producer published since I last looked". */
 	telemetry_evt_fd = zvfs_eventfd(0, ZVFS_EFD_NONBLOCK);
 	relay_telemetry_evt_fd = zvfs_eventfd(0, ZVFS_EFD_NONBLOCK);
 	relay_ack_evt_fd = zvfs_eventfd(0, ZVFS_EFD_NONBLOCK);
@@ -797,26 +838,183 @@ int main(void)
 		LOG_ERR("eventfd: %d (raise CONFIG_ZVFS_EVENTFD_MAX?)", errno);
 		return 0;
 	}
-	LOG_INF("broker %s:%u", kBrokerAddr, kBrokerPort);
 
-	int backoff = kBackoffMinMs;
+	/* Two sessions presenting the same client id make the broker perform a
+	 * takeover: each CONNECT kicks the other off, forever, and it reads
+	 * exactly like a network fault. Costs nothing to rule out. */
+	for (size_t i = 0; i < kSessionCount; i++) {
+		for (size_t j = i + 1; j < kSessionCount; j++) {
+			__ASSERT(strcmp(sessions[i].client_id, sessions[j].client_id) != 0,
+				 "duplicate MQTT client id");
+		}
+		sessions[i].state = SESSION_IDLE;
+		sessions[i].backoff_ms = kBackoffMinMs;
+		sessions[i].retry_at = 0; /* connect immediately */
+	}
+
+	LOG_INF("broker %s:%u, %zu session(s)", kBrokerAddr, kBrokerPort, kSessionCount);
 
 	while (true) {
-		bool was_connected = run_session();
+		int64_t now = k_uptime_get();
 
-		/* Reached only when the session ended. A session that reached
-		 * CONNACK proves the broker is reachable, so start over from the
-		 * short delay; otherwise keep doubling so a down broker (or an
-		 * unplugged cable) is retried patiently instead of in a hot loop. */
-		if (was_connected) {
-			backoff = kBackoffMinMs;
+		/* Start anything whose backoff has elapsed. A session that is
+		 * down does not stop the others: this is the whole reason the
+		 * lifecycle became a state machine rather than a blocking
+		 * connect-serve-disconnect function. */
+		for (size_t i = 0; i < kSessionCount; i++) {
+			if (sessions[i].state == SESSION_IDLE && now >= sessions[i].retry_at) {
+				session_connect(&sessions[i]);
+			}
 		}
 
-		LOG_WRN("reconnecting in %d ms", backoff);
-		k_msleep(backoff);
+		/* Assemble the poll set from what currently exists. A session
+		 * without a socket contributes nothing, and an eventfd is only
+		 * watched when the session that would publish it is serving —
+		 * otherwise a producer signalling into a dead session would spin
+		 * this loop at the rate of its own cadence. */
+		struct zsock_pollfd fds[kSessionCount + 4] = {};
+		int sock_slot[kSessionCount];
+		int n = 0;
 
-		if (!was_connected) {
-			backoff = MIN(backoff * 2, kBackoffMaxMs);
+		for (size_t i = 0; i < kSessionCount; i++) {
+			if (sessions[i].state == SESSION_IDLE) {
+				sock_slot[i] = -1;
+				continue;
+			}
+			sock_slot[i] = n;
+			fds[n].fd = sessions[i].client.transport.tcp.sock;
+			fds[n].events = ZSOCK_POLLIN;
+			n++;
+		}
+
+		const bool own_serving = sessions[kOwnSession].state == SESSION_SERVING;
+		const bool peer_serving = sessions[kPeerSession].state == SESSION_SERVING;
+
+		int own_telemetry_slot = -1;
+		int relay_telemetry_slot = -1;
+		int relay_ack_slot = -1;
+		int relay_status_slot = -1;
+
+		if (own_serving) {
+			own_telemetry_slot = n;
+			fds[n].fd = telemetry_evt_fd;
+			fds[n].events = ZSOCK_POLLIN;
+			n++;
+		}
+		if (peer_serving) {
+			relay_telemetry_slot = n;
+			fds[n].fd = relay_telemetry_evt_fd;
+			fds[n].events = ZSOCK_POLLIN;
+			n++;
+			relay_ack_slot = n;
+			fds[n].fd = relay_ack_evt_fd;
+			fds[n].events = ZSOCK_POLLIN;
+			n++;
+			relay_status_slot = n;
+			fds[n].fd = relay_status_evt_fd;
+			fds[n].events = ZSOCK_POLLIN;
+			n++;
+		}
+
+		/* One wait, one deadline — still, with every producer keeping its
+		 * own clock and saying so through a descriptor. That is the
+		 * property worth watching as nodes accumulate: each new source of
+		 * work is one more fd and one more `if`, never another timeout to
+		 * reconcile against the keepalive. */
+		if (zsock_poll(fds, n, next_deadline_ms(now)) < 0) {
+			LOG_ERR("poll: %d", errno);
+			k_msleep(kBackoffMinMs);
+			continue;
+		}
+
+		/* Input first, so a CONNACK or a DISCONNECT is visible to the
+		 * per-session handling below in the same pass. */
+		for (size_t i = 0; i < kSessionCount; i++) {
+			node_session *s = &sessions[i];
+
+			if (sock_slot[i] < 0 || !(fds[sock_slot[i]].revents & ZSOCK_POLLIN)) {
+				continue;
+			}
+			if (mqtt_input(&s->client) != 0) {
+				session_drop(s, s->state == SESSION_SERVING, "mqtt_input failed");
+			}
+		}
+
+		now = k_uptime_get();
+
+		for (size_t i = 0; i < kSessionCount; i++) {
+			node_session *s = &sessions[i];
+
+			switch (s->state) {
+			case SESSION_CONNECTING:
+				if (s->connected) {
+					session_serving(s);
+				} else if (s->connect_failed) {
+					session_drop(s, false, "CONNACK refused");
+				} else if (now >= s->connack_due) {
+					session_drop(s, false, "no CONNACK");
+				}
+				break;
+
+			case SESSION_SERVING: {
+				if (!s->connected) {
+					session_drop(s, true, "connection lost");
+					break;
+				}
+				/* Sends PINGREQ when due, and surfaces a dead
+				 * connection. */
+				int rc = mqtt_live(&s->client);
+
+				if (rc != 0 && rc != -EAGAIN) {
+					session_drop(s, true, "mqtt_live failed");
+				}
+				break;
+			}
+
+			default:
+				break;
+			}
+		}
+
+		/* Publishing last, and only on sessions still serving after the
+		 * handling above — a session dropped in this pass must not be
+		 * published to. */
+		if (own_telemetry_slot >= 0 &&
+		    (fds[own_telemetry_slot].revents & ZSOCK_POLLIN) &&
+		    sessions[kOwnSession].state == SESSION_SERVING) {
+			if (publish_pending_telemetry(&sessions[kOwnSession]) != 0) {
+				session_drop(&sessions[kOwnSession], true, "publish failed");
+			}
+		}
+
+		/* The relay's three. Same QoS choices as this node's own topics,
+		 * for the same reasons: telemetry at 0 because a stale reading is
+		 * worse than a missing one, ack at 1 because it is the answer to
+		 * a command, status retained because a harness that connects
+		 * later still needs to know. docs/mqtt-design.md. */
+		node_session *ps = &sessions[kPeerSession];
+
+		if (relay_telemetry_slot >= 0 &&
+		    (fds[relay_telemetry_slot].revents & ZSOCK_POLLIN) &&
+		    ps->state == SESSION_SERVING) {
+			if (publish_relayed(ps, relay_telemetry_evt_fd, &chan_relay_telemetry,
+					    kPeerTopicTelemetry, MQTT_QOS_0_AT_MOST_ONCE,
+					    "telemetry") != 0) {
+				session_drop(ps, true, "relay publish failed");
+			}
+		}
+		if (relay_ack_slot >= 0 && (fds[relay_ack_slot].revents & ZSOCK_POLLIN) &&
+		    ps->state == SESSION_SERVING) {
+			if (publish_relayed(ps, relay_ack_evt_fd, &chan_relay_ack, kPeerTopicAck,
+					    MQTT_QOS_1_AT_LEAST_ONCE, "ack") != 0) {
+				session_drop(ps, true, "relay publish failed");
+			}
+		}
+		if (relay_status_slot >= 0 && (fds[relay_status_slot].revents & ZSOCK_POLLIN) &&
+		    ps->state == SESSION_SERVING) {
+			if (publish_relayed_status(ps) != 0) {
+				session_drop(ps, true, "relay publish failed");
+			}
 		}
 	}
 	return 0;
