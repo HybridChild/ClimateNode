@@ -1,0 +1,16 @@
+# The gateway's liveness state machine: how a heartbeat and a clock become the
+# retained `online`/`offline` that MQTT would otherwise have given us for free.
+#
+# platform_allow rather than `depends_on: can`, deliberately: qemu_cortex_m3
+# does not advertise `can`, so a depends_on would filter this suite out silently
+# and it would look like it had passed. Nothing here needs a CAN controller
+# anyway -- that is what makes it a unit test.
+common:
+  tags:
+    - unit
+    - can
+tests:
+  node.relay:
+    platform_allow:
+      - qemu_cortex_m3
+      - native_sim

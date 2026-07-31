@@ -23,6 +23,7 @@ target_sources(app PRIVATE
   src/sensor.cpp    # SCD-40 thread: acquisition, sample period, bounds
   src/protocol.cpp  # the wire format: internal types <-> protobuf
   src/commands.cpp  # command semantics: dispatch, dedupe, node identity
+  src/relay.cpp     # the CAN side: heartbeat liveness, ISO-TP both ways
                     # sensor.cpp and main.cpp meet on the zbus channels
                     # declared in src/app_channels.h
 )

@@ -22,9 +22,21 @@ Decisions and verified setup for the Nucleo ↔ Pi MQTT link. Terse by intent �
 | `node/<id>/ack` | node → host | **1** | no | `Ack` protobuf |
 | `node/<id>/status` | node → host | **1** | **yes** | ASCII `online` / `offline` (see LWT) |
 
-`<id>` is `1` for the single bench node. Keep the level even with one node — retrofitting a level into a topic scheme later breaks every subscriber.
+`<id>` is `1` for the gateway and `2` for the F072RB peer node reached over CAN. Keeping the level when there was only one node is what makes that a configuration change rather than a migration — retrofitting a level into a topic scheme breaks every subscriber, and this is the moment that would have been paid for.
 
 `status` stays plain ASCII deliberately: it is the one topic the broker itself writes (as the will), so it cannot be protobuf-encoded by firmware.
+
+**Who publishes `node/2/*`.** Today: the gateway, on its own single MQTT connection. Nothing in MQTT requires the publisher of a topic to *be* the thing the topic names, and the peer node has no IP stack at all — it speaks only CAN. `relay.cpp` moves its already-encoded payloads across and `main.cpp` publishes them; see [`can-bringup.md`](can-bringup.md).
+
+What that arrangement cannot do is one specific thing, and it is worth being precise because it is the entire argument for a second connection later. **MQTT 3.1.1 permits exactly one Last Will per connection.** So the gateway's will covers `node/1/status`, and there is no way for one connection to also register a will on `node/2/status`. Consequently:
+
+| Failure | How `node/2/status` becomes `offline` today |
+|---|---|
+| peer node dies, gateway alive | the gateway's heartbeat timeout notices and publishes — works |
+| gateway dies, peer alive | **nothing publishes it.** `node/2/status` stays `online`, stale |
+| both die | the gateway's own will fires on `node/1/status` only |
+
+A second MQTT connection presenting client id `nucleo-2` would close that middle row, and that is the *only* thing it would close — the broker can never observe the peer's own liveness in either design, because there is no TCP connection between them to notice. Deferred deliberately so the relay could be verified on its own.
 
 ## QoS rationale
 
@@ -35,6 +47,12 @@ Decisions and verified setup for the Nucleo ↔ Pi MQTT link. Terse by intent �
 **QoS 2 unused.** Its exactly-once four-packet handshake buys nothing that a `sequence` + dedupe doesn't already give us, at higher cost and complexity.
 
 MQTT QoS is **not** TCP reliability. TCP guarantees bytes reached the broker's *TCP stack*; QoS 1 guarantees the broker *application* took ownership. QoS 0's real exposure is the reconnect gap, not wire corruption.
+
+**QoS is hop-by-hop, and the relay is what makes that visible.** A `PUBACK` for `node/2/command` means the *gateway* took ownership of those bytes. It says nothing about whether the CAN link delivered them, whether the peer node decoded them, or whether the peer acted. The end-to-end statement is the `Ack` — which is precisely why an `Ack` exists as an application message rather than being folded into the transport's acknowledgement.
+
+That distinction was always true and was never observable with one node, because the hop that acknowledged and the node that acted were the same device. Now they are not, and the gap has a name: if the peer never answers, the gateway synthesizes an `Ack` with `ACK_STATUS_FAILED` and detail `"no response over CAN"`. The host sees a QoS 1 delivery that succeeded and an application-level failure, which is the honest report of what happened.
+
+**One deliberate exception to the gateway's opacity, priced.** To correlate that synthesized `Ack` the gateway needs the command's `sequence`, so `main.cpp` decodes the `Command` **envelope** — one header field — while never interpreting the payload arm. The alternative was to synthesize nothing and let the host time out; that is simpler and strictly worse, because a host that times out cannot distinguish "the peer is gone" from "the gateway dropped it", and would have to invent its own deadline to say anything at all.
 
 ## Session, keepalive, will
 
@@ -127,6 +145,8 @@ One consequence belongs here rather than there: **the topic is what says which m
 ## Still open
 
 - **Retain on telemetry** — off. Turning it on gives a late-starting harness the last reading instantly; revisit if that friction shows up. Note the retained `status` topic already covers the "is it alive?" half.
-- **`<id>` source** — hardcoded `1`, or derived from the STM32 unique ID (the same source the Ethernet MAC `02:80:E1:9C:A7:DE` is hashed from). Only matters with a second node.
+- **A second MQTT connection for the peer node.** The one thing it buys is a Last Will on `node/2/status`, so a dying *gateway* marks its peer offline too — see the table under *Topic hierarchy*. Everything else already works on one connection.
+
+Settled elsewhere: the **`<id>` source** — hardcoded per app rather than derived from the STM32 unique ID. `kNodeClientId` is declared in `commands.h` and defined by each application's `main.cpp` (and by the test), so the identity is a link-time fact rather than a runtime one. A derived id would have to be discovered before it could be subscribed to, which is a bootstrapping problem in exchange for nothing on a bench with two known boards.
 
 Settled elsewhere: the **telemetry trigger** question — a timed poll rather than the SCD-40's data-ready signal — is closed, because the in-tree driver never exposes data-ready through the sensor API. See *Accepted limitation* in [`sensor-bringup.md`](sensor-bringup.md).

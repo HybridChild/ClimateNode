@@ -10,16 +10,41 @@ Builds against the shared global Zephyr workspace — see [`toolchain.md`](toolc
 
 ```
 firmware/boards/nucleo_h753zi.overlay   gateway: the bitrate the board dts leaves unset
-firmware/prj.conf                       gateway: CONFIG_CAN + the CAN shell
+firmware/prj.conf                       gateway: CONFIG_CAN, CONFIG_ISOTP, the CAN shell
 firmware/src/can_link.h                 SHARED: address map, heartbeat frame, message type
+firmware/src/relay.h                    gateway: the relay channels and liveness rule
+firmware/src/relay.cpp                  gateway: the CAN threads
 sensor-node/boards/nucleo_f072rb.overlay  peer: can1 enabled on PA11/PA12, the same bitrate
 sensor-node/prj.conf                    peer: CONFIG_CAN + CONFIG_ISOTP, no shell
 sensor-node/src/main.cpp                peer: the CAN session
 ```
 
-No application code on the *gateway* talks to the controller yet, which is deliberate: the CAN shell can drive the link on its own, so the peripheral gets proven before anything is layered on it. Debugging a silent bus and debugging a segmentation bug at the same time is the failure mode that ordering avoids.
-
 `can_link.h` is the one file both boards include, and the reason it is a file rather than a comment: a link is symmetric, and neither end is in a position to be right on its own. It carries the address map, the hand-packed heartbeat layout and the one byte of message type above ISO-TP — nothing else, and nothing either side owns alone. `tests/heartbeat/` compiles it with no subsystem at all, which is the evidence that the contract has no dependencies.
+
+### What the relay does
+
+The gateway is a **transport hop**, not an aggregator. It moves the peer's already-encoded Protobuf between CAN and MQTT and never decodes it:
+
+```
+peer node                     gateway                              broker
+─────────                     ───────                              ──────
+Telemetry ── ISO-TP 0x7E8 ──▶ RX thread ──▶ chan_relay_telemetry ──▶ node/2/telemetry  QoS 0
+Ack       ── ISO-TP 0x7E8 ──▶ RX thread ──▶ chan_relay_ack       ──▶ node/2/ack        QoS 1
+heartbeat ── raw 0x702 ─────▶ RX filter ──▶ liveness ─▶ chan_relay_status ──▶ node/2/status  retained
+Command   ◀── ISO-TP 0x7E0 ── TX thread ◀── chan_relay_command   ◀── node/2/command    QoS 1
+```
+
+The two threads are split by **what they block on**: RX only ever reads the link (a timed `isotp_recv()`, so the loop that receives also owns the liveness clock), TX only ever writes it. That is a correctness property, not tidiness — two `isotp_send()` calls on one address from different contexts interleave frames and corrupt both transfers, and confining every write to one thread enforces it without a mutex.
+
+Decisions worth keeping:
+
+- **The gateway reads exactly one byte of what it carries.** `[0]` is the message type from `can_link.h`; `[1..]` is forwarded verbatim. Which channel a payload lands on decides its topic, and that is the whole of the gateway's knowledge about it. `publish_relayed()` in `main.cpp` is one function long on purpose.
+- **One eventfd per relay channel, three more in the same poll set.** A shared one would say only "something happened", and because `zbus_chan_read()` returns the channel's current value whether or not it is fresh, the reader would have to read all three on every wake and would republish stale telemetry as new. The descriptor is the event's identity, not merely its occurrence. The serve loop is now five descriptors and still **one deadline** — the keepalive.
+- **`chan_relay_ack` is a listener, not a message subscriber**, despite an ack being an event. At most one ack is ever outstanding, because `isotp_send()` blocks until the transfer completes and the TX thread then blocks on the ack: latest-wins cannot collapse a set of one. The eventfd's counter checks that premise for free, and `main.cpp` logs a coalesced ack at **ERROR** where it logs coalesced telemetry at WARN.
+- **The upward message is 164 B and the downward one 32 B, deliberately.** zbus's message-subscriber net_buf pool is a single pool sized by the largest message on *any* such channel; listener channels store their message in the channel. So the big upward messages ride listeners and only `relay_down` touches the pool, which is why `CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE` is 32 rather than 164.
+- **One honest compromise, named.** To correlate an Ack it synthesizes for a command the peer never answered, the gateway must know that command's `sequence` — so `main.cpp` decodes the Command **envelope**, one header field, and never the payload arm. The alternative was to synthesize nothing and let the host time out, which is simpler and strictly worse: the host cannot then distinguish "the peer is gone" from "the gateway dropped it". Recorded in [`mqtt-design.md`](mqtt-design.md).
+
+Kconfig this cost, all in `firmware/prj.conf` and all previously defaults nobody had set: `CONFIG_ISOTP=y`, `CONFIG_ZVFS_EVENTFD_MAX=4` (a hard count — the fourth `zvfs_eventfd()` just fails without it), `CONFIG_ZVFS_POLL_MAX=5`, `CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE` 16 → 32, `CONFIG_MAIN_STACK_SIZE` 2048 → 3072, `CONFIG_SYSTEM_WORKQUEUE_STACK_SIZE` 1024 → 2048 (ISO-TP drives every segmented transfer from `k_work_submit()`, which is the *shared* system workqueue). Total: **+9656 B flash and +7808 B RAM**, to 245 604 B and 60 716 B on a part with 2 MB and 512 KB.
 
 ### The address map
 
@@ -226,7 +251,7 @@ A two-node check against a real bus belongs here and is deliberately absent — 
 
 - **No CAN-FD.** The peer node is an STM32F072 with **bxCAN**, which is classic CAN 2.0B only, so the link is classic at 8 bytes per frame regardless of what the H7's FDCAN could do. This is a feature rather than a concession: the 8-byte limit is what forces real segmentation, which is one of the things this phase exists to learn. `CONFIG_CAN_FD_MODE` stays unset, and `can show` correctly omits `fd`.
 - **No transceiver node.** Nothing to control — see *Driver behaviour worth knowing*.
-- **No relay, and no second MQTT identity.** ISO-TP now exists on the peer, but only the peer: the gateway has no `relay.cpp`, no relay zbus channels and one MQTT connection. Until that is built, nothing the peer transmits has anywhere to go. Both the gateway's opacity boundary and the second identity are the next step.
+- **No second MQTT identity.** The relay now exists and publishes the peer's payloads to `node/2/{telemetry,ack,status}` — but from the gateway's own single MQTT connection. Nothing in MQTT requires the publisher of those topics to *be* node 2, so this works. What a second connection would buy is exactly one thing: MQTT 3.1.1 allows one Last Will per connection, so only a client that *is* node 2 can have the broker flip `node/2/status` to `offline` when the **gateway** dies. Everything else is identical, because the broker can never observe the peer's own liveness in either design — "peer dead, gateway alive" is firmware-published either way.
 - **No flow-control throttling.** The peer advertises `bs = 0, stmin = 0` — send the whole transfer, no minimum gap — because the only thing that reaches it is a 20-byte `Command`, which is three frames. Block size exists so a slow receiver can throttle a fast sender mid-transfer; throttling three frames costs a round trip per block and buys nothing. A node receiving a firmware image would answer differently.
 - **No ISO-TP TX buffering.** `CONFIG_ISOTP_USE_TX_BUF` and `CONFIG_ISOTP_ENABLE_CONTEXT_BUFFERS` are both off. `isotp_send()` with a null completion callback blocks until the transfer completes, so the caller's own buffer stays valid throughout and there is nothing for the library to copy into — which is also what makes the peer's single-writer rule enforceable without a mutex.
 - **No second thread on the peer.** `main()` does the receiving, the sending and the heartbeat. Two `isotp_send()` calls on one address from different contexts interleave their frames and corrupt both transfers, so single-writer is a correctness property rather than a simplification. The visible cost is that a reading can wait up to one heartbeat period before it is transmitted.

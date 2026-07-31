@@ -54,8 +54,10 @@
 #include <string.h>
 
 #include "app_channels.h"
+#include "can_link.h"
 #include "commands.h"
 #include "protocol.h"
+#include "relay.h"
 
 LOG_MODULE_REGISTER(node, LOG_LEVEL_INF);
 
@@ -76,6 +78,21 @@ constexpr const char *kTopicTelemetry = "node/1/telemetry";
 constexpr const char *kTopicCommand = "node/1/command";
 constexpr const char *kTopicAck = "node/1/ack";
 constexpr const char *kTopicStatus = "node/1/status";
+
+/* The peer node's topics. Published by this client, on this connection, for now
+ * — nothing in MQTT requires the publisher of the node/2 topics to *be* node 2.
+ *
+ * That is a deliberate intermediate rather than the end state. A second MQTT
+ * connection buys exactly one thing: MQTT 3.1.1 allows one Last Will per
+ * connection, so only a client that *is* node 2 can have the broker flip
+ * node/2/status to offline when the GATEWAY dies. Everything else here is
+ * identical either way, because the broker can never observe the peer's own
+ * liveness — "peer dead, gateway alive" is firmware-published in both designs.
+ * Deferred so that this step can be verified on its own. */
+constexpr const char *kPeerTopicTelemetry = "node/2/telemetry";
+constexpr const char *kPeerTopicCommand = "node/2/command";
+constexpr const char *kPeerTopicAck = "node/2/ack";
+constexpr const char *kPeerTopicStatus = "node/2/status";
 
 /* Keepalive bounds how long the broker waits before declaring us dead
  * (1.5x keepalive) and firing the will. We publish every 5 s, so PINGREQ rarely
@@ -114,16 +131,37 @@ volatile bool connect_failed;
  * even up is of no consequence. */
 int telemetry_evt_fd = -1;
 
+/* One eventfd per relay channel, three more descriptors in the same poll set.
+ *
+ * A single shared fd would have been cheaper and wrong: it would only say
+ * "something happened", and since zbus_chan_read() returns the channel's current
+ * value whether or not it is fresh, the reader would have to read all three on
+ * every wake and would republish stale telemetry as though it were new. The
+ * descriptor is the identity of the event, not merely its occurrence. */
+int relay_telemetry_evt_fd = -1;
+int relay_ack_evt_fd = -1;
+int relay_status_evt_fd = -1;
+
 /* ---- MQTT plumbing -------------------------------------------------------- */
 
 /* Defined below, after the client struct it operates on. */
 int publish(const char *topic, const uint8_t *payload, size_t payload_len,
 	    mqtt_qos qos, bool retain);
 
-/* Encode and publish an Ack. Best effort: a failure here is logged, not
- * propagated, because the command itself may already have taken effect. */
-void send_ack(uint32_t seq, node_AckStatus status, const char *detail,
-	      const node_DeviceInfo *info)
+/* Does an MQTT topic (length-delimited, not NUL-terminated) equal this literal?
+ * A length check first, so a topic that merely starts the same cannot match. */
+bool topic_is(const struct mqtt_utf8 *topic, const char *literal)
+{
+	size_t n = strlen(literal);
+
+	return topic->size == n && memcmp(topic->utf8, literal, n) == 0;
+}
+
+/* Encode and publish an Ack on a given topic. Best effort: a failure here is
+ * logged, not propagated, because the command itself may already have taken
+ * effect. */
+void publish_ack(const char *topic, uint32_t seq, node_AckStatus status, const char *detail,
+		 const node_DeviceInfo *info)
 {
 	uint8_t buf[node_Ack_size];
 	size_t len = encode_ack(seq, status, detail, info, buf, sizeof(buf));
@@ -131,7 +169,51 @@ void send_ack(uint32_t seq, node_AckStatus status, const char *detail,
 	if (len == 0) {
 		return;
 	}
-	publish(kTopicAck, buf, len, MQTT_QOS_1_AT_LEAST_ONCE, false);
+	publish(topic, buf, len, MQTT_QOS_1_AT_LEAST_ONCE, false);
+}
+
+/* This node's own Ack topic — the overwhelming majority of calls. */
+void send_ack(uint32_t seq, node_AckStatus status, const char *detail,
+	      const node_DeviceInfo *info)
+{
+	publish_ack(kTopicAck, seq, status, detail, info);
+}
+
+/* Hand a command addressed to the peer node to the relay, unmodified.
+ *
+ * The `sequence` argument is the entire extent of the gateway's knowledge of
+ * this message, and it comes from the Command *envelope* rather than from its
+ * payload arm. The relay needs it so that a command the peer never answers can
+ * still be acknowledged to the host with a correlatable sequence number — the
+ * one deliberate exception to the gateway's opacity, priced and recorded in
+ * docs/mqtt-design.md. The bytes themselves are forwarded untouched. */
+void forward_to_peer(const uint8_t *payload, size_t len, uint32_t sequence)
+{
+	struct relay_down down = {};
+
+	if (len > sizeof(down.bytes)) {
+		/* Cannot happen while node_Command_size fits (relay.cpp
+		 * static_asserts it), but the buffer is not the schema's to
+		 * guarantee. */
+		publish_ack(kPeerTopicAck, sequence, node_AckStatus_ACK_STATUS_FAILED,
+			    "command too large to relay", nullptr);
+		return;
+	}
+
+	down.node_id = kFirstPeerNodeId;
+	down.len = static_cast<uint8_t>(len);
+	down.sequence = sequence;
+	memcpy(down.bytes, payload, len);
+
+	/* A message subscriber, so this does not block on the relay thread being
+	 * ready — the message is copied into the pool and delivered in order. */
+	int rc = zbus_chan_pub(&chan_relay_command, &down, K_MSEC(100));
+
+	if (rc != 0) {
+		LOG_ERR("chan_relay_command publish failed: %d", rc);
+		publish_ack(kPeerTopicAck, sequence, node_AckStatus_ACK_STATUS_FAILED,
+			    "relay busy", nullptr);
+	}
 }
 
 /* Read a PUBLISH payload out of the socket and decode it. The MQTT_EVT_PUBLISH
@@ -187,6 +269,13 @@ void handle_incoming_publish(struct mqtt_client *c,
 		mqtt_publish_qos1_ack(c, &puback);
 	}
 
+	/* Which node was this addressed to? Two command topics arrive on one
+	 * connection, and the topic is the only thing that distinguishes them —
+	 * the payloads are the same message type, and nothing inside a Command
+	 * says which node it is for. Exactly the point notes/protobuf-guide.md §4
+	 * makes about the topic being part of the contract. */
+	bool for_peer = topic_is(&pub->message.topic.topic, kPeerTopicCommand);
+
 	/* From here the transport is done with the bytes: protocol.cpp decides
 	 * whether they are a Command, commands.cpp decides what it means, and
 	 * this layer only reports the outcome back to the host. */
@@ -194,9 +283,20 @@ void handle_incoming_publish(struct mqtt_client *c,
 
 	if (!decode_command(payload, kept, oversized, &cmd)) {
 		/* sequence 0: we could not read one, so there is nothing to
-		 * correlate against. The host learns the message was garbage. */
-		send_ack(0, node_AckStatus_ACK_STATUS_MALFORMED,
-			 oversized ? "payload too large" : "decode failed", nullptr);
+		 * correlate against. The host learns the message was garbage.
+		 *
+		 * Answered by the gateway even when it was addressed to the
+		 * peer, and that is right: bytes that are not a Command cannot
+		 * be forwarded as one, and the gateway is the only party in a
+		 * position to say so. */
+		publish_ack(for_peer ? kPeerTopicAck : kTopicAck, 0,
+			    node_AckStatus_ACK_STATUS_MALFORMED,
+			    oversized ? "payload too large" : "decode failed", nullptr);
+		return;
+	}
+
+	if (for_peer) {
+		forward_to_peer(payload, kept, cmd.sequence);
 		return;
 	}
 
@@ -235,7 +335,7 @@ void mqtt_evt_handler(struct mqtt_client *const c, const struct mqtt_evt *evt)
 		break;
 
 	case MQTT_EVT_SUBACK:
-		LOG_INF("subscribed to %s", kTopicCommand);
+		LOG_INF("subscribed to %s and %s", kTopicCommand, kPeerTopicCommand);
 		break;
 
 	case MQTT_EVT_PINGRESP:
@@ -332,17 +432,25 @@ int publish_text(const char *topic, const char *text, mqtt_qos qos, bool retain)
 		       qos, retain);
 }
 
+/* Both command topics, in one SUBSCRIBE. A wildcard `node/+/command` would also
+ * work and is deliberately not used: it would silently accept a node/9/command
+ * this gateway has no route for, and the set of nodes it can reach is a fact
+ * worth stating rather than discovering. */
 int subscribe_to_commands(void)
 {
-	struct mqtt_topic topic = {};
+	struct mqtt_topic topics[2] = {};
 	struct mqtt_subscription_list list = {};
 
-	topic.topic.utf8 = reinterpret_cast<uint8_t *>(const_cast<char *>(kTopicCommand));
-	topic.topic.size = strlen(kTopicCommand);
-	topic.qos = MQTT_QOS_1_AT_LEAST_ONCE;
+	topics[0].topic.utf8 = reinterpret_cast<uint8_t *>(const_cast<char *>(kTopicCommand));
+	topics[0].topic.size = strlen(kTopicCommand);
+	topics[0].qos = MQTT_QOS_1_AT_LEAST_ONCE;
 
-	list.list = &topic;
-	list.list_count = 1U;
+	topics[1].topic.utf8 = reinterpret_cast<uint8_t *>(const_cast<char *>(kPeerTopicCommand));
+	topics[1].topic.size = strlen(kPeerTopicCommand);
+	topics[1].qos = MQTT_QOS_1_AT_LEAST_ONCE;
+
+	list.list = topics;
+	list.list_count = ARRAY_SIZE(topics);
 	list.message_id = 1U;
 
 	return mqtt_subscribe(&client, &list);
@@ -425,6 +533,105 @@ int publish_pending_telemetry(void)
 	return rc;
 }
 
+/* ---- the relay: from CAN to the wire --------------------------------------- */
+
+/* Three listeners, three descriptors. Each does the only thing a listener may
+ * do — it runs in the publisher's context (the relay's RX thread) with the
+ * channel locked, so it signals and returns. Identical in shape to
+ * on_telemetry() above; what differs is only which fd, which is the point. */
+void on_relay_telemetry(const struct zbus_channel *chan)
+{
+	ARG_UNUSED(chan);
+	if (relay_telemetry_evt_fd >= 0) {
+		zvfs_eventfd_write(relay_telemetry_evt_fd, 1);
+	}
+}
+
+void on_relay_ack(const struct zbus_channel *chan)
+{
+	ARG_UNUSED(chan);
+	if (relay_ack_evt_fd >= 0) {
+		zvfs_eventfd_write(relay_ack_evt_fd, 1);
+	}
+}
+
+void on_relay_status(const struct zbus_channel *chan)
+{
+	ARG_UNUSED(chan);
+	if (relay_status_evt_fd >= 0) {
+		zvfs_eventfd_write(relay_status_evt_fd, 1);
+	}
+}
+
+/* Publish whatever the relay left on an upward channel.
+ *
+ * The payload is republished byte for byte. This function does not decode it,
+ * does not validate it, and could not tell a Telemetry from an Ack — the channel
+ * it arrived on is what decides the topic, which is the whole of the gateway's
+ * knowledge about it. That is the dumb-gateway property, and it is one function
+ * long on purpose. */
+int publish_relayed(int fd, const struct zbus_channel *chan, const char *topic, mqtt_qos qos,
+		    const char *what)
+{
+	zvfs_eventfd_t signalled = 0;
+
+	if (zvfs_eventfd_read(fd, &signalled) != 0) {
+		return 0;
+	}
+
+	/* Coalescing means different things on the two channels, so it is
+	 * reported at different severities. On telemetry it is expected and
+	 * documented — latest-wins, and the sequence gap tells the host. On acks
+	 * it is an invariant violation: the relay serialises command round trips,
+	 * so more than one outstanding ack means that premise broke. */
+	if (signalled > 1) {
+		if (chan == &chan_relay_ack) {
+			LOG_ERR("%llu relayed acks coalesced — round trips are not serialised",
+				static_cast<unsigned long long>(signalled));
+		} else {
+			LOG_WRN("%llu relayed %s coalesced into one publish",
+				static_cast<unsigned long long>(signalled - 1), what);
+		}
+	}
+
+	struct relay_up up;
+	int rc = zbus_chan_read(chan, &up, K_MSEC(50));
+
+	if (rc != 0) {
+		LOG_ERR("relay channel read failed: %d", rc);
+		return 0;
+	}
+
+	rc = publish(topic, up.bytes, up.len, qos, false);
+	if (rc == 0) {
+		LOG_INF("relayed %s from node %u (%u bytes)", what, up.node_id, up.len);
+	}
+	return rc;
+}
+
+/* The peer's liveness, as plain ASCII on a retained topic — the same shape the
+ * gateway's own status uses, because a host should not have to care which node
+ * published its liveness or how that node learned it. */
+int publish_relayed_status(void)
+{
+	zvfs_eventfd_t signalled = 0;
+
+	if (zvfs_eventfd_read(relay_status_evt_fd, &signalled) != 0) {
+		return 0;
+	}
+
+	struct relay_status st;
+	int rc = zbus_chan_read(&chan_relay_status, &st, K_MSEC(50));
+
+	if (rc != 0) {
+		LOG_ERR("chan_relay_status read failed: %d", rc);
+		return 0;
+	}
+
+	return publish_text(kPeerTopicStatus, st.online ? "online" : "offline",
+			    MQTT_QOS_1_AT_LEAST_ONCE, true);
+}
+
 /* ---- the session ---------------------------------------------------------- */
 
 /* Connect, then serve the connection until it drops. Returns when disconnected
@@ -467,19 +674,32 @@ bool run_session(void)
 	subscribe_to_commands();
 
 	while (connected) {
-		/* Two descriptors, one wait. Before zbus this loop also owned the
-		 * sample clock, so the timeout had to be the minimum of "next
-		 * sample due" and "keepalive due". Now the sensor keeps its own
-		 * cadence and tells us via the eventfd, leaving exactly one
-		 * deadline here: the keepalive. */
-		struct zsock_pollfd fds[2] = {};
+		/* Five descriptors, one wait, one deadline. Before zbus this loop
+		 * also owned the sample clock, so the timeout had to be the
+		 * minimum of "next sample due" and "keepalive due"; now every
+		 * producer keeps its own cadence and says so through a
+		 * descriptor, leaving exactly one deadline here — the keepalive.
+		 *
+		 * That is the property worth noticing as the node count grows.
+		 * Four of these five come from threads with entirely unrelated
+		 * clocks — a sensor at 5 s, a peer heartbeat at 1 Hz, a command
+		 * round trip at 2 s — and not one of them made this loop harder.
+		 * Each new source of work is one more fd and one more `if`, never
+		 * another timeout to reconcile against the keepalive. */
+		struct zsock_pollfd fds[5] = {};
 
 		fds[0].fd = client.transport.tcp.sock;
 		fds[0].events = ZSOCK_POLLIN;
 		fds[1].fd = telemetry_evt_fd;
 		fds[1].events = ZSOCK_POLLIN;
+		fds[2].fd = relay_telemetry_evt_fd;
+		fds[2].events = ZSOCK_POLLIN;
+		fds[3].fd = relay_ack_evt_fd;
+		fds[3].events = ZSOCK_POLLIN;
+		fds[4].fd = relay_status_evt_fd;
+		fds[4].events = ZSOCK_POLLIN;
 
-		if (zsock_poll(fds, 2, mqtt_keepalive_time_left(&client)) < 0) {
+		if (zsock_poll(fds, ARRAY_SIZE(fds), mqtt_keepalive_time_left(&client)) < 0) {
 			LOG_ERR("poll: %d", errno);
 			break;
 		}
@@ -509,6 +729,36 @@ bool run_session(void)
 				break;
 			}
 		}
+
+		/* The relay's three. Same QoS choices as this node's own topics,
+		 * for the same reasons: telemetry at 0 because a stale reading is
+		 * worse than a missing one, ack at 1 because it is the answer to a
+		 * command, status retained because a harness that connects later
+		 * still needs to know. docs/mqtt-design.md. */
+		if (fds[2].revents & ZSOCK_POLLIN) {
+			rc = publish_relayed(relay_telemetry_evt_fd, &chan_relay_telemetry,
+					     kPeerTopicTelemetry, MQTT_QOS_0_AT_MOST_ONCE,
+					     "telemetry");
+			if (rc != 0) {
+				LOG_ERR("publish: %d", rc);
+				break;
+			}
+		}
+		if (fds[3].revents & ZSOCK_POLLIN) {
+			rc = publish_relayed(relay_ack_evt_fd, &chan_relay_ack, kPeerTopicAck,
+					     MQTT_QOS_1_AT_LEAST_ONCE, "ack");
+			if (rc != 0) {
+				LOG_ERR("publish: %d", rc);
+				break;
+			}
+		}
+		if (fds[4].revents & ZSOCK_POLLIN) {
+			rc = publish_relayed_status();
+			if (rc != 0) {
+				LOG_ERR("publish: %d", rc);
+				break;
+			}
+		}
 	}
 
 	/* Best-effort clean teardown. A clean DISCONNECT deliberately suppresses
@@ -523,14 +773,28 @@ bool run_session(void)
  * refer to this symbol by name. */
 ZBUS_LISTENER_DEFINE(telemetry_listener, on_telemetry);
 
+/* The relay's three, defined here rather than in relay.cpp for the same reason:
+ * the network side owns the observers that feed the network. relay.cpp names
+ * them in its ZBUS_CHAN_DEFINEs; this is where they exist. */
+ZBUS_LISTENER_DEFINE(relay_telemetry_listener, on_relay_telemetry);
+ZBUS_LISTENER_DEFINE(relay_ack_listener, on_relay_ack);
+ZBUS_LISTENER_DEFINE(relay_status_listener, on_relay_status);
+
 int main(void)
 {
 	/* Counter starts at 0 and never blocks a reader, so a poll on it is
 	 * simply "has the sensor thread published since I last looked". */
 	telemetry_evt_fd = zvfs_eventfd(0, ZVFS_EFD_NONBLOCK);
+	relay_telemetry_evt_fd = zvfs_eventfd(0, ZVFS_EFD_NONBLOCK);
+	relay_ack_evt_fd = zvfs_eventfd(0, ZVFS_EFD_NONBLOCK);
+	relay_status_evt_fd = zvfs_eventfd(0, ZVFS_EFD_NONBLOCK);
 
-	if (telemetry_evt_fd < 0) {
-		LOG_ERR("eventfd: %d", errno);
+	if (telemetry_evt_fd < 0 || relay_telemetry_evt_fd < 0 || relay_ack_evt_fd < 0 ||
+	    relay_status_evt_fd < 0) {
+		/* CONFIG_ZVFS_EVENTFD_MAX is the thing to check: it is a hard
+		 * count, and the fourth one failing is what you get for adding a
+		 * channel without raising it. */
+		LOG_ERR("eventfd: %d (raise CONFIG_ZVFS_EVENTFD_MAX?)", errno);
 		return 0;
 	}
 	LOG_INF("broker %s:%u", kBrokerAddr, kBrokerPort);

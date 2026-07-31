@@ -48,10 +48,18 @@
  * flag per measurement rather than a value that has to mean "none" — see the
  * comment on it below, and notes/protobuf-guide.md §5 for the wire half.
  *
- * What is NOT here: the CAN link between them. Its address map, its heartbeat
- * frame and its one-byte message type live in can_link.h, because they are a
- * contract between two *boards* rather than between two threads, and this
- * header's whole claim is that nothing in it touches a transport.
+ * What is NOT here: anything to do with CAN. The link's address map, heartbeat
+ * frame and message-type byte live in can_link.h, because they are a contract
+ * between two *boards* rather than between two threads; the gateway's relay
+ * channels live in relay.h. This header's whole claim is that nothing in it
+ * touches a transport, and the relay channels exist precisely to carry one.
+ *
+ * Worth reading the two side by side, because they avoid generated Protobuf
+ * types for opposite reasons. Here, the internal types exist so a schema change
+ * stops at protocol.cpp instead of reaching the sensor thread. There, the relay
+ * carries raw bytes so a schema change on the *peer* does not reach the gateway
+ * at all — it never decodes what it forwards. Same goal, approached from either
+ * end: a schema change that does not ripple.
  */
 #ifndef APP_CHANNELS_H_
 #define APP_CHANNELS_H_
