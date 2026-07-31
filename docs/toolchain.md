@@ -34,6 +34,32 @@ Use the wrappers; they source the workspace venv, export `ZEPHYR_BASE`, and pass
 ./scripts/console.sh      # serial console @115200; quit with Ctrl-A then K
 ```
 
+**There are two apps now**, and all three take `-a <app>` (or `APP=`), defaulting to `firmware`:
+
+```sh
+./scripts/build.sh   -a sensor-node -p    # the F072RB peer node
+./scripts/flash.sh   -a sensor-node
+./scripts/console.sh -a sensor-node
+```
+
+The board follows from the app rather than being something to remember — `firmware` → `nucleo_h753zi`, `sensor-node` → `nucleo_f072rb` — so `-b` is never needed. `BOARD=` still wins for a one-off. `./scripts/cleanup.sh` takes the same flag and removes every app's build dir without it.
+
+**Two boards attached at once is the normal case now**, and it breaks the two scripts that have to pick one. `./scripts/probe.sh` is what they ask:
+
+```
+$ ./scripts/probe.sh
+APP           PROBE           SERIAL                    PORT
+firmware      STLINK_V3       0052003D3335510235383531  /dev/cu.usbmodem202144403
+sensor-node   STM32 STLink    066DFF363732594D43162633  /dev/cu.usbmodem202144103
+```
+
+It reads the IORegistry for every attached ST-LINK and pairs each with the `/dev/cu.*` that hangs off it, then names it using `scripts/probes.conf`. **The mapping is keyed on the ST-LINK serial**, which is burned into the probe and permanent; the `usbmodemNNNNNN` name comes from the USB topology and changes when the board moves to a different port or hub, which is exactly why it is not what gets written down. `probes.conf` is committed for the same reason the static IPs in `firmware/prj.conf` are — this repo describes one bench, and the real numbers are more use than a placeholder. On a different bench, run `probe.sh` and paste in what it prints.
+
+What the two consumers do with it:
+
+- **`console.sh -a <app>`** resolves the port. Without `-a` and with two boards attached it prints that same table and refuses, rather than opening one at random.
+- **`flash.sh -a <app>`** passes `--serial` when more than one probe is present, and **stops** if it cannot resolve one. Losing that coin flip writes the wrong image to the wrong part and reports success, which is the one failure here worth an extra second to avoid. With a single probe attached nothing is passed and nothing is consulted, so a fresh bench works before `probes.conf` means anything. `STLINK_SERIAL=` overrides all of it.
+
 What they wrap, and why each detail matters:
 
 ```sh
@@ -51,19 +77,20 @@ west flash -r openocd --build-dir <repo>/firmware/build
 
 ### Editor index (clangd)
 
-`.vscode/settings.json` points clangd at **`compile_commands.json` at the repo root**, which `./scripts/ide-index.sh` writes by merging the two build trees that exist here: `firmware/build/` (the app, from `build.sh`) and `twister-out/**` (the test suites, from `test.sh`). Run it by hand — once after a first build, then only when the editor reports missing headers in a file that compiles fine.
+`.vscode/settings.json` points clangd at **`compile_commands.json` at the repo root**, which `./scripts/ide-index.sh` writes by merging the three build trees that exist here: `firmware/build/` (the gateway), `sensor-node/build/` (the peer node) and `twister-out/**` (the test suites, from `test.sh`). Run it by hand — once after a first build, then only when the editor reports missing headers in a file that compiles fine.
 
 - **Why merged.** A test TU's compile command exists *only* in twister's database. Point clangd at `firmware/build` alone and everything under `tests/` fails to resolve `<zephyr/ztest.h>`, which cascades into an error on nearly every line — real-looking diagnostics with no build problem behind them.
 - **Why not automatic.** `build.sh` and `test.sh` stay thin `exec` wrappers. A compile database goes stale only when the set of files or the flags changes — a new source file, a new suite, a Kconfig or devicetree edit — so refreshing on every build would tax every build for a result that changes a few times a month.
 - **First build required.** Neither database exists on a fresh clone, so clangd has nothing until the first `build.sh` or `test.sh`, and then the merge. The merged file is generated, machine-specific (absolute paths) and `.gitignore`d.
-- **Duplicates resolve to the firmware.** Both trees compile much of Zephyr itself under different Kconfig, so shared kernel sources appear twice; the merge keeps the firmware's entry, which is the configuration that ships.
+- **Duplicates resolve to the gateway.** All three trees compile much of Zephyr itself under different Kconfig, so shared kernel sources appear several times; the merge keeps the first entry, and `firmware/` is listed first because it is the widest configuration — networking, MQTT, two threads — and so the most informative one to read shared Zephyr code under. Files unique to `sensor-node/` still get their own app's flags.
 - **clangd must be restarted to notice a changed `--compile-commands-dir`** — *clangd: Restart language server* in the command palette. It picks up *content* changes to the database on its own.
 - Flag/diagnostic tweaks (query driver, GCC-only flags, `-Wvla`, `-Wsection`) live in `.clangd`, commented there and in [`../notes/language-cpp.md`](../notes/language-cpp.md) §11.
 
 ### Hardware / connection facts
 
 - Board: ST **Nucleo-H753ZI** (STM32H753ZI, Cortex-M7). ST-LINK **V3**.
-- Serial console (VCP): `/dev/cu.usbmodem*` @ 115200 8N1 — `scripts/console.sh` auto-detects the port. Quit with **Ctrl-A then K**; Ctrl-A D merely detaches and leaves the port busy, which is why the next run then fails with `Resource busy`.
+- Serial console (VCP): `/dev/cu.usbmodem*` @ 115200 8N1 — `scripts/console.sh` auto-detects the port when only one board is attached, and takes `-a <app>` when both are. Quit with **Ctrl-A then K**; Ctrl-A D merely detaches and leaves the port busy, which is why the next run then fails with `Resource busy`.
+- Peer board: ST **Nucleo-F072RB** (STM32F072RB, Cortex-M0). ST-LINK **V2-1**, which is how `probe.sh` shows up as `STM32 STLink` against the H753ZI's `STLINK_V3`. Console on `usart2`, same 115200 8N1, but **no shell** — it logs at boot and is then silent by design, so a quiet console there is the node working.
 - Host tools (`cmake`, `dtc`, `openocd`, `st-flash`, `ninja`, `ccache`) come from Homebrew / the SDK.
 
 ## Host toolchain (Pi)

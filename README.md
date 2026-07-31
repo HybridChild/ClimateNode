@@ -65,7 +65,7 @@ Topics are `node/<id>/{telemetry,command,ack,status}` — telemetry at QoS 0, co
 - `firmware/` — the **H753ZI gateway**: a Zephyr application in **C++17** (`prj.conf` with `CONFIG_CPP=y`, `CMakeLists.txt`, `src/*.cpp`, and a **board overlay** defining the I²C bus + `sensirion,scd40` node). Generates `node.pb.c/.h` at build time so it can't drift from the schema.
 - `sensor-node/` — the **F072RB peer node**, a second Zephyr app beside the first. It has its own `main.cpp` (the CAN session) and `sensor.cpp` (the BME280), and **compiles the gateway's `protocol.cpp` and `commands.cpp` by relative path** rather than copying them — the same rule `tests/` follows. Two files in `firmware/src/` are therefore shared rather than gateway-only: `app_channels.h` (the zbus channels and the reading type) and `can_link.h` (the CAN address map and heartbeat frame, which both ends of the wire must agree on). The honest end state of that is `gateway/` + `shared/`; the rename is deferred rather than forgotten.
 - `host/` — host test harness on the Pi: a Python **paho-mqtt** monitor and command client that encode/decode Protobuf, plus `generate.sh` for the Python bindings.
-- `scripts/` — the build/flash/console wrappers. Use these rather than raw `west`; they source the workspace venv and pass the right source/build directories.
+- `scripts/` — the build/flash/console wrappers, plus `probe.sh` and its `probes.conf`, which map each app to its ST-LINK so nothing has to guess with two boards attached. Use these rather than raw `west`; they source the workspace venv and pass the right source/build directories.
 - `docs/` — terse project references: decisions, rationale, and verified facts (e.g. `mqtt-design.md`).
 - `notes/` — from-first-principles teaching guides for the concepts behind those decisions (e.g. `communication-guide.md`), each ending in a lab you can run against the bench.
 
@@ -78,6 +78,17 @@ Topics are `node/<id>/{telemetry,command,ack,status}` — telemetry at QoS 0, co
 ./scripts/flash.sh        # forces the openocd runner; the board's default runner isn't installed
 ./scripts/console.sh      # serial console @115200 (quit with Ctrl-A then K)
 ```
+
+There are two apps, and every wrapper takes `-a <app>` (or `APP=`), defaulting to `firmware`. The board follows from the app, so `-b` is never needed:
+
+```sh
+./scripts/build.sh   -a sensor-node -p   # the F072RB peer node
+./scripts/flash.sh   -a sensor-node
+./scripts/console.sh -a sensor-node
+./scripts/probe.sh                       # which ST-LINK and which /dev/cu.* is which app
+```
+
+With both boards plugged in, `-a` is how anything that has to pick one knows which you mean. `console.sh` prints the probe table and refuses rather than opening a board at random; `flash.sh` passes the right ST-LINK serial and stops rather than guessing, because losing that coin flip writes the wrong image to the wrong part and reports success.
 
 **Host** — runs on the Pi, which also hosts the Mosquitto broker. The venv is deliberately separate from the Zephyr workspace venv (see `host/requirements.txt` for why):
 

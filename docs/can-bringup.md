@@ -94,7 +94,7 @@ Note what's *absent*, exactly as with the sensor driver: we never set `CONFIG_CA
 
 **5. The peer's Kconfig — `sensor-node/prj.conf`.** `CONFIG_CAN=y` plus `CONFIG_ISOTP=y`, and deliberately **no shell of any kind**. `can_shell.c` alone was 4356 B of the gateway's flash, and this part has 128 KB and 16 KB of RAM; debugging happens from the gateway's console and the bus, which is also the only option once the node is not on a desk. `CONFIG_ISOTP_USE_TX_BUF` stays off, so `isotp_send()` is called with a null completion callback and blocks until the transfer finishes — see *Driver behaviour worth knowing*.
 
-**6. Console.** The gateway is `zephyr,console = &usart3`, the peer is `&usart2`, both on their ST-LINK VCP at **115200 8N1** and both opened with `scripts/console.sh`. With both Nucleos attached the glob matches two ports and the script refuses to guess; pass one explicitly or set `PORT=`. `flash.sh` has the same problem and the same shape of answer: `STLINK_SERIAL=` picks a probe, and without it openocd takes whichever it finds first.
+**6. Console.** The gateway is `zephyr,console = &usart3`, the peer is `&usart2`, both on their ST-LINK VCP at **115200 8N1**, both opened with `scripts/console.sh -a <app>`. With both Nucleos attached the glob matches two ports and the script refuses to guess — `-a` is how you say which, and `scripts/probe.sh` prints the table it uses. Expect very different things at the far end: the gateway prompts `uart:~$` and has the `can` and `net` commands, while the peer logs at boot and is then silent, because it has no shell. A quiet console on the peer is not a hung peer.
 
 ## Driver behaviour worth knowing
 
@@ -113,10 +113,11 @@ Note what's *absent*, exactly as with the sensor driver: we never set `CONFIG_CA
 scripts/build.sh -p                       # the gateway; pristine, required after devicetree/Kconfig edits
 scripts/build.sh -a sensor-node -p        # the peer node
 scripts/flash.sh -a sensor-node           # forces -r openocd; both boards default to the uninstalled cube runner
-scripts/console.sh /dev/cu.usbmodemXXX    # 115200; quit with Ctrl-A then K
+scripts/console.sh -a sensor-node         # 115200; quit with Ctrl-A then K
+scripts/probe.sh                          # which ST-LINK and which port is which app
 ```
 
-Both scripts take `-a <app>` (or `APP=`) and default to `firmware`; the board follows from the app, so `-b` is never needed. With two probes attached, `STLINK_SERIAL=` pins `flash.sh` to one of them; without it openocd takes whichever it finds first.
+Every wrapper takes `-a <app>` (or `APP=`) and defaults to `firmware`; the board follows from the app, so `-b` is never needed. **Use `-a` whenever both boards are attached**, which from here on is the normal case: `flash.sh` resolves the app's ST-LINK through `scripts/probes.conf` and passes `--serial`, and refuses rather than flashing at random if it cannot. That refusal is the point — an openocd that picks the wrong probe writes the wrong image to the wrong part and reports success, and on two boards running the same two-node experiment that is a genuinely confusing hour. `STLINK_SERIAL=` still overrides.
 
 Enabling CAN on the **gateway** cost **+16 392 B flash** (219 460 → 235 852) and **+908 B RAM** (52 000 → 52 908), on a part with 2 MB and 512 KB. `drivers/can` is 10 804 B of that, split `can_mcan.c` 4392, **`can_shell.c` 4356**, `can_common.c` 1098, with the STM32H7 glue making up the rest — so roughly 40 % of the CAN footprint is a debugging aid.
 

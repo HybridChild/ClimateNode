@@ -72,6 +72,7 @@ Note what's *absent*: we never set `CONFIG_SCD4X`. The driver's Kconfig is `defa
 scripts/build.sh -p     # pristine (after devicetree/Kconfig edits); plain form = incremental
 scripts/flash.sh        # forces -r openocd (nucleo_h753zi defaults to the uninstalled cube runner)
 scripts/console.sh      # serial console @115200; quit with Ctrl-A then K
+                        # add -a firmware to either when the F072RB peer is also plugged in
 ```
 
 Both scripts activate the workspace venv and export `ZEPHYR_BASE` themselves, so no manual `source` is needed. `build.sh` runs `west build` from inside `~/zephyr-workspace` (so west can enumerate modules) with `-s firmware -d firmware/build`.

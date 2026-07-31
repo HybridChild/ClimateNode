@@ -2,13 +2,20 @@
 # Open a Nucleo's serial console (ST-LINK VCP) with screen.
 #
 # The VCP enumerates as /dev/cu.usbmodem* on macOS; the trailing digits come from
-# the ST-LINK serial number and change if the board or USB port changes, so we
-# glob for it rather than hardcode. Zephyr's console + shell run at 115200 8N1.
+# the USB topology and change if the board moves to a different port or hub, so
+# we never hardcode one. There are three ways to say which board you mean, in
+# descending order of how much you have to know:
 #
-# With both Nucleos attached there are two matching ports -- one per ST-LINK --
-# and auto-detection deliberately refuses to guess. It prints both, and you pick:
-# the H753ZI gateway is the one running the shell with `net` and `can` commands,
-# the F072RB peer node logs but has no shell (it has no RAM to spare for one).
+#   -a <app>      by app name, resolved through scripts/probe.sh and probes.conf
+#   <port>        an explicit /dev/cu.* path
+#   (nothing)     auto-detect, which works only when exactly one board is attached
+#
+# Zephyr's console runs at 115200 8N1 on both boards. What is on the far end
+# differs, and it is worth knowing before concluding a board is dead: the H753ZI
+# gateway runs a shell with `net` and `can` commands and prompts with `uart:~$`,
+# while the F072RB peer node logs three lines at boot and then goes quiet -- it
+# has no shell at all, deliberately, because it has no RAM to spare for one. A
+# silent console on the peer is the peer working.
 #
 # Quitting screen matters here: Ctrl-A then K (then y) terminates the session and
 # frees the port. Ctrl-A then D only *detaches* — the port stays busy and the next
@@ -16,13 +23,41 @@
 # quit` to kill it).
 #
 # Usage:
-#   scripts/console.sh                 # auto-detect the port, 115200
+#   scripts/console.sh -a sensor-node  # the peer node, whichever port it is on
+#   scripts/console.sh -a firmware     # the gateway
+#   scripts/console.sh                 # auto-detect; refuses if two are attached
 #   scripts/console.sh /dev/cu.usbXYZ  # explicit port
 #   BAUD=9600 scripts/console.sh       # override the baud rate
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 BAUD="${BAUD:-115200}"
+APP_NAME="${APP:-}"
+
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+	-a)
+		if [[ $# -lt 2 ]]; then
+			echo "-a needs an app name (firmware or sensor-node)." >&2
+			exit 2
+		fi
+		APP_NAME="$2"
+		shift 2
+		;;
+	*)
+		break
+		;;
+	esac
+done
+
 PORT="${1:-${PORT:-}}"
+
+# -a resolves a port, but an explicit path still wins, so a one-off
+# `scripts/console.sh /dev/cu.usbmodemXXX` does exactly what it says.
+if [[ -z "$PORT" && -n "$APP_NAME" ]]; then
+	PORT="$("$SCRIPT_DIR/probe.sh" -a "$APP_NAME" --port)"
+fi
 
 if [[ -z "$PORT" ]]; then
 	PORTS=(/dev/cu.usbmodem*)
@@ -32,8 +67,12 @@ if [[ -z "$PORT" ]]; then
 		exit 1
 	fi
 	if (( ${#PORTS[@]} > 1 )); then
-		echo "Multiple serial ports found — pass one explicitly:" >&2
-		printf '  %s\n' "${PORTS[@]}" >&2
+		# Two boards attached and nothing said which. Rather than print bare
+		# device paths, which mean nothing on their own, show the probe
+		# table -- it names the app beside each port.
+		echo "More than one board attached — say which with -a, or pass a port:" >&2
+		echo >&2
+		"$SCRIPT_DIR/probe.sh" >&2 || printf '  %s\n' "${PORTS[@]}" >&2
 		exit 1
 	fi
 	PORT="${PORTS[0]}"
