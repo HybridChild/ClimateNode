@@ -2,41 +2,46 @@
 
 A guided reading of `firmware/src/main.cpp`, written to teach the patterns rather than document the file. For the *concepts* underneath (what a broker is, what QoS means, how topics work) see [`communication-guide.md`](../notes/communication-guide.md); for the *decisions* this code implements (which topic, which QoS, and why) see [`mqtt-design.md`](mqtt-design.md). For how the payloads themselves are encoded, see [`protobuf-guide.md`](../notes/protobuf-guide.md). For channels, observers and why the sensor is a separate thread, see [`zbus-guide.md`](../notes/zbus-guide.md).
 
-`main.cpp` owns the **MQTT session** and nothing else. The application is four translation units, each with one job:
+`main.cpp` owns the **MQTT sessions** and nothing else. The application is five translation units, each with one job:
 
 | File | Owns |
 |---|---|
 | `sensor.cpp` | acquisition: the SCD-40, the sample period, the bounds |
 | `protocol.cpp` | the wire format: internal types ↔ protobuf |
 | `commands.cpp` | command semantics: dispatch, duplicate suppression, node identity |
+| `relay.cpp` | the CAN side: heartbeat liveness, ISO-TP in both directions |
 | **`main.cpp`** | **this walkthrough: connect, poll, publish, reconnect** |
 
 So when this file decodes a command it calls `decode_command()` (protocol) and then `handle_command()` (commands), and does not itself know what a `SetInterval` means. That separation is what lets the middle two be tested without hardware — see [`test-strategy.md`](test-strategy.md).
 
-`sensor.cpp` and `main.cpp` meet on the zbus channels in `app_channels.h` — §11 reads that boundary. Together the four touch every layer of the stack: Zephyr's device model, its socket API, the MQTT library, the sensor API, and an in-process message bus. Read them as a stack of ideas, not top to bottom.
+`sensor.cpp` and `main.cpp` meet on the zbus channels in `app_channels.h`; `relay.cpp` and `main.cpp` meet on the ones in `relay.h`. §11 reads both boundaries. Together the five touch every layer of the stack: Zephyr's device model, its socket API, the MQTT library, the sensor API, a CAN transport, and an in-process message bus. Read them as a stack of ideas, not top to bottom.
 
 ---
 
 ## 1. The shape of the program
 
-**Two threads.** Each owns one clock and one job:
+**Four threads.** Each owns one clock and one job:
 
 ```
 sensor.cpp   K_THREAD_DEFINE(sensor_tid, …)
   └─ forever: read the SCD-40, publish to chan_telemetry,
               wait out the sample period (or wake early for a command)
 
+relay.cpp    K_THREAD_DEFINE(relay_rx_tid, …)   K_THREAD_DEFINE(relay_tx_tid, …)
+  └─ RX: forever: timed isotp_recv(), drain heartbeats, step the liveness clock
+     TX: forever: wait on chan_relay_command, isotp_send(), wait for the ack
+
 main.cpp     main()
-  └─ forever: run a session, back off, retry          ← survives disconnection
-      └─ run_session()      connect, then serve until the connection drops
-          └─ while (connected)  wake on socket OR bus, handle it, repeat
+  └─ forever: step every session, wake on any socket OR any bus, handle it
 ```
 
 Two things are worth noticing before anything else.
 
-**The outer loop in `main()` is the one that matters.** Most introductory MQTT code is written as "connect once, then loop publishing", with reconnection bolted on afterwards as an `if (error) ...`. Here **disconnection is the expected control flow**. `run_session()` has no success path to fall through to — it always ends by returning, and the only question the caller asks is how long to wait before trying again.
+**`main()` is a state machine over sessions, not a connect-and-serve function.** Most introductory MQTT code is written as "connect once, then loop publishing", with reconnection bolted on afterwards as an `if (error) ...`. Here **disconnection is the expected control flow**. Each `struct node_session` is independently `IDLE` (waiting out a backoff), `CONNECTING` (CONNACK outstanding) or `SERVING`, and the loop steps all of them on every pass — so one connection can be backing off while another publishes.
 
-**The sensor thread does not participate in any of that.** It has never heard of MQTT. It keeps sampling at its own cadence through a connect, a disconnect, and a 30-second backoff, and the readings it takes meanwhile simply pile up as a gap in the `sequence` field. That separation is the whole reason the two threads exist: fold them into one loop and the sample clock becomes hostage to the socket, so a reconnect backoff stops the sensor too.
+That shape is what a second identity required. An earlier version of this file had a blocking `run_session()` that connected, served until the link dropped, and returned; with two sessions it would have had to serve one while the other was down, which a blocking function cannot do. The state machine is the same program with the blocking removed.
+
+**The other three threads do not participate in any of that.** None of them has heard of MQTT. The sensor keeps sampling and the relay keeps beating and listening through a connect, a disconnect and a 30-second backoff, and the readings taken meanwhile simply pile up as a gap in the `sequence` field. That separation is the whole reason the threads exist: fold any of them into this loop and its clock becomes hostage to the socket, so a reconnect backoff would stop the sensor — and would let the peer time out as dead while it was merely unheard.
 
 Both inversions are deliberate. A node that cannot survive a cable pull is not finished, and a sensor whose cadence depends on the network's mood is not a sensor.
 
@@ -106,7 +111,18 @@ Zephyr's native socket API is namespaced with `zsock_`. Zephyr can *also* expose
 
 ## 4. `struct mqtt_client` is a form you fill in
 
-`client_setup()` does not *do* anything — it populates a configuration record. Every field is read later, when `mqtt_connect()` serialises the `CONNECT` packet.
+`client_setup(s)` does not *do* anything — it populates a configuration record. Every field is read later, when `mqtt_connect()` serialises the `CONNECT` packet.
+
+It takes a `struct node_session *` because there are two of them. That struct holds one client's entire world — the `mqtt_client`, its broker address, its buffers, its will, its packet-id counter, its connection state and its backoff — and `sessions[]` holds one per node identity. Every function below that used to read a file-scope variable now takes a session instead, which is the mechanical half of this file's history and the least interesting.
+
+The *interesting* half is one field that used to be a `static` inside `client_setup()`:
+
+```c
+static struct mqtt_topic will_topic;      /* the old version */
+static struct mqtt_utf8 will_message;
+```
+
+Correct for exactly one client, and silently wrong for two: both clients would point at the same storage, so whichever connected last would decide the will topic for both. One status topic would get two wills and the other none — and nothing reports it, because a will is only observable when a node actually dies. Moving those two fields into the session was a bug fix wearing the clothes of a refactor.
 
 | Field | What it becomes |
 |---|---|
@@ -123,11 +139,16 @@ Three of these deserve more than a table row.
 ### The buffers are yours
 
 ```c
-uint8_t rx_buffer[256];
-uint8_t tx_buffer[256];
+struct node_session {
+        ...
+        uint8_t rx[256];
+        uint8_t tx[256];
+};
 ```
 
 Zephyr's MQTT library performs **no dynamic allocation**. You hand it statically allocated buffers and those sizes are the hard ceiling on packet size. This is characteristic of embedded libraries generally: the caller supplies the memory, so the footprint is visible in the map file rather than hidden in a heap.
+
+They are per session, and that is not optional: two clients sharing one receive buffer would interleave two packet streams into it. Two sessions therefore cost 1 KB of buffers before anything else, which is the honest price of the second identity.
 
 Practical consequence: a topic + payload larger than `tx_buf_size` cannot be published, and `mqtt_publish()` will fail rather than grow the buffer.
 
@@ -160,7 +181,7 @@ The `static` on `will_topic` and `will_message` is load-bearing. Drop it and the
 Two points worth being precise about:
 
 - **A pointer to a dead local does not become null.** It keeps pointing at reclaimed stack. That is worse than null: a null dereference faults immediately and loudly, whereas the stale bytes usually survive untouched until the next call overwrites them — so the code appears to work on the bench and fails when an interrupt lands at the wrong moment.
-- **`broker` is reused across sessions.** `run_session()` calls `client_setup()` on every reconnect attempt, so the same struct is re-initialised each time. That is why line `broker = {}` re-zeroes it first: without it, fields from a previous session would silently carry over.
+- **`broker` is reused across reconnects.** `session_connect()` calls `client_setup(s)` on every attempt, so the same struct is re-initialised each time. That is why `s->broker = {}` re-zeroes it first: without it, fields from a previous connection would silently carry over.
 
 The `namespace { ... }` wrapper is a separate concern — it gives *internal linkage*, the C++ replacement for file-scope `static`, keeping these symbols out of other translation units. It does not affect lifetime; namespace-scope variables already have static storage duration.
 
@@ -176,10 +197,12 @@ The will topic and payload travel inside the CONNECT packet and the broker **hol
 
 No code in this file runs in that path — which is exactly the point, because the scenario it covers is "the node is dead." You cannot write firmware that reliably announces its own crash; delegating that to the broker is the whole idea.
 
-Note the matching asymmetry at the end of `run_session()`:
+**And a connection may register exactly one will**, which is the entire reason this gateway holds two connections rather than one. The `nucleo-1` session's will covers `node/1/status`; the `nucleo-2` session's covers `node/2/status`, so a gateway that dies marks *both* nodes offline even though only one of them is this device. Everything else about relaying the peer's traffic worked fine on a single connection — see the failure table in [`mqtt-design.md`](mqtt-design.md).
+
+Note the matching asymmetry in `session_drop()`:
 
 ```c
-mqtt_disconnect(&client, nullptr);
+mqtt_disconnect(&s->client, nullptr);
 ```
 
 A clean `DISCONNECT` **suppresses** the will. That is MQTT semantics, not a Zephyr detail: disconnecting deliberately means "I am leaving on purpose", so `offline` should only be published when the node dies *unexpectedly*.
@@ -196,49 +219,74 @@ But here is the part that is easy to get wrong:
 
 > **The callback does not fire on its own.** It is invoked *synchronously, from inside `mqtt_input()`*, on your own thread. There is no MQTT thread. If you stop calling `mqtt_input()`, no events ever arrive.
 
-This explains a block that otherwise looks strange:
+This explains why connecting is a *state* rather than a function call:
 
 ```c
-int rc = mqtt_connect(&client);
-...
-for (int waited = 0; !connected && !connect_failed && waited < 5000; waited += 100) {
-    if (wait_for_input(100) > 0) {
-        mqtt_input(&client);
-    }
+void session_connect(node_session *s)
+{
+        client_setup(s);
+        if (mqtt_connect(&s->client) != 0) { ...back off... }
+        s->state = SESSION_CONNECTING;
+        s->connack_due = k_uptime_get() + kConnackTimeoutMs;
 }
 ```
 
-`mqtt_connect()` returning `0` only means *"TCP is up and the CONNECT packet was sent."* The CONNACK is a **reply** and arrives later. So the code has to pump `mqtt_input()` in a loop until the callback flips the `connected` flag. The 5-second cap converts "broker never answers" from a hang into a reportable failure.
+`mqtt_connect()` returning `0` only means *"TCP is up and the CONNECT packet was sent."* The CONNACK is a **reply** and arrives later, and it will only arrive if somebody keeps calling `mqtt_input()`. The main loop does that for every session that has a socket, and checks each pass whether the callback has flipped `connected`, `connect_failed`, or whether `connack_due` has passed — which converts "broker never answers" from a hang into a reportable failure.
+
+An earlier version of this file spun a 5-second `for` loop right here, pumping input until the flag flipped. That was simpler to read and impossible to generalise: while it spun, the *other* session's socket went unread. Anything blocking in a program with N connections is a program with N-1 connections it is neglecting.
+
+### One callback, two clients
+
+`mqtt_evt_handler()` is shared, so it has to recover which session it was invoked for. `struct mqtt_client`'s last member is a `void *user_data` the library never touches, set in `client_setup()`:
+
+```c
+s->client.user_data = s;                                   /* setup */
+node_session *s = static_cast<node_session *>(c->user_data);   /* callback */
+```
+
+One cast, no `CONTAINER_OF`, and no dependence on where inside the session the `mqtt_client` happens to sit. The alternative — deriving the session from the client's address — works, and quietly assumes a layout that a compiler is entitled to change.
 
 ### A note on `volatile`
 
 `connected` and `connect_failed` are declared `volatile`, which suggests concurrent access. In fact the callback runs on the same thread as the loop reading them, so `volatile` is not buying anything here. It is harmless, but do not carry away the idea that `volatile` provides thread safety — it does not. It prevents the compiler from caching a value in a register; it says nothing about atomicity or memory ordering between CPUs. Genuine cross-thread sharing in Zephyr wants `atomic_t`, a mutex, or a message queue.
 
-## 6. The heart: one wait, two descriptors
+## 6. The heart: one wait, six descriptors
 
 This is the most instructive part of the file.
 
+The poll set is **assembled on every pass** rather than being a fixed array, because what is worth waiting on depends on which sessions currently exist:
+
 ```c
-struct zsock_pollfd fds[2] = {};
+struct zsock_pollfd fds[kSessionCount + 4] = {};
+int n = 0;
 
-fds[0].fd = client.transport.tcp.sock;   /* bytes from the broker  */
-fds[1].fd = telemetry_evt_fd;            /* a reading from the bus */
-fds[0].events = fds[1].events = ZSOCK_POLLIN;
+for each session not IDLE:      fds[n++] = its TCP socket
+if (own session is SERVING):    fds[n++] = telemetry_evt_fd
+if (peer session is SERVING):   fds[n++] = relay_telemetry_evt_fd
+                                fds[n++] = relay_ack_evt_fd
+                                fds[n++] = relay_status_evt_fd
 
-zsock_poll(fds, 2, mqtt_keepalive_time_left(&client));
+zsock_poll(fds, n, next_deadline_ms(now));
 ```
 
-The thread has three reasons to wake up:
+Two conditions there are load-bearing. A session in `IDLE` **has no socket** — polling a torn-down one is a bug, not a no-op. And an eventfd is watched only while the session that would publish it is `SERVING`: a producer signalling into a dead session would otherwise make `poll()` return immediately, forever, at that producer's cadence.
 
-1. Bytes arrived from the broker (an incoming command)
+The thread's reasons to wake are now:
+
+1. Bytes arrived on either connection (an incoming command)
 2. The sensor thread produced a reading
-3. Keepalive is due — a `PINGREQ` must go out or the broker will declare us dead
+3. The relay received telemetry, an ack, or a liveness change from the peer
+4. A deadline: a keepalive, a backoff expiring, or a CONNACK overdue
 
-Reasons 1 and 2 are **descriptors**; reason 3 is a **deadline**. Because the sample clock belongs to the sensor thread, exactly one deadline is left here, and the timeout is simply `mqtt_keepalive_time_left()` — no minimum to compute, no clamp to get wrong.
+Everything in 1–3 is a **descriptor**; only 4 is a deadline.
 
-### Why one deadline and not two
+### Why still one deadline
 
-That simplicity is bought, not free, and it is worth seeing what the alternative costs. A loop that owns both the sample clock and the keepalive has to reconcile them by hand:
+Six descriptors and four producers, and the timeout is still a single number — `next_deadline_ms()`, the nearest across every session. That is worth dwelling on, because the naive expectation is the opposite.
+
+The reason is that **no producer's clock lives here.** The sensor keeps its own sample period, the relay keeps its own heartbeat timeout, the peer keeps its own beat — and each of them says so through a descriptor rather than by making this loop track it. So growing from one node to two added descriptors and `if`s, and nothing at all to reconcile.
+
+Contrast a loop that owns a producer's clock, which is what this file used to be before zbus:
 
 ```c
 int64_t until_sample = next_sample - k_uptime_get();
@@ -247,7 +295,9 @@ int timeout = MIN(MAX(until_sample, 0), mqtt_keepalive_time_left(&client));
 
 That `MAX(until_sample, 0)` is not decoration. An already-expired deadline yields a negative number, and `poll()` reads a negative timeout as **block forever** — a subtle and total hang, reachable only when the loop runs late. Every additional deadline folded into one loop adds another such edge, and each is invisible on a fast bench and lethal under load.
 
-Keeping one deadline per waiter removes the whole class of bug rather than guarding against instances of it. **A clamp is a fix; having nothing to clamp is a design.**
+The deadlines that genuinely do belong here — one per session — are minimised in `next_deadline_ms()`, with one guard worth knowing: `mqtt_keepalive_time_left()` returns **-1** when `keepalive` is 0, meaning "never". Folding that into a minimum would turn *never* into *immediately* and spin the loop, so negatives are skipped rather than compared. Unreachable while every session sets a keepalive, and one line.
+
+**A clamp is a fix; having nothing to clamp is a design.**
 
 ### Why the bus needs a file descriptor at all
 
@@ -319,14 +369,12 @@ If a message arrives at QoS 1, the receiver **must** send a `PUBACK`, or the bro
 ## 8. Publishing and message ids
 
 ```c
-static uint16_t next_message_id;
-
 if (qos == MQTT_QOS_0_AT_MOST_ONCE) {
     param.message_id = 0;
 } else {
-    next_message_id++;
-    if (next_message_id == 0) { next_message_id = 1; }
-    param.message_id = next_message_id;
+    s->next_message_id++;
+    if (s->next_message_id == 0) { s->next_message_id = 1; }
+    param.message_id = s->next_message_id;
 }
 ```
 
@@ -334,27 +382,29 @@ The packet identifier correlates a `PUBLISH` with its `PUBACK`. At QoS 0 there i
 
 For QoS 1 the identifier only has to be **non-zero and distinct among messages currently in flight**. Since this node never has more than one outstanding, a simple incrementing counter is sufficient and fully deterministic. The wrap check exists because `0` is reserved. A client with many concurrent in-flight messages would need to track which ids are still awaiting acknowledgement and avoid reuse.
 
+The counter is `s->next_message_id` rather than a file-scope `static`, and that is a correctness point rather than tidiness: **packet ids are scoped to a connection.** Two clients sharing one counter would still work — the ids would be unique, just sparsely allocated — but they would be describing a namespace that does not exist, and the first time something depended on the property (a client tracking several in-flight messages, say) the sharing would be a real bug. Worth fixing while it is still only wrong on principle.
+
 ## 9. Reconnect and backoff
 
 ```c
-bool was_connected = run_session();
-
-if (was_connected) {
-    backoff = kBackoffMinMs;
-}
-LOG_WRN("reconnecting in %d ms", backoff);
-k_msleep(backoff);
-if (!was_connected) {
-    backoff = MIN(backoff * 2, kBackoffMaxMs);
+void session_drop(node_session *s, bool reached_connack, const char *why)
+{
+        ...tear down...
+        s->backoff_ms = reached_connack ? kBackoffMinMs
+                                        : MIN(s->backoff_ms * 2, kBackoffMaxMs);
+        s->state = SESSION_IDLE;
+        s->retry_at = k_uptime_get() + s->backoff_ms;
 }
 ```
 
-`run_session()` returns whether the session ever reached CONNACK, and that distinction drives the policy:
+Every path that gives up on a connection goes through this one function, and `reached_connack` drives the policy:
 
 - **Reached CONNACK, then dropped** — the broker is demonstrably reachable, so this was a transient fault. Reset to the 1 s minimum for a fast recovery.
 - **Never connected** — the broker is down, or the cable is unplugged. Keep doubling up to 30 s so a dead endpoint is retried patiently instead of hammered in a hot loop.
 
 Exponential backoff without the reset is a classic bug: after a handful of unrelated disconnects the delay is pinned at maximum, and a node that recovers instantly still waits 30 s to notice.
+
+**Note what the backoff is not: a sleep.** The old version called `k_msleep(backoff)`, which was fine with one connection and unacceptable with two — a 30-second sleep waiting for one broker connection would have stopped serving the other. `retry_at` is a deadline instead, `next_deadline_ms()` folds it in with the keepalives, and the loop keeps running throughout. Turning a sleep into a deadline is most of what "make it a state machine" actually means.
 
 ## 10. C APIs from C++
 
@@ -374,9 +424,9 @@ constexpr mqtt_utf8 utf8_of(const char *s);
 
 Related: `main` is never name-mangled, so it needs no `extern "C"`. The event handler is a plain `static` function used as a C function pointer, which works because it is not a non-static member function and therefore has ordinary C calling convention.
 
-## 11. The seam between the two threads
+## 11. The seams between the threads
 
-Everything above concerns the MQTT thread. This section reads the join to the other one. For channels and observers from first principles, see [`zbus-guide.md`](../notes/zbus-guide.md).
+Everything above concerns the MQTT thread. This section reads the joins to the other three. For channels and observers from first principles, see [`zbus-guide.md`](../notes/zbus-guide.md).
 
 ### Going out: a reading becomes a publish
 
@@ -432,10 +482,31 @@ Note where the bounds are *not*. Neither `main.cpp` nor `commands.cpp` range-che
 
 Note also that `chan_sensor_cmd` uses a **message subscriber**, not a listener: it delivers a private copy of every message, in order, and collapses nothing. Commands have no next one coming, so none may be dropped — the QoS 1 argument, applied internally.
 
+### The relay's seam is the same one, four times
+
+`relay.cpp` joins this file through four more channels, and the reason they are worth reading after the two above is that they are *the same pattern with the arguments re-derived* — not a new mechanism:
+
+| Channel | Observer | Because |
+|---|---|---|
+| `chan_relay_telemetry` | listener → eventfd | state, latest-wins — the `chan_telemetry` argument |
+| `chan_relay_ack` | listener → eventfd | at most one is ever outstanding, so latest-wins cannot collapse anything |
+| `chan_relay_status` | listener → eventfd | liveness is state, and latest-wins is what a retained topic means |
+| `chan_relay_command` | message subscriber | a command has no next one coming — the `chan_sensor_cmd` argument |
+
+Two details are worth more than the table.
+
+**Three eventfds, not one.** A shared descriptor would say only "something happened", and because `zbus_chan_read()` returns the channel's current value whether or not it is fresh, the reader would have to read all three on every wake — and would republish stale telemetry as though it were new. The descriptor *is* the identity of the event, and that is why growing the poll set is the cheap way to add a producer.
+
+**The ack channel is a listener despite an ack being an event**, which contradicts the rule the other three follow. It is allowed because the relay serialises command round trips *structurally*: `isotp_send()` blocks until the whole segmented transfer completes, and the TX thread then blocks waiting for the ack, so at most one is ever outstanding and latest-wins cannot collapse a set of one. That is a premise rather than a proof, so the eventfd counter checks it for free — `publish_relayed()` logs a coalesced ack at **ERROR** where it logs coalesced telemetry at WARN. A design that depends on an invariant should say out loud when the invariant breaks.
+
+**What this file does *not* do with the relay's payloads** is the whole point of them: it does not decode them. `publish_relayed()` reads a byte array off a channel and publishes it on a topic. Which channel it came from decides the topic, and that is the entire extent of the gateway's knowledge about the message. See [`relay.h`](../firmware/src/relay.h).
+
 ## 12. What is deliberately missing
 
 - **No TLS, no credentials.** `MQTT_TRANSPORT_NON_SECURE` and anonymous access — bench only. A real deployment uses `MQTT_TRANSPORT_SECURE` plus a credential set.
 - **No persistence.** The sample period survives reconnects but not reboots; a `SetInterval` is lost on power cycle. Zephyr's settings subsystem is the usual answer.
 - **Single-slot command dedupe.** `last_command_sequence`, in `commands.cpp`, remembers only the most recent command, so back-to-back duplicates are caught but an interleaved `A, B, A` is not. A deliberate simplification for a node with one command source, and one the tests pin in both directions (`tests/commands/`).
 - **No backpressure from the bus.** The sensor thread publishes regardless of whether the MQTT thread is keeping up, and never learns that a reading was discarded — only the reader sees the coalesce count. Fine for latest-wins telemetry; wrong for anything that must not be lost.
+- **No per-session command routing.** `handle_incoming_publish()` decides which node a command is for by comparing the *topic string*, not by which session it arrived on. Those agree today, and nothing enforces it. Keying on the session would be marginally tighter and would lose the property that the topic is the contract (notes/protobuf-guide.md §4).
+- **The two sessions share one broker address, one keepalive and one backoff policy.** They are two identities to the broker, not two configurations. A real gateway speaking for nodes on different brokers would need those per session too — the struct is already the right shape for it.
 - **The backoff can outlast the outage.** A broker that returns after 2 s may still wait out a 30 s delay. That is the intended trade — patience over hammering — but it means "broker downtime" and "node downtime" are not the same number. See *Reconnect latency* in [`mqtt-design.md`](mqtt-design.md).

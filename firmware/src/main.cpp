@@ -102,6 +102,14 @@ constexpr const char *kTopicStatus = "node/1/status";
 /* The peer node's topics. Its payloads are produced by the F072RB and carried
  * here; nothing in MQTT requires the publisher of a topic to *be* the thing the
  * topic names, and the peer has no IP stack at all. */
+/* The peer's MQTT client id. Distinct from kNodeClientId, and asserted so at
+ * boot: two sessions presenting the same id make the broker perform a takeover,
+ * each CONNECT kicking the other off forever, which reads exactly like a network
+ * fault. Note this is the gateway's name FOR the peer — the peer's own
+ * commands.h identity is defined in sensor-node/src/main.cpp and reported by
+ * GetDeviceInfo; they say the same thing and neither can check the other. */
+constexpr const char *kPeerClientId = "nucleo-2";
+
 constexpr const char *kPeerTopicTelemetry = "node/2/telemetry";
 constexpr const char *kPeerTopicCommand = "node/2/command";
 constexpr const char *kPeerTopicAck = "node/2/ack";
@@ -178,26 +186,47 @@ struct node_session {
 	int64_t connack_due;
 };
 
-/* One session today. Everything above is already plural; adding the peer's own
- * identity is a matter of another row here and one constant below. */
+/* Two connections to one broker, presenting two client ids.
+ *
+ * The second one buys exactly one thing, and it is worth being precise because
+ * everything else already worked on a single connection: **MQTT 3.1.1 permits
+ * one Last Will per connection.** So only a client that *is* node 2 can have the
+ * broker publish `node/2/status offline` when the GATEWAY dies. With one
+ * connection that failure left node/2/status retained as `online` forever —
+ * stale, and stale on the one topic whose whole job is to be true.
+ *
+ * What it does NOT buy: any knowledge of the peer's own liveness. The broker
+ * still cannot observe the F072RB, which has no IP stack; "peer dead, gateway
+ * alive" is firmware-published by the relay's heartbeat timeout in either
+ * design. The two mechanisms cover different failures, which is why both exist.
+ *
+ * Note that this session speaks for a node that is not this device, and its
+ * `topic_telemetry` is never used — the relay's payloads are published by
+ * explicit topic. It is the identity that matters, not the plumbing. */
 node_session sessions[] = {
 	{
 		.client_id = kNodeClientId,
 		.topic_telemetry = kTopicTelemetry,
 		.topic_ack = kTopicAck,
 		.topic_status = kTopicStatus,
-		.command_topics = {kTopicCommand, kPeerTopicCommand},
-		.command_topic_count = 2,
+		.command_topics = {kTopicCommand},
+		.command_topic_count = 1,
+	},
+	{
+		.client_id = kPeerClientId,
+		.topic_telemetry = kPeerTopicTelemetry,
+		.topic_ack = kPeerTopicAck,
+		.topic_status = kPeerTopicStatus,
+		.command_topics = {kPeerTopicCommand},
+		.command_topic_count = 1,
 	},
 };
 
 constexpr size_t kSessionCount = ARRAY_SIZE(sessions);
 
-/* Which session carries which node's topics. Both are session 0 while there is
- * only one connection; separating the *names* now is what lets the second
- * identity be a one-line change rather than a hunt through the file. */
+/* Which session carries which node's topics. */
 constexpr uint8_t kOwnSession = 0;
-constexpr uint8_t kPeerSession = 0;
+constexpr uint8_t kPeerSession = 1;
 
 /* ---- state ---------------------------------------------------------------- */
 
@@ -762,7 +791,27 @@ void session_serving(node_session *s)
 	s->state = SESSION_SERVING;
 	s->backoff_ms = kBackoffMinMs;
 
-	publish_text(s, s->topic_status, "online", MQTT_QOS_1_AT_LEAST_ONCE, true);
+	/* The gateway's own session may say "online" unconditionally — it is
+	 * speaking for itself, and it is evidently up.
+	 *
+	 * The peer's session may not. It speaks for a node this device merely
+	 * relays, whose liveness the relay tracks independently, and which may
+	 * well be dead right now. Announcing "online" here would overwrite a
+	 * correct `offline` with a false one, on a retained topic, every time the
+	 * gateway reconnected to the broker. So it publishes what the relay
+	 * currently believes, and PEER_UNKNOWN publishes nothing at all — see
+	 * liveness_step() in relay.h for why that state exists. */
+	if (s == &sessions[kPeerSession] && kPeerSession != kOwnSession) {
+		struct relay_status st;
+
+		if (zbus_chan_read(&chan_relay_status, &st, K_MSEC(50)) == 0 && st.node_id != 0) {
+			publish_text(s, s->topic_status, st.online ? "online" : "offline",
+				     MQTT_QOS_1_AT_LEAST_ONCE, true);
+		}
+	} else {
+		publish_text(s, s->topic_status, "online", MQTT_QOS_1_AT_LEAST_ONCE, true);
+	}
+
 	subscribe_to_commands(s);
 }
 

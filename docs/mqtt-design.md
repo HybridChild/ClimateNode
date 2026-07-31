@@ -26,17 +26,19 @@ Decisions and verified setup for the Nucleo ↔ Pi MQTT link. Terse by intent �
 
 `status` stays plain ASCII deliberately: it is the one topic the broker itself writes (as the will), so it cannot be protobuf-encoded by firmware.
 
-**Who publishes `node/2/*`.** Today: the gateway, on its own single MQTT connection. Nothing in MQTT requires the publisher of a topic to *be* the thing the topic names, and the peer node has no IP stack at all — it speaks only CAN. `relay.cpp` moves its already-encoded payloads across and `main.cpp` publishes them; see [`can-bringup.md`](can-bringup.md).
+**Who publishes the `node/2` topics.** The gateway, over **a second MQTT connection presenting client id `nucleo-2`**. Nothing in MQTT requires the publisher of a topic to *be* the thing the topic names, and the peer node has no IP stack at all — it speaks only CAN. `relay.cpp` moves its already-encoded payloads across and `main.cpp` publishes them; see [`can-bringup.md`](can-bringup.md).
 
-What that arrangement cannot do is one specific thing, and it is worth being precise because it is the entire argument for a second connection later. **MQTT 3.1.1 permits exactly one Last Will per connection.** So the gateway's will covers `node/1/status`, and there is no way for one connection to also register a will on `node/2/status`. Consequently:
+**Why two connections rather than one.** Everything above works on a single connection except one thing, and that one thing is the entire justification: **MQTT 3.1.1 permits exactly one Last Will per connection.** A will is registered in the CONNECT packet, so a connection can cover one status topic and no more.
 
-| Failure | How `node/2/status` becomes `offline` today |
+| Failure | How `node/2/status` becomes `offline` |
 |---|---|
-| peer node dies, gateway alive | the gateway's heartbeat timeout notices and publishes — works |
-| gateway dies, peer alive | **nothing publishes it.** `node/2/status` stays `online`, stale |
-| both die | the gateway's own will fires on `node/1/status` only |
+| peer node dies, gateway alive | the relay's heartbeat timeout notices and publishes — firmware, either design |
+| **gateway dies, peer alive** | **the `nucleo-2` session's will fires.** With one connection nothing published it and the topic stayed retained-`online`, stale |
+| both die | both wills fire, one per status topic |
 
-A second MQTT connection presenting client id `nucleo-2` would close that middle row, and that is the *only* thing it would close — the broker can never observe the peer's own liveness in either design, because there is no TCP connection between them to notice. Deferred deliberately so the relay could be verified on its own.
+The two mechanisms cover different failures and neither substitutes for the other — which is the point. The broker can never observe the peer's own liveness, because there is no TCP connection between them to notice; and firmware can never publish anything about a gateway that has stopped running. Note also the asymmetry in *what the connection is*: the `nucleo-2` session is a real MQTT client with its own id, session state, keepalive and packet-id space, and none of that makes it any less true that the device behind it is a Cortex-M0 with no network stack.
+
+**One consequence in the code worth knowing.** The gateway's session announces `online` on connect unconditionally — it speaks for itself, and it is evidently up. The peer's session must not: it speaks for a node whose liveness the relay tracks separately and which may be dead right now, so it publishes the relay's *current* belief instead, and publishes nothing at all while that belief is `PEER_UNKNOWN`. Announcing `online` there would overwrite a correct `offline` with a false one, on a retained topic, every time the gateway reconnected to the broker.
 
 ## QoS rationale
 
@@ -145,7 +147,7 @@ One consequence belongs here rather than there: **the topic is what says which m
 ## Still open
 
 - **Retain on telemetry** — off. Turning it on gives a late-starting harness the last reading instantly; revisit if that friction shows up. Note the retained `status` topic already covers the "is it alive?" half.
-- **A second MQTT connection for the peer node.** The one thing it buys is a Last Will on `node/2/status`, so a dying *gateway* marks its peer offline too — see the table under *Topic hierarchy*. Everything else already works on one connection.
+Settled elsewhere: the **second MQTT connection for the peer node** — built. It buys a Last Will on `node/2/status` and nothing else; see the table under *Topic hierarchy* for exactly which failure that covers.
 
 Settled elsewhere: the **`<id>` source** — hardcoded per app rather than derived from the STM32 unique ID. `kNodeClientId` is declared in `commands.h` and defined by each application's `main.cpp` (and by the test), so the identity is a link-time fact rather than a runtime one. A derived id would have to be discovered before it could be subscribed to, which is a bootstrapping problem in exchange for nothing on a bench with two known boards.
 
