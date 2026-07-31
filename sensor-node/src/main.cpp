@@ -46,6 +46,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/zbus/zbus.h>
 
+#include <errno.h>
 #include <string.h>
 
 #include "app_channels.h"
@@ -123,6 +124,82 @@ void on_telemetry(const struct zbus_channel *chan)
 	k_sem_give(&telemetry_pending);
 }
 
+/* ---- link state ----------------------------------------------------------- */
+
+/* A peer node whose gateway is absent is in a **normal operating condition**,
+ * not an error state. It happens whenever the gateway reboots, and — right now —
+ * it is the permanent condition of this bench, because the transceivers are not
+ * bought and this node is alone on a bus that does not physically exist.
+ *
+ * Treating that as an error is what the first version of this file did, and the
+ * console showed exactly why it is wrong: a failure line per heartbeat, and a
+ * full second of the loop spent inside every isotp_send() waiting for a flow
+ * control frame that nobody was going to send. The node was healthy and
+ * unreadable.
+ *
+ * So the rule below is the same one firmware/src/main.cpp applies to a broker
+ * that will not accept a connection: back off, stay quiet, keep sampling. The
+ * sensor thread never learns about any of this — it publishes to the channel on
+ * its own cadence regardless, which is the whole reason the channel is there.
+ */
+constexpr uint32_t kTxBackoffMinMs = 2000;
+constexpr uint32_t kTxBackoffMaxMs = 30000;
+
+bool link_up = true; /* optimistic: the first failure is the news, not the first success */
+uint32_t tx_backoff_ms = 0;
+int64_t tx_retry_at = 0;
+
+/* Note an outcome, and log only when it *changes*. Without this the interesting
+ * event — "the gateway went away" — is buried in identical lines repeating at
+ * 1 Hz forever, which is the opposite of what a log is for. */
+void note_link(bool ok, const char *what, int rc)
+{
+	if (ok) {
+		if (!link_up) {
+			LOG_INF("gateway reachable again");
+		}
+		link_up = true;
+		tx_backoff_ms = 0;
+		return;
+	}
+
+	if (link_up) {
+		LOG_WRN("gateway unreachable (%s failed: %d) — backing off, still sampling", what,
+			rc);
+	}
+	link_up = false;
+
+	/* Doubling, capped. Same shape as the MQTT reconnect backoff on the
+	 * gateway, and for the same reason: retry often enough to notice the
+	 * peer return, rarely enough that failing costs nothing. */
+	tx_backoff_ms = (tx_backoff_ms == 0) ? kTxBackoffMinMs
+					     : MIN(tx_backoff_ms * 2, kTxBackoffMaxMs);
+	tx_retry_at = k_uptime_get() + tx_backoff_ms;
+}
+
+/* Is the controller in a state where transmitting can possibly work?
+ *
+ * Bus-off is the one that matters here, and it is what this node hits with no
+ * peer attached: every frame it sends goes unacknowledged, the transmit error
+ * counter climbs past 255, and the controller takes itself off the bus
+ * (notes/can-guide.md §6). can_send() then returns -ENETUNREACH immediately,
+ * which is cheap — but asking first is what lets the heartbeat stay silent
+ * about a condition it can neither fix nor influence.
+ *
+ * Recovery is automatic (CONFIG_CAN_MANUAL_RECOVERY_MODE is off) and does not
+ * depend on us trying: the controller returns to error-active after it observes
+ * 128 sequences of 11 recessive bits. So skipping a send while bus-off delays
+ * nothing. */
+bool bus_transmittable(void)
+{
+	enum can_state state;
+
+	if (can_get_state(can_dev, &state, nullptr) != 0) {
+		return true; /* cannot tell — try, and let the send report */
+	}
+	return state != CAN_STATE_BUS_OFF && state != CAN_STATE_STOPPED;
+}
+
 /* ---- sending -------------------------------------------------------------- */
 
 /* Send one already-encoded protobuf message with its type byte in front.
@@ -152,26 +229,27 @@ int send_message(enum relay_msg_type type, const uint8_t *payload, size_t len)
 	int rc = isotp_send(&send_ctx, can_dev, frame, len + 1, &tx_addr, &rx_addr, nullptr,
 			    nullptr);
 
-	if (rc != ISOTP_N_OK) {
-		/* Worth logging rather than retrying. ISOTP_N_TIMEOUT_BS means
-		 * the gateway never answered our first frame with flow control,
-		 * which is what a powered-down or bus-off gateway looks like
-		 * from here -- and the next telemetry is 5 s away anyway. */
+	/* ISOTP_N_TIMEOUT_BS (-2) is the signature of an absent gateway: the
+	 * first frame went out and no flow control came back within a second.
+	 * That is not an error to report per attempt — it is a link state, and
+	 * note_link() owns saying so once. Anything else is a genuine surprise
+	 * and is worth a line of its own. */
+	if (rc != ISOTP_N_OK && rc != ISOTP_N_TIMEOUT_BS && rc != ISOTP_N_TIMEOUT_A) {
 		LOG_WRN("isotp_send(type=%u, %zu B) failed: %d", type, len + 1, rc);
 	}
 	return rc;
 }
 
-void send_telemetry(const struct sensor_reading &reading)
+bool send_telemetry(const struct sensor_reading &reading)
 {
 	uint8_t payload[node_Telemetry_size];
 	size_t len = encode_telemetry(reading, payload, sizeof(payload));
 
 	if (len == 0) {
-		return; /* encode_telemetry already logged why */
+		return false; /* encode_telemetry already logged why */
 	}
 
-	send_message(RELAY_MSG_TELEMETRY, payload, len);
+	return send_message(RELAY_MSG_TELEMETRY, payload, len) == ISOTP_N_OK;
 }
 
 /* ---- the heartbeat -------------------------------------------------------- */
@@ -198,12 +276,15 @@ void send_heartbeat(void)
 	 * something is already late, and the next one is a second away; blocking
 	 * main here would delay the command handling this loop also owes. A
 	 * failure means every transmit mailbox is full, which on a healthy bus
-	 * does not happen and on an unhealthy one is itself the news. */
+	 * does not happen and on an unhealthy one is itself the news.
+	 *
+	 * The heartbeat is NOT backed off when the link is down, unlike
+	 * telemetry: it is one non-blocking frame, it is what a returning
+	 * gateway is waiting to hear, and going quiet would make recovery
+	 * depend on the telemetry cadence. Only its logging is suppressed. */
 	int rc = can_send(can_dev, &frame, K_NO_WAIT, nullptr, nullptr);
 
-	if (rc != 0) {
-		LOG_WRN("heartbeat send failed: %d", rc);
-	}
+	note_link(rc == 0, "heartbeat", rc);
 }
 
 /* ---- receiving ------------------------------------------------------------ */
@@ -304,7 +385,13 @@ int main(void)
 		int64_t until_beat = next_beat - k_uptime_get();
 
 		if (until_beat <= 0) {
-			send_heartbeat();
+			/* Skipped while bus-off, because it cannot succeed and
+			 * trying does nothing to hasten recovery. */
+			if (bus_transmittable()) {
+				send_heartbeat();
+			} else {
+				note_link(false, "bus", -ENETUNREACH);
+			}
 			/* Re-based on the schedule, not on now: a slow iteration
 			 * shifts one beat rather than permanently drifting the
 			 * cadence the gateway is timing us against. */
@@ -336,14 +423,50 @@ int main(void)
 				/* The heartbeat reports what the last reading
 				 * said, so the gateway can distinguish "peer
 				 * alive, sensor broken" from "peer gone" without
-				 * decoding a single protobuf byte. */
+				 * decoding a single protobuf byte. This happens
+				 * whether or not the reading can be transmitted:
+				 * the state is true regardless of who is
+				 * listening. */
+				enum heartbeat_state was = hb_state.state;
+
 				hb_state.state = (reading.status == SENSOR_READING_ERROR)
 							 ? HEARTBEAT_STATE_SENSOR_ERROR
 							 : HEARTBEAT_STATE_OK;
 				hb_state.sequence_low =
 					static_cast<uint8_t>(reading.sequence & 0xFF);
 
-				send_telemetry(reading);
+				/* On change only, same rule as the link state. It
+				 * matters because sensor.cpp announces the sensor
+				 * once at boot and never again, so a console
+				 * attached later — the normal case, since screen
+				 * cannot be open before the board resets — has no
+				 * way to know whether readings are real. An
+				 * ERROR reading is also nearly invisible on the
+				 * wire: with every measurement absent it encodes
+				 * to about ten bytes rather than twenty-five, so
+				 * "the telemetry looks short" is the only other
+				 * clue you would get. */
+				if (hb_state.state != was) {
+					if (hb_state.state == HEARTBEAT_STATE_SENSOR_ERROR) {
+						LOG_ERR("sensor reads are failing — telemetry "
+							"carries no measurements");
+					} else {
+						LOG_INF("sensor readings OK (seq %u)",
+							reading.sequence);
+					}
+				}
+
+				/* The expensive one, and so the one that gets
+				 * backed off: a failed isotp_send() costs a full
+				 * ISOTP_BS_TIMEOUT of this thread, which is a
+				 * second of not answering commands and not
+				 * beating on time. Attempting that every sample
+				 * against an absent gateway is how the loop
+				 * loses its clock. */
+				if (bus_transmittable() &&
+				    (link_up || k_uptime_get() >= tx_retry_at)) {
+					note_link(send_telemetry(reading), "telemetry", 0);
+				}
 			}
 		}
 	}

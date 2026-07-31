@@ -121,7 +121,7 @@ Every wrapper takes `-a <app>` (or `APP=`) and defaults to `firmware`; the board
 
 Enabling CAN on the **gateway** cost **+16 392 B flash** (219 460 → 235 852) and **+908 B RAM** (52 000 → 52 908), on a part with 2 MB and 512 KB. `drivers/can` is 10 804 B of that, split `can_mcan.c` 4392, **`can_shell.c` 4356**, `can_common.c` 1098, with the STM32H7 glue making up the rest — so roughly 40 % of the CAN footprint is a debugging aid.
 
-The **peer node** is the interesting budget, because it is the constrained one: the whole application — CAN, ISO-TP, nanopb, zbus, the BME280 driver, two threads and the shared command handling — is **58 104 B of 128 KB flash (44 %)** and **9032 B of 16 KB RAM (55 %)**. Comfortable, and it is the absent shell that makes it so. Read these off `scripts/build.sh -a sensor-node -t rom_report` rather than trusting the numbers here; they move with every Kconfig change.
+The **peer node** is the interesting budget, because it is the constrained one: the whole application — CAN, ISO-TP, nanopb, zbus, the BME280 driver, two threads and the shared command handling — is **67 384 B of 128 KB flash (51 %)** and **10 696 B of 16 KB RAM (65 %)**. Comfortable, and it is the absent shell that makes it so. The largest single line item that is *not* the application is deferred logging, at +8748 B flash and +1640 B RAM over `CONFIG_LOG_MODE_MINIMAL` — bought deliberately, because on a node with no shell the console is the only diagnostic there is and minimal mode interleaves concurrent messages within a line. `sensor-node/prj.conf` has the working. Read these off `scripts/build.sh -a sensor-node -t rom_report` rather than trusting the numbers here; they move with every Kconfig change.
 
 ## Bring-up checks
 
@@ -167,18 +167,36 @@ Note the subcommand is `can filter add`, not `can add`; a bare `can add` prints 
 
 **4. The rest of the gateway app is undisturbed.** Telemetry should keep publishing throughout — `<inf> node: published telemetry seq=N` every ~5 s on the console, and readings still arriving on the Pi. CAN shares no code with the network path, and this check exists to notice if that ever stops being true.
 
-**5. The peer node boots and finds its sensor.** Flash it, open its console, and expect three lines and then silence:
+**5. The peer node boots and finds its sensor.** Flash it and open its console — then **press the black RESET button (B2)**, because `screen` cannot be attached before the board starts and the interesting lines are all at boot.
 
 ```
-[00:00:00.0xx] <inf> node_sensor: BME280 online
-[00:00:00.0xx] <inf> node: node 2 on CAN: heartbeat 0x702, isotp rx 0x7E0 tx 0x7E8
+*** Booting Zephyr OS build v4.4.1 ***
+<inf> node: node 2 on CAN: heartbeat 0x702, isotp rx 0x7e0 tx 0x7e8
+<inf> node_sensor: BME280 online
+<wrn> node: gateway unreachable (heartbeat failed: -5) — backing off, still sampling
+<inf> node: sensor readings OK (seq 0)
 ```
 
-The identifiers come from `can_link.h` via `heartbeat_id()` and friends, so that line is the address map read back out of the running firmware — cheap confirmation that both boards agree on the numbers. `BME280 not ready` instead of `online` means the sensor did not answer at `0x77`; try `0x76`, which most non-Adafruit breakouts use.
+Then silence. The node beats once a second and publishes every five, and none of that is logged once the states above stop changing — every remaining message is emitted on a *transition*. There is no shell here to ask it anything, which is the trade `sensor-node/prj.conf` documents.
 
-After that the node is quiet on the console by design: it beats once a second and publishes every five, and none of that is logged. There is no shell here to ask it anything, which is the trade `sensor-node/prj.conf` documents.
+Line by line, because each one is a check:
 
-**Proves:** the I²C path, the driver binding, the CAN device resolving through `chosen`, and `isotp_bind()` finding a free filter. Not proven, and not provable from one board: that any of those frames leave the pin.
+- **The identifiers are read back out of the running firmware.** They come from `can_link.h` via `heartbeat_id()` and friends rather than from a literal, so seeing `0x702 / 0x7e0 / 0x7e8` is confirmation that this board computed the same map the gateway will.
+- **`BME280 online`** means `device_is_ready()` succeeded, so the driver bound and the chip answered its ID register. `BME280 not ready` instead means it did not answer at `0x77` — try `0x76`, which most non-Adafruit breakouts use.
+- **`gateway unreachable` is the expected result today**, not a fault: with no transceiver there is nothing to acknowledge a frame, so the transmit error counter climbs and the controller reports first `-EIO` and then, once it passes 255, `-ENETUNREACH` (bus-off). See *Bring-up checks* note below.
+- **`sensor readings OK (seq 0)`** is the one that says the telemetry has real content in it. Without it — or with `sensor reads are failing` in its place — the encoded `Telemetry` is about **11 bytes** rather than **25**, because every measurement is absent rather than zero. That length difference is worth memorising: it is the cheapest way to spot a dead sensor in an ISO-TP log line.
+
+**Proves:** the I²C path, the driver binding, the CAN device resolving through `chosen`, `isotp_bind()` finding a free filter, and the sensor→zbus→encode path end to end. Not proven, and not provable from one board: that any of those frames leave the pin.
+
+**What the CAN errors mean with no peer attached**, since this is what the console will show until the transceivers arrive:
+
+| Code | Name | Meaning |
+|---|---|---|
+| `-5` | `-EIO` | a transmit failed; error counters climbing, still error-active |
+| `-114` | `-ENETUNREACH` | `CAN_ESR_BOFF` is set — the controller is **bus-off** (`can_stm32_bxcan.c:794`) |
+| `-2` | `ISOTP_N_TIMEOUT_BS` | the first frame went out; no flow control came back inside `CONFIG_ISOTP_BS_TIMEOUT` (1000 ms) |
+
+All three are the predicted behaviour of a node alone on a bus, not defects: nothing drives the ACK slot, so every frame is unacknowledged, TEC passes 255, and the controller takes itself off the bus. Recovery is automatic, so it recovers and repeats. [`can-guide.md`](../notes/can-guide.md) §5 and §6 are the mechanism. The firmware treats it as a link state rather than an error — one line on the transition, then quiet, with telemetry backing off 2 s → 30 s while the heartbeat keeps trying.
 
 A two-node check against a real bus belongs here and is deliberately absent — it has not been run, and a procedure nobody has executed is not a bring-up check. So is the loopback check of the peer's own ISO-TP path, which is possible in principle and has not been done. Both arrive with the transceivers.
 
