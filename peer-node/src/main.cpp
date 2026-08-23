@@ -44,6 +44,7 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/can.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/atomic.h>
 #include <zephyr/zbus/zbus.h>
 
 #include <errno.h>
@@ -139,15 +140,13 @@ void on_telemetry(const struct zbus_channel *chan)
 /* ---- link state ----------------------------------------------------------- */
 
 /* A peer node whose gateway is absent is in a **normal operating condition**,
- * not an error state. It happens whenever the gateway reboots, and — right now —
- * it is the permanent condition of this bench, because the transceivers are not
- * bought and this node is alone on a bus that does not physically exist.
+ * not an error state. It happens whenever the gateway reboots, whenever the bus
+ * is unplugged, and for as long as this node is powered before its gateway is.
  *
- * Treating that as an error is what the first version of this file did, and the
- * console showed exactly why it is wrong: a failure line per heartbeat, and a
- * full second of the loop spent inside every isotp_send() waiting for a flow
- * control frame that nobody was going to send. The node was healthy and
- * unreadable.
+ * Treating it as an error costs twice over: a failure line per heartbeat, which
+ * buries anything else the console has to say, and a full second of the loop
+ * spent inside every isotp_send() waiting for a flow control frame nobody is
+ * going to send. The node ends up healthy and unreadable.
  *
  * So the rule below is the same one gateway/src/main.cpp applies to a broker
  * that will not accept a connection: back off, stay quiet, keep sampling. The
@@ -280,6 +279,42 @@ struct heartbeat hb_state = {
 	.sequence_low = 0,
 };
 
+/* Transmission bookkeeping for the heartbeat, written from the CAN TX ISR.
+ *
+ * The heartbeat must be sent with a completion callback, because can_send()
+ * without one blocks for an unbounded time on this controller -- and main is
+ * the only thread this node has.
+ *
+ * Two things combine to make the wait unbounded. First, a NULL callback means
+ * z_impl_can_send() installs its own and does k_sem_take(K_FOREVER) on
+ * completion (can_common.c:69); the k_timeout_t argument bounds only the wait
+ * for a free transmit mailbox (can_stm32_bxcan.c:800-808), so K_NO_WAIT does
+ * not make the call non-blocking. Second, completion may never come: the driver
+ * clears NART, so the hardware retries an unacknowledged frame indefinitely,
+ * and sets ABOM, so the bus-off that would abort the retrying is recovered from
+ * automatically. There is no state a lone transmitter reaches where the
+ * hardware gives up.
+ *
+ * A blocking heartbeat therefore parks main for as long as the link is down,
+ * which stops telemetry and -- since main also owns isotp_recv() -- stops
+ * command handling too. Worse, it does so invisibly: the send eventually
+ * succeeds when the bus returns, so note_link() is never told anything changed.
+ *
+ * With a callback, can_send() returns as soon as the frame is queued and the
+ * link verdict is formed from what has actually COMPLETED rather than from what
+ * was accepted for transmission. */
+atomic_t beats_in_flight = ATOMIC_INIT(0);
+atomic_t last_beat_error = ATOMIC_INIT(0);
+
+void heartbeat_sent(const struct device *dev, int error, void *user_data)
+{
+	ARG_UNUSED(dev);
+	ARG_UNUSED(user_data);
+
+	atomic_set(&last_beat_error, error);
+	atomic_dec(&beats_in_flight);
+}
+
 void send_heartbeat(void)
 {
 	struct can_frame frame = {};
@@ -290,19 +325,51 @@ void send_heartbeat(void)
 	hb_state.uptime_s = static_cast<uint32_t>(k_uptime_get() / 1000);
 	heartbeat_pack(&hb_state, frame.data);
 
-	/* K_NO_WAIT, deliberately. A heartbeat that had to queue behind
-	 * something is already late, and the next one is a second away; blocking
-	 * main here would delay the command handling this loop also owes. A
-	 * failure means every transmit mailbox is full, which on a healthy bus
-	 * does not happen and on an unhealthy one is itself the news.
+	/* K_NO_WAIT plus a real callback, which together are what make this
+	 * genuinely non-blocking -- see the note on beats_in_flight above for
+	 * why the callback is the load-bearing half. A heartbeat that had to
+	 * queue behind something is already late, and the next one is a second
+	 * away; blocking main here would delay the command handling this loop
+	 * also owes, for as long as the link stayed down.
 	 *
 	 * The heartbeat is NOT backed off when the link is down, unlike
 	 * telemetry: it is one non-blocking frame, it is what a returning
 	 * gateway is waiting to hear, and going quiet would make recovery
 	 * depend on the telemetry cadence. Only its logging is suppressed. */
-	int rc = can_send(can_dev, &frame, K_NO_WAIT, nullptr, nullptr);
+	int rc = can_send(can_dev, &frame, K_NO_WAIT, heartbeat_sent, nullptr);
 
-	note_link(rc == 0, "heartbeat", rc);
+	if (rc == 0) {
+		atomic_inc(&beats_in_flight);
+	}
+
+	/* Three things have to hold for the link to count as up, and each of
+	 * them fails in a different way:
+	 *
+	 *   rc == 0            the frame was accepted. -EAGAIN here means all
+	 *                      three transmit mailboxes are still occupied by
+	 *                      earlier beats, which is the steady state of an
+	 *                      unacknowledged bus.
+	 *   in flight <= 1     the PREVIOUS beat completed. At 1 Hz, a beat
+	 *                      still outstanding when the next one is queued
+	 *                      means nothing is acknowledging us. This is what
+	 *                      notices the fault at t+2s instead of t+4s, when
+	 *                      the mailboxes finally fill.
+	 *   no error           the last completed beat reported success.
+	 *
+	 * Reading a result that belongs to the previous beat is deliberate: a
+	 * transmission that has not finished has no verdict yet, and inventing
+	 * one is precisely the mistake this replaces. */
+	int err = (rc != 0) ? rc : static_cast<int>(atomic_get(&last_beat_error));
+
+	if (err == 0 && atomic_get(&beats_in_flight) > 1) {
+		/* A distinct code rather than a bare false, so the console names
+		 * which of the three conditions failed. note_link() prints the
+		 * number it is given, so handing it a 0 here would report
+		 * "failed: 0" and say nothing at all. */
+		err = -EBUSY;
+	}
+
+	note_link(err == 0, "heartbeat", err);
 }
 
 /* ---- receiving ------------------------------------------------------------ */
