@@ -142,7 +142,7 @@ A filter is an ID and a mask. The mask selects which bits of the ID must match: 
 Two behaviours matter more than the concept, and both are hardware-specific rather than architectural:
 
 - **Filter slots are finite and small.** The H7's FDCAN offers 28 standard and 8 extended slots; smaller parts offer far fewer, and bxCAN on the F072 counts them in banks whose capacity depends on whether you use standard or extended IDs. Filter budget is a real design constraint.
-- **Overlapping filters do not all fire.** Zephyr documents this as hardware-dependent (`include/zephyr/drivers/can.h:1335`), and on M_CAN the list is evaluated in order and **matching stops at the first match**. Install three filters for the same ID and you get three slots, three callbacks, and exactly one of them invoked — §10's Exercise 2 measures exactly that. The sharp practical edge is what it does to `can dump`, which §10 takes up after the exercises.
+- **Overlapping filters do not all fire.** Zephyr documents this as hardware-dependent (`include/zephyr/drivers/can.h:1335`), and on M_CAN the list is evaluated in order and **matching stops at the first match**. Install three filters for the same ID and you get three slots, three callbacks, and exactly one of them invoked — §10's Exercise 2 measures exactly that, and bxCAN behaves the same way by a different route, reporting one filter-match index per frame. This is the rule that decided this project's address map: two ISO-TP contexts sharing an identifier means two filters, and the loser is starved in silence (§9). The sharp practical edge is what it does to `can dump`, which §10 takes up after the exercises.
 
 ## 8. Eight bytes, and what ISO-TP does about it
 
@@ -186,22 +186,25 @@ The H753ZI is a **gateway**: MQTT and Ethernet on one side, CAN on the other. Th
                    ▼  encode (nanopb)
              Telemetry bytes
                    │
-                   │  ISO-TP, 0x7E8  ──────────▶ relay thread
-                   │                                  │  bytes, never decoded
+                   │  ISO-TP data,  0x7E8 ─────▶ relay thread
+                   │  ◀── flow control, 0x7EC ──      │  bytes, never decoded
                    │                                  ▼
                    │                            zbus channel ──▶ MQTT ──▶ node/2/telemetry
                    │
              heartbeat, raw ──────────────────▶ rx filter ──▶ liveness ──▶ node/2/status
              single frame, 0x702, 1 Hz                          timeout
                    │
-                   ◀── ISO-TP, 0x7E0 ────────── relayed Command from node/2/command
+                   ◀── ISO-TP data,  0x7E0 ──── relayed Command from node/2/command
+                   ─── flow control, 0x7E4 ──▶
 ```
 
-Those three identifiers are not arbitrary, and they are not free-form either. `0x700 + node id` is CANopen's heartbeat convention and `0x7E0`/`0x7E8` is the UDS request/response pair, borrowed so that a trace reads familiarly to anyone who has met a CAN bus. But the *ordering* is doing real work, per §4: the heartbeat's lower identifier wins arbitration against every ISO-TP frame, so liveness can never be starved by a long segmented transfer. That is a property of the numbering rather than of any code, which is why `tests/heartbeat/` asserts it.
+Those five identifiers are not arbitrary, and they are not free-form either. `0x700 + node id` is CANopen's heartbeat convention and `0x7E0`/`0x7E8` is the UDS request/response pair, borrowed so that a trace reads familiarly to anyone who has met a CAN bus. But the *ordering* is doing real work, per §4: the heartbeat's lower identifier wins arbitration against every ISO-TP frame, so liveness can never be starved by a long segmented transfer. That is a property of the numbering rather than of any code, which is why `tests/heartbeat/` asserts it.
+
+The two **flow-control** identifiers are the one departure from the borrowed convention, and they are a direct consequence of §7. UDS runs a direction's data and its flow control on one identifier — a transfer on `0x7E0` is answered by FC on `0x7E8` — and that does not work here. Zephyr's ISO-TP installs one CAN acceptance filter per context, so sharing an identifier between a bound receiver and a sender awaiting flow control gives a node two filters for the same id, and a real controller delivers each frame to exactly **one** of them: the lower slot, which is the receiver, which has no idea what a flow-control frame is and drops it. The sender then waits out its timeout for a frame that arrived and was discarded a metre away. So each context gets an identifier of its own, which costs the peer count: the ranges are spaced four apart, leaving room for four peers. Worth sitting with, because the failure it avoids is invisible in the protocol and invisible in the wiring, and lives entirely in how many filters a controller is willing to fire — with a symptom, single frames working while nothing segmented completes, that points at neither. [`can-bringup.md`](../docs/can-bringup.md) has the register-level detail.
 
 They live in [`shared/can_link.h`](../shared/can_link.h), the one file both boards include — because a link is symmetric and neither end can be right on its own. It carries the address map, the heartbeat's byte layout and one more thing worth noticing: **a message type byte at the front of every ISO-TP payload.** ISO-TP has no topic, and §3's rule from the Protobuf side still holds — nothing in a serialised message says which message it is. On MQTT the topic asserts the type for free; here it costs one byte in front of the payload. Same decision, newly visible, because this transport does not subsidise it.
 
-**What exists today.** The peer node's half is written: `peer-node/` reads the BME280, encodes with the *same* `protocol.cpp` the gateway uses, beats once a second and answers commands. The gateway's `relay thread` in that diagram does not exist yet, and no frame has crossed a real bus — the transceivers are not bought, so everything is loopback and link-time so far. [`can-bringup.md`](../docs/can-bringup.md) is explicit about which is which.
+**What exists today.** Both halves of that diagram are written: `peer-node/` reads the BME280, encodes with the *same* `protocol.cpp` the gateway uses, beats once a second and answers commands, and the gateway's `relay thread` is `gateway/src/relay.cpp` — two threads, four zbus channels. The bus is real and the whole path runs on it: heartbeats cross and are acknowledged, which proves the physical layer at once (§5 — a lone node cannot complete a transmission); the peer's telemetry is segmented over ISO-TP, relayed, and published to `node/2/telemetry`; and a command sent to `node/2/command` comes back answered by the peer itself. The flow-control problem above is what stood between the first two and the third. [`can-bringup.md`](../docs/can-bringup.md) steps 6 and 7 are the procedures.
 
 Two payload styles on one bus, chosen by §8's rule:
 
@@ -234,7 +237,7 @@ The decisions behind all of this — the pin choice, the bitrate, the ID map, th
 
 Most of this needs **no CAN hardware at all** — internal loopback proves the controller against itself. You need the console on the Mac (`./scripts/console.sh`, quit with **Ctrl-A** then **K**), and nothing else. The device is `can@4000a000`; tab completion after `can mode ` will fill it in.
 
-The same trick goes one step further and needs no *board* either. Zephyr ships an emulated CAN controller (`zephyr,can-loopback`) that a test suite can add to its own devicetree, and `tests/isotp_loopback/` uses it to run everything in §7 and §8 — filters, identifiers, segmentation, flow control — under `./scripts/test.sh`. Worth knowing before you start soldering: if the exercises below misbehave, that suite tells you whether the framing or the hardware is at fault. See [`../docs/test-strategy.md`](../docs/test-strategy.md).
+The same trick goes one step further and needs no *board* either. Zephyr ships an emulated CAN controller (`zephyr,can-loopback`) that a test suite can add to its own devicetree, and `tests/isotp_loopback/` uses it to run everything in §7 and §8 — filters, identifiers, segmentation, flow control — under `./scripts/test.sh`. Worth knowing before you start soldering: if the exercises below misbehave, that suite tells you whether the framing or the hardware is at fault. But know its edge — the emulated controller invokes **every** filter a frame matches, where real silicon invokes only the first, so an address map that gives two contexts the same identifier passes there and fails on a board. A fake is a second implementation, and a green suite is agreement with the fake, not with the hardware. See [`../docs/test-strategy.md`](../docs/test-strategy.md).
 
 ### Exercise 1 — A frame out and back, with no bus
 
@@ -282,13 +285,23 @@ The obvious third exercise follows from that: start `can dump`, send a frame, an
 
 **`can dump` takes the console away.** Its last act is `shell_set_bypass(sh, can_shell_dump_bypass_cb, dev)` (`drivers/can/can_shell.c:526`), which routes every keystroke to a callback that looks for one byte, `0x03` (`:447`). There is no parser and no prompt while a dump runs, so nothing else can be typed at it — including `can send`. Ctrl+C restores the shell and removes the two filters the dump installed; it leaves the controller running if it was already started, since `cmd_can_dump()` records whether its own `can_start()` returned `-EALREADY`.
 
-**And even with a frame source, the two cases look identical.** `can dump` and `can filter add` register the *same* callback, `can_shell_rx_callback`. With first-match semantics one filter fires and prints once; with all-match semantics several fire and — printing identically — you would still be reading one line per matching filter, which is what Exercise 2 already measured. The shadowing only becomes *visible* when the filter in the lower slot belongs to application code and prints nothing. That is `relay.cpp`'s heartbeat filter, installed at boot, and it does not exist yet.
+**And even with a frame source, the two cases look identical.** `can dump` and `can filter add` register the *same* callback, `can_shell_rx_callback`. With first-match semantics one filter fires and prints once; with all-match semantics several fire and — printing identically — you would still be reading one line per matching filter, which is what Exercise 2 already measured. The shadowing only becomes *visible* when the filter in the lower slot belongs to application code and prints nothing. That is `relay.cpp`'s heartbeat filter, installed at boot — it exists now, so the observation is available to anyone with a transmitting peer, and *Still unwritten* below is where it goes once someone has actually made it.
 
 So the fact is established by Exercise 2 plus the source: those two catch-alls go in through `can_add_rx_filter()` (`drivers/can/can_shell.c:498` and `:504`), the same lowest-free-slot allocator every other filter uses, and Exercise 2 showed that an earlier slot wins outright. Once the relay owns slot 0, `can dump` will show **nothing at all** while heartbeats arrive perfectly. Reach for `can filter add <dev> <id>` when debugging a live node, and never read an empty dump as a dead bus.
 
-### Once the transceivers arrive
+### Exercise 3 — Two nodes, and what a completed transmission proves
 
-Four more exercises belong here and are deliberately not written yet, because a procedure nobody has run is not a procedure: the two-node round trip at 500 kbit/s; deliberately mismatching the bitrate to see what a misconfigured bus looks like from both ends; watching the error counters climb toward bus-off on a node whose peer is powered down (§5, §6); and — once `relay.cpp` holds a silent filter on the heartbeat ID — running `can dump` against a peer that is transmitting once a second and watching it print nothing, which is the observation this section cannot make today. They arrive with the hardware.
+The bus is built — two SN65HVD230 transceivers, CANH/CANL/GND between them, 120 Ω at each end. The wiring table and the commands are *Bring-up checks* step 6 in [`can-bringup.md`](../docs/can-bringup.md); run it there rather than duplicating it here. What belongs in a teaching guide is why that one check is worth so much.
+
+Power both boards and read the gateway console for `peer node 2 is online`. Now reason backwards from it, using §5. The heartbeat is a single raw frame. For the peer's transmission to *complete* rather than error, some other node had to write a dominant bit into the acknowledgement slot of the peer's own frame, inside the same frame, at the right bit time. That requires the differential pair to be intact in both directions, a common ground for the two transceivers to reference, termination good enough that the bit is still readable at the sample point, and both controllers agreeing on the bit rate to within their sync tolerance — otherwise the ACK lands in the wrong slot and reads as an error instead.
+
+So one line of log discharges the entire physical layer, and it does so without a scope. That is unusual, and it is a direct consequence of the ACK slot existing at all: a protocol with no in-frame acknowledgement (UART, or CAN's own transmit-only view of the world) can be wired wrong and look perfectly healthy from the sending end. Compare what it took to be sure the MQTT link was up.
+
+The converse is the useful bisect, and it is a common enough failure to be worth naming: heartbeats crossing while segmented transfers fail cannot be electrical, because the heartbeat has already proven the electrical layer. Look at §7's filter semantics instead.
+
+### Still unwritten
+
+Three exercises belong here and are deliberately absent, because a procedure nobody has run is not a procedure: deliberately mismatching the bitrate to see what a misconfigured bus looks like from both ends; watching the error counters climb toward bus-off on a node whose peer is powered down (§5, §6); and — since `relay.cpp` holds a silent filter on the heartbeat ID — running `can dump` against a peer transmitting once a second and watching it print nothing, which is the shadowing above made visible.
 
 ## 11. The model in one paragraph
 

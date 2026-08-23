@@ -52,7 +52,9 @@ MQTT QoS is **not** TCP reliability. TCP guarantees bytes reached the broker's *
 
 **QoS is hop-by-hop, and the relay is what makes that visible.** A `PUBACK` for `node/2/command` means the *gateway* took ownership of those bytes. It says nothing about whether the CAN link delivered them, whether the peer node decoded them, or whether the peer acted. The end-to-end statement is the `Ack` — which is precisely why an `Ack` exists as an application message rather than being folded into the transport's acknowledgement.
 
-That distinction was always true and was never observable with one node, because the hop that acknowledged and the node that acted were the same device. Now they are not, and the gap has a name: if the peer never answers, the gateway synthesizes an `Ack` with `ACK_STATUS_FAILED` and detail `"no response over CAN"`. The host sees a QoS 1 delivery that succeeded and an application-level failure, which is the honest report of what happened.
+That distinction was always true and was never observable with one node, because the hop that acknowledged and the node that acted were the same device. Now they are not, and the gap has two names. If `isotp_send()` fails outright — the usual case when the bus is unplugged — the gateway answers `ACK_STATUS_FAILED` with detail `"no route to node over CAN"`, typically within a second. If the transfer went out but no `Ack` came back inside `kAckWaitMs`, the detail is `"no response over CAN"` instead. Either way the host sees a QoS 1 delivery that succeeded and an application-level failure, which is the honest report of what happened. *Bring-up checks* step 8 in [`can-bringup.md`](can-bringup.md) exercises it against a real outage.
+
+**Nothing is queued for later delivery, deliberately.** The relay has no store-and-forward, so a command refused during an outage is simply refused; reconnecting the bus does not deliver it. The reasoning is that a command's value usually decays faster than the outage lasts — `trigger_measurement` is meaningless a minute later, and `set_interval` applied after the operator has moved on is worse than a clean failure. Only the host knows whether it still wants the thing, so the host owns the retry, and that is safe precisely because `Command.sequence` plus the node's duplicate suppression makes a repeat idempotent. A firmware-update channel would answer this differently and would need a queue with an explicit expiry.
 
 **One deliberate exception to the gateway's opacity, priced.** To correlate that synthesized `Ack` the gateway needs the command's `sequence`, so `main.cpp` decodes the `Command` **envelope** — one header field — while never interpreting the payload arm. The alternative was to synthesize nothing and let the host time out; that is simpler and strictly worse, because a host that times out cannot distinguish "the peer is gone" from "the gateway dropped it", and would have to invent its own deadline to say anything at all.
 
@@ -106,6 +108,19 @@ Requires `NetworkManager-wait-online.service` to be **enabled** — it is what a
 
 Check it holds: `sudo reboot`, then once the Pi is back, `systemctl is-active mosquitto` should say `active` with no manual start — and `ss -tlnp | grep 1883` should show the listener bound to `192.168.10.1`.
 
+### Two different things write `node/2/status offline`
+
+Worth separating before testing either, because they look identical on the topic and share nothing else:
+
+| | Published by | Fires when | Latency |
+|---|---|---|---|
+| Relay liveness timeout | the **gateway's firmware**, via `chan_relay_status` | the peer stops beating | `kHeartbeatTimeoutMs`, 3.5 s |
+| **Last Will** | the **broker**, unprompted | the gateway's MQTT connection dies uncleanly | 1.5 × `kKeepaliveSec` |
+
+Unplugging the CAN bus exercises the first, and is *Bring-up checks* step 8 in [`can-bringup.md`](can-bringup.md). It says nothing about the Last Will.
+
+The Last Will exists for the case the first mechanism structurally cannot cover: if the gateway dies, no firmware runs to publish anything, and `node/2/status` stays retained as `online` forever. That is the entire justification for the second MQTT connection, since MQTT 3.1.1 allows one will per connection — so testing it means killing the gateway's *connection* while leaving CAN alone. Both wills die with the same board, so `node/1/status` and `node/2/status` both go offline; seeing both flip while the gateway is unreachable is the proof, because an unreachable client cannot have published either. They are two separate TCP connections with two independent keepalive timers, though, so they do not fire simultaneously — see the transcript below.
+
 ### Testing the Last Will — two obvious methods silently cannot work
 
 The will fires when the broker stops hearing from the node for 1.5× keepalive. Observing that requires the node to look dead **while the Pi's own networking stays intact** — because `192.168.10.1` is both where Mosquitto listens *and* where a local `mosquitto_sub` connects. Anything that drops carrier takes the observer down with the node, so nothing can watch.
@@ -129,6 +144,27 @@ sudo nft delete table inet bench          # node reconnects and republishes "onl
 Lower `kKeepaliveSec` to ~10 s and reflash first, or the wait is 90 s. Watch `node/1/status` from a second terminal on the Pi (`mosquitto_sub -h 192.168.10.1 -t 'node/1/status' -v`) — `offline` appears without any client having published it.
 
 This exercises both directions of the failure at once: the broker detects a dead node and fires the will, while the node detects a dead broker (unacked `PINGREQ`) and enters its reconnect backoff, which you can watch on the console.
+
+**Both wills, and what the stagger between them proves.** Run with `mosquitto_sub -h 192.168.10.1 -t 'node/#' -v` and leave CAN connected, so the peer stays alive and only the gateway's *connection* dies:
+
+```
+18:59:18  node/1/telemetry  seq=348  ...        <- last packet of the nucleo-1 session
+18:59:22  node/2/telemetry  seq=165  ...        <- last packet of the nucleo-2 session
+          # nft rule applied here
+19:00:50  node/1/status     offline             <- broker, 90 s after 18:59:18
+19:00:56  node/2/status     offline             <- broker, 90 s after 18:59:22
+          # nft delete table
+19:02:26  node/1/status     online
+19:02:26  node/1/telemetry  seq=367  ...
+19:02:28  node/2/status     online
+19:02:28  node/2/telemetry  seq=183  ...
+```
+
+Three things are worth reading out of that, and none of them is visible with one connection:
+
+- **The six-second stagger is the point.** Each will fired 1.5 × `kKeepaliveSec` after *its own* session's last packet, and the two sessions last published four seconds apart. Two independent keepalive timers, which is the observable difference between "two MQTT clients" and "one connection with two topic names". At the default keepalive that is a 90 s wait; lower `kKeepaliveSec` to ~10 and reflash to make it 15.
+- **Nothing was queued.** `node/1` went 348 → 367 and `node/2` 165 → 183 across the outage: every reading was taken on cadence, all of them discarded, and exactly one fresh sample published per node on reconnect. That is the QoS 0 + clean-session decision above, and it is precisely the stale-telemetry flood that QoS 1 with a persistent session would have produced instead.
+- **`node/2/status` came back `online` for the right reason.** The peer's session does not announce `online` on connect; it publishes the relay's current belief. CAN was untouched here so that belief was `online` — but had the peer been dead, this reconnect would correctly have republished `offline` rather than overwriting a true `offline` with an assumed `online`. That is the asymmetry described above, observed.
 
 Verify / exercise:
 
