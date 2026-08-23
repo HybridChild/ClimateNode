@@ -34,17 +34,23 @@
  * Why the message types are asymmetric
  * ---------------------------------------------------------------------------
  *
- * relay_up is ~164 bytes and relay_down is 32, and that gap is deliberate rather
- * than incidental. zbus's message-subscriber net_buf pool is a *single* pool
- * sized by the largest message on *any* message-subscriber channel; listener
- * channels store their message in the channel itself and never touch the pool.
+ * relay_up is 164 bytes and relay_down is 32, and that gap is deliberate rather
+ * than incidental: it follows from what each direction has to carry. The
+ * observer kinds below follow from how each one is consumed, and the two
+ * questions are independent -- which is worth stating, because it is tempting
+ * to assume the second buys something on the first. It does not.
  *
- * So the big upward messages ride listeners, and only the small downward one is
- * a message subscriber. That is what lets
- * CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE stay at 32 rather than
- * 164 — worth about 130 bytes times the pool size. The observer kinds were
- * chosen on their merits first (see the table below); the RAM is the reward for
- * having chosen them correctly.
+ * Specifically, the zbus message-subscriber net_buf pool is not per-observer-
+ * kind. With CONFIG_ZBUS_MSG_SUBSCRIBER=y, _zbus_vded_exec()
+ * (subsys/zbus/zbus.c:244-256) allocates a buffer and net_buf_add_mem()s the
+ * whole message into it on EVERY zbus_chan_pub(), before it examines a single
+ * observer -- the code is guarded by the Kconfig symbol alone. A listener
+ * channel does not skip the copy; it skips only the delivery. So putting the
+ * large messages on listeners saves nothing, and
+ * CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE must cover relay_up, the
+ * largest message on any channel in this application. The static_asserts below
+ * hold that invariant, since it spans a Kconfig value and a struct definition
+ * and nothing else would catch it breaking.
  */
 #ifndef RELAY_H_
 #define RELAY_H_
@@ -90,6 +96,25 @@ struct relay_status {
 	uint8_t node_id;
 	bool online;
 };
+
+/* relay_up is the largest message on any channel in this application, and so it
+ * is what CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE must be sized to
+ * -- despite riding listener channels. The long form of the argument is in
+ * shared/app_channels.h; the short form is that every publish copies its whole
+ * message into a pool buffer before any observer is consulted, so "only
+ * listeners observe it" buys nothing. Getting it wrong is a silent overrun of a
+ * fixed-size slot, so it is checked here rather than trusted. */
+#ifdef CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE
+static_assert(sizeof(struct relay_up) <= CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE,
+	      "raise CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE to sizeof(struct "
+	      "relay_up)");
+static_assert(sizeof(struct relay_down) <= CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE,
+	      "raise CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE to sizeof(struct "
+	      "relay_down)");
+static_assert(sizeof(struct relay_status) <= CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE,
+	      "raise CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE to sizeof(struct "
+	      "relay_status)");
+#endif
 
 /* ---------------------------------------------------------------------------
  * The channels

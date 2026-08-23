@@ -136,6 +136,39 @@ struct sensor_cmd {
 	uint32_t interval_ms;
 };
 
+/* Every message on every channel must fit one buffer of the zbus message
+ * subscriber pool -- including the ones only listeners observe.
+ *
+ * That "including" is the whole point of the assert, and it is not what the
+ * pool's name suggests. With CONFIG_ZBUS_MSG_SUBSCRIBER=y, _zbus_vded_exec()
+ * (subsys/zbus/zbus.c:244-256) allocates a pool buffer and net_buf_add_mem()s
+ * the entire message into it on EVERY zbus_chan_pub(), before it examines a
+ * single observer. A channel with no message subscriber still pays for the
+ * copy; what it skips is only the delivery. So the pool is sized by the largest
+ * message on ANY channel, not by the largest on a message-subscriber channel.
+ *
+ * Undersize it and the copy runs past a fixed slot in a contiguous
+ * uint8_t[count][size] array and corrupts whatever follows -- with no
+ * diagnostic, because zbus's own __ASSERT for exactly this (zbus.c:46) needs
+ * CONFIG_ASSERT=y, which neither app builds with. A small overrun stays inside
+ * the pool and can run for a long time without a visible symptom; a large one
+ * escapes the array and surfaces later as a fault in an unrelated thread. That
+ * failure mode is why the invariant is a static_assert and not a comment: it
+ * spans a Kconfig value and a struct definition, so nothing else checks it.
+ *
+ * Guarded because the test suites enable CONFIG_ZBUS without the message
+ * subscriber, so the symbol does not exist there -- and nothing in them
+ * publishes. */
+#ifdef CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE
+static_assert(sizeof(struct sensor_reading) <=
+		      CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE,
+	      "raise CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE to sizeof(struct "
+	      "sensor_reading)");
+static_assert(sizeof(struct sensor_cmd) <= CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE,
+	      "raise CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE to sizeof(struct "
+	      "sensor_cmd)");
+#endif
+
 /* The rule the chan_sensor_cmd validator enforces, stated next to the bounds it
  * compares against rather than in sensor.cpp -- the constants and the
  * comparison drifting apart is exactly the failure a single definition
