@@ -180,11 +180,10 @@ mosquitto_pub -h 192.168.10.1 -t 'node/1/command' -m x -q 1 -d  # -d shows the p
 
 One consequence belongs here rather than there: **the topic is what says which message type a payload is.** Protobuf puts no type identity on the wire, so `node/<id>/command` carrying a `Command` is not a convention — it is the half of the wire format the `.proto` file does not contain. Never mix message types on one topic.
 
-## Still open
+## Three smaller decisions
 
-- **Retain on telemetry** — off. Turning it on gives a late-starting harness the last reading instantly; revisit if that friction shows up. Note the retained `status` topic already covers the "is it alive?" half.
-Settled elsewhere: the **second MQTT connection for the peer node** — built. It buys a Last Will on `node/2/status` and nothing else; see the table under *Topic hierarchy* for exactly which failure that covers.
+**Telemetry is not retained.** Retain on `status` and not on telemetry, which looks inconsistent until you ask what each topic is *for*: `status` answers "is this node alive?", a question whose answer is still true an hour later, while a retained reading hands a late-joining subscriber a measurement of air that no longer exists and no way to tell how stale it is. A harness that wants the current value waits one sample period for it. The same argument decides the observer kinds inside the firmware — [`zbus-guide.md`](../notes/zbus-guide.md) §5.
 
-Settled elsewhere: the **`<id>` source** — hardcoded per app rather than derived from the STM32 unique ID. `kNodeClientId` is declared in `commands.h` and defined by each application's `main.cpp` (and by the test), so the identity is a link-time fact rather than a runtime one. A derived id would have to be discovered before it could be subscribed to, which is a bootstrapping problem in exchange for nothing on a bench with two known boards.
+**The `<id>` is hardcoded per application, not derived from the STM32 unique ID.** `kNodeClientId` is declared in `commands.h` and defined by each app's `main.cpp` (and by the test), so identity is a link-time fact rather than a runtime one. A derived id would have to be discovered before anything could subscribe to it, which buys a bootstrapping problem in exchange for nothing on a bench of two known boards.
 
-Settled elsewhere: the **telemetry trigger** question — a timed poll rather than the SCD-40's data-ready signal — is closed, because the in-tree driver never exposes data-ready through the sensor API. See *Accepted limitation* in [`sensor-bringup.md`](sensor-bringup.md).
+**Telemetry is a timed poll, not a data-ready trigger.** Not a preference: the in-tree SCD-40 driver never exposes data-ready through the sensor API, so there is no signal to trigger on. What that costs, and why the cadence floor exists, is *Accepted limitation* in [`sensor-bringup.md`](sensor-bringup.md).

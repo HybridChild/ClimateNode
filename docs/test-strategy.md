@@ -89,8 +89,10 @@ Not gaps to be filled by more host tests — these are structurally out of reach
 - **Everything electrical.** Differential levels, 120 Ω termination, a common ground between two separately-powered boards, arbitration between two real transmitters, and the in-frame acknowledgement above. Two transceivers, and no amount of emulation substitutes. Covered on the bench by *Bring-up checks* in [`can-bringup.md`](can-bringup.md), whose step 6 runs on a real two-node bus and proves all of it at once — a heartbeat that completes cannot have been unacknowledged.
 - **Byte-exact encoded sizes.** The tests assert messages round-trip and fit their generated bounds, never that a specific message is N bytes. Pinning that would break on every legitimate schema change; the worked example in [`protobuf-guide.md` §3](../notes/protobuf-guide.md) is where the exact arithmetic lives.
 
-## Still open
+## Where this stops
 
-- **Hardware-in-the-loop.** The Pi has the broker, `command.py`, `monitor.py` and a cable to the board — the ingredients for automating the labs that currently run by hand. The host suites bound the problem: HIL only has to cover what they structurally cannot.
-- **CI.** `scripts/test.sh` plus `scripts/build.sh` on every push is mostly plumbing; the wrinkle is that this is a freestanding app, so CI must reconstruct a west workspace. A Linux runner should use `native_sim` and finish far faster.
-- **Coverage measurement.** Twister supports `--coverage`; not wired up, and of limited value at this suite size.
+The suites run by hand, from a developer's machine, and everything they cannot reach is covered by a written bench procedure rather than by automation. Two boundaries are worth naming, because they are properties of the setup rather than oversights.
+
+**There is no CI.** The suites are the hard part and they exist; a workflow running `scripts/test.sh` and `scripts/build.sh` is ordinary plumbing on top of them. The one wrinkle is that these are *freestanding* apps, so any runner has to reconstruct a west workspace before it can build anything — see [`toolchain.md`](toolchain.md). A Linux runner would also use `native_sim` rather than QEMU and finish far faster, which `testcase.yaml` already allows for.
+
+**There is no hardware-in-the-loop stage.** The labs at the end of each guide are that stage, executed by a person: the Pi holds the broker, `command.py`, `monitor.py` and a cable to the board, so the ingredients are in place and only the driving is manual. What makes that tolerable rather than a gap is the split above — the host suites bound the problem, so the hardware half only has to cover what they structurally cannot, which is a much smaller set than "everything".

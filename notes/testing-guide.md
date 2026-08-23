@@ -309,7 +309,7 @@ Host tests cannot catch, and never will:
 - **Anything above the socket.** That a QoS 1 command is redelivered after a lost PUBACK. That the broker publishes the Last Will on an unclean disconnect.
 - **Anything electrical.** An emulated CAN controller runs the whole protocol and none of the physics: differential levels, 120 Ω termination, a common ground between separately-powered boards, arbitration between two real transmitters, and the in-frame acknowledgement that makes a node alone on a bus unable to transmit at all. This is the sharpest example of the edge, because the emulation is convincing enough to hide it.
 
-Those are exactly what the labs at the end of the other guides cover — the hardware half of the same job, run by hand today. The natural next step is to automate them from the Pi, which already has the broker, the harness and a cable to the board: a **hardware-in-the-loop** suite driving `command.py` and asserting on `monitor.py` output. The split in §2 is what makes that tractable — the HIL suite only has to cover what host tests structurally cannot, which is a much smaller set than "everything".
+Those are exactly what the labs at the end of the other guides cover — the hardware half of the same job, run by a person rather than by a runner. Where a project does automate that half, the stage has a name: a **hardware-in-the-loop** suite, driving the real board from a machine that can also observe it — here that would be the Pi, which holds the broker, `command.py`, `monitor.py` and a cable. The split in §2 is what keeps such a stage small. It only has to cover what host tests structurally cannot, which is far less than "everything", and that is the practical reward for having drawn the line in the first place.
 
 ---
 
@@ -406,7 +406,5 @@ Firmware is awkward to test because the target is slow, physical and singular �
 
 - **[`test-strategy.md`](../docs/test-strategy.md)** — the reference half: what this project tests, what it deliberately does not, and why `qemu_cortex_m3`.
 - **The labs in the other guides** — [`communication-guide.md`](communication-guide.md) §9, [`can-guide.md`](can-guide.md) §10, [`zbus-guide.md`](zbus-guide.md) §10, [`sensor-api-guide.md`](sensor-api-guide.md) §11, [`protobuf-guide.md`](protobuf-guide.md) §12, [`zephyr-build-system-guide.md`](zephyr-build-system-guide.md) §12 and [`language-cpp.md`](language-cpp.md) §12 are the hardware half of this job, run by hand. They are the specification for a future HIL suite.
-- **Hardware-in-the-loop from the Pi** — it already has the broker, `command.py`, `monitor.py` and a cable to the board. The gap between §9's two boxes is the work.
-- **CI** — the suites are the hard part and they exist now; a GitHub Actions workflow that builds the firmware and runs `scripts/test.sh` on every push is mostly plumbing. Note that a Linux runner can use `native_sim` and finish in a fraction of the time.
 - **Zephyr's own tests** — `~/zephyr-workspace/zephyr/tests/` is thousands of worked examples. `tests/subsys/zbus/` is the closest to this repo's concerns.
 - **`ztress`** — Zephyr's concurrency stress helper, for the day a test needs to provoke races rather than check logic.

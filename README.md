@@ -41,8 +41,6 @@ The gateway holds **two MQTT connections**, `nucleo-1` and `nucleo-2`, and the r
 
 **Verifying it yourself.** Every claim above is exercised by a lab in the documentation rather than reported as a past result — see the *Exercising…* section of each guide in the table below, plus *Bring-up checks* in [`docs/can-bringup.md`](docs/can-bringup.md) and *Testing the Last Will* in [`docs/mqtt-design.md`](docs/mqtt-design.md). Between them they cover telemetry decode, all three commands, out-of-range rejection, duplicate suppression, a malformed payload that must not desynchronise the stream, a broker outage the sensor samples straight through, both Last Wills, the two-node bus, the segmented round trip in both directions, and a peer timed out by unplugging the bus.
 
-**Still to do:** *(optional higher-fidelity pass)* re-run the host harness in C#/.NET on a Windows box, to mirror a Windows-side desktop application.
-
 ## The things to actually learn (don't skip these)
 1. **MQTT client on Zephyr** — connect/keepalive, QoS levels, topic design (telemetry vs. command topics), and especially **reconnect handling** when the link drops. Uses Zephyr's `CONFIG_MQTT_LIB`. (MQTT frames and delimits messages itself, so the length-prefix / partial-read problem of raw TCP goes away — each payload arrives whole.)
 2. **zbus as the internal bus** — the sensor thread publishes readings to a **zbus channel**; the MQTT thread observes that channel and marshals to nanopb → MQTT publish. Decouples sensing from transport, the way production firmware does. The interesting parts are choosing an observer kind per channel (latest-wins for state, every-message for commands — the same argument as QoS 0 vs 1), and waiting on a channel and a socket in one call.

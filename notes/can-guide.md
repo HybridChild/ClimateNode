@@ -285,7 +285,7 @@ The obvious third exercise follows from that: start `can dump`, send a frame, an
 
 **`can dump` takes the console away.** Its last act is `shell_set_bypass(sh, can_shell_dump_bypass_cb, dev)` (`drivers/can/can_shell.c:526`), which routes every keystroke to a callback that looks for one byte, `0x03` (`:447`). There is no parser and no prompt while a dump runs, so nothing else can be typed at it — including `can send`. Ctrl+C restores the shell and removes the two filters the dump installed; it leaves the controller running if it was already started, since `cmd_can_dump()` records whether its own `can_start()` returned `-EALREADY`.
 
-**And even with a frame source, the two cases look identical.** `can dump` and `can filter add` register the *same* callback, `can_shell_rx_callback`. With first-match semantics one filter fires and prints once; with all-match semantics several fire and — printing identically — you would still be reading one line per matching filter, which is what Exercise 2 already measured. The shadowing only becomes *visible* when the filter in the lower slot belongs to application code and prints nothing. That is `relay.cpp`'s heartbeat filter, installed at boot — it exists now, so the observation is available to anyone with a transmitting peer, and *Still unwritten* below is where it goes once someone has actually made it.
+**And even with a frame source, the two cases look identical.** `can dump` and `can filter add` register the *same* callback, `can_shell_rx_callback`. With first-match semantics one filter fires and prints once; with all-match semantics several fire and — printing identically — you would still be reading one line per matching filter, which is what Exercise 2 already measured. The shadowing only becomes *visible* when the filter in the lower slot belongs to application code and prints nothing. That is `relay.cpp`'s heartbeat filter, installed at boot, so the observation is available to anyone with a transmitting peer on the bus — run `can dump` on the gateway against a beating peer and watch it print nothing.
 
 So the fact is established by Exercise 2 plus the source: those two catch-alls go in through `can_add_rx_filter()` (`drivers/can/can_shell.c:498` and `:504`), the same lowest-free-slot allocator every other filter uses, and Exercise 2 showed that an earlier slot wins outright. Once the relay owns slot 0, `can dump` will show **nothing at all** while heartbeats arrive perfectly. Reach for `can filter add <dev> <id>` when debugging a live node, and never read an empty dump as a dead bus.
 
@@ -298,10 +298,6 @@ Power both boards and read the gateway console for `peer node 2 is online`. Now 
 So one line of log discharges the entire physical layer, and it does so without a scope. That is unusual, and it is a direct consequence of the ACK slot existing at all: a protocol with no in-frame acknowledgement (UART, or CAN's own transmit-only view of the world) can be wired wrong and look perfectly healthy from the sending end. Compare what it took to be sure the MQTT link was up.
 
 The converse is the useful bisect, and it is a common enough failure to be worth naming: heartbeats crossing while segmented transfers fail cannot be electrical, because the heartbeat has already proven the electrical layer. Look at §7's filter semantics instead.
-
-### Still unwritten
-
-Three exercises belong here and are deliberately absent, because a procedure nobody has run is not a procedure: deliberately mismatching the bitrate to see what a misconfigured bus looks like from both ends; watching the error counters climb toward bus-off on a node whose peer is powered down (§5, §6); and — since `relay.cpp` holds a silent filter on the heartbeat ID — running `can dump` against a peer transmitting once a second and watching it print nothing, which is the shadowing above made visible.
 
 ## 11. The model in one paragraph
 
