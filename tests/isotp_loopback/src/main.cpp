@@ -16,7 +16,8 @@
  * so the whole of ISO-TP genuinely executes: a First Frame is sent, a Flow
  * Control frame comes back, Consecutive Frames follow with their rolling
  * sequence numbers, and the receiver reassembles. None of that is our code, but
- * all of it is code our framing depends on and none of it had been run.
+ * all of it is code our framing depends on, and this is the only suite that
+ * exercises any of it.
  *
  * What it therefore proves that nothing else does:
  *
@@ -35,8 +36,8 @@
  * termination, a common ground, arbitration between two real transmitters, and
  * the in-frame acknowledgement that makes a node alone on a bus unable to
  * transmit at all. Those need two transceivers and are listed in
- * docs/test-strategy.md as bench work. The value of this file is that the list
- * is now that short.
+ * docs/test-strategy.md as bench work; the value of this file is that the list
+ * is that short.
  *
  * ---------------------------------------------------------------------------
  * Why the sizes below are transport boundaries and not schema sizes
@@ -79,16 +80,30 @@ constexpr size_t kMaxPayload = 1 + kRelayUpMax;
 
 const struct device *const can_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_canbus));
 
-/* The two ends of the ISO-TP pair, named for direction exactly as both
- * applications name them. `to_gateway` is what the peer transmits on and what
- * the gateway binds to; `to_peer` is the reverse. Under loopback both live on
- * one controller, which is precisely what makes a single node able to run a
- * two-party protocol against itself. */
+/* The four identifiers of the ISO-TP map, named for direction exactly as both
+ * applications name them. `to_gateway` is what the peer transmits data on and
+ * what the gateway binds to; `to_peer` is the reverse; each has a flow-control
+ * identifier of its own, travelling the other way. Under loopback all four live
+ * on one controller, which is precisely what makes a single node able to run a
+ * two-party protocol against itself.
+ *
+ * Be careful what a pass here proves about that separation: nothing. This
+ * controller (can_loopback.c:93-100) invokes EVERY filter a frame matches,
+ * where real controllers invoke only the lowest match — so a map that gave two
+ * ISO-TP contexts one identifier would pass this suite and fail on silicon.
+ * That property is asserted on the constants alone in tests/heartbeat/, where
+ * no driver's semantics can intervene. See docs/test-strategy.md. */
 const struct isotp_msg_id id_to_gateway = {
-	.std_id = isotp_id_to_gateway(kPeerNodeId), /* 0x7E8 */
+	.std_id = isotp_id_to_gateway(kPeerNodeId), /* 0x7E8, data */
+};
+const struct isotp_msg_id fc_to_peer = {
+	.std_id = isotp_fc_id_to_peer(kPeerNodeId), /* 0x7EC, its flow control */
 };
 const struct isotp_msg_id id_to_peer = {
-	.std_id = isotp_id_to_peer(kPeerNodeId), /* 0x7E0 */
+	.std_id = isotp_id_to_peer(kPeerNodeId), /* 0x7E0, data */
+};
+const struct isotp_msg_id fc_to_gateway = {
+	.std_id = isotp_fc_id_to_gateway(kPeerNodeId), /* 0x7E4, its flow control */
 };
 
 /* The permissive flow control both applications advertise: take the whole
@@ -202,7 +217,7 @@ ZTEST(isotp_loopback, test_single_frame_payload_round_trips)
 
 	fill(out, sizeof(out), RELAY_MSG_COMMAND);
 
-	int len = transfer(&id_to_peer, &id_to_gateway, out, sizeof(out), in, sizeof(in));
+	int len = transfer(&id_to_peer, &fc_to_gateway, out, sizeof(out), in, sizeof(in));
 
 	zassert_equal(len, static_cast<int>(sizeof(out)), "single frame returned %d", len);
 	zassert_mem_equal(in, out, sizeof(out), "single-frame payload came back altered");
@@ -221,7 +236,7 @@ ZTEST(isotp_loopback, test_eight_bytes_is_the_first_size_that_segments)
 
 	fill(out, sizeof(out), RELAY_MSG_TELEMETRY);
 
-	int len = transfer(&id_to_gateway, &id_to_peer, out, sizeof(out), in, sizeof(in));
+	int len = transfer(&id_to_gateway, &fc_to_peer, out, sizeof(out), in, sizeof(in));
 
 	zassert_equal(len, static_cast<int>(sizeof(out)), "segmented transfer returned %d", len);
 	zassert_mem_equal(in, out, sizeof(out), "8-byte payload came back altered");
@@ -245,7 +260,7 @@ ZTEST(isotp_loopback, test_worst_case_upward_payload_round_trips)
 
 	fill(out, sizeof(out), RELAY_MSG_ACK);
 
-	int len = transfer(&id_to_gateway, &id_to_peer, out, sizeof(out), in, sizeof(in));
+	int len = transfer(&id_to_gateway, &fc_to_peer, out, sizeof(out), in, sizeof(in));
 
 	zassert_equal(len, static_cast<int>(kMaxPayload),
 		      "worst-case payload returned %d, expected %zu", len, kMaxPayload);
@@ -273,7 +288,7 @@ ZTEST(isotp_loopback, test_the_type_byte_leads_every_message)
 
 		fill(out, sizeof(out), types[i]);
 
-		int len = transfer(&id_to_gateway, &id_to_peer, out, sizeof(out), in, sizeof(in));
+		int len = transfer(&id_to_gateway, &fc_to_peer, out, sizeof(out), in, sizeof(in));
 
 		zassert_equal(len, static_cast<int>(sizeof(out)), "type %u returned %d", types[i],
 			      len);
@@ -303,12 +318,12 @@ ZTEST(isotp_loopback, test_a_receiver_bound_elsewhere_hears_nothing)
 
 	fill(out, sizeof(out), RELAY_MSG_TELEMETRY);
 
-	int rc = isotp_bind(&wrong_ctx, can_dev, &id_to_peer, &id_to_gateway, &fc_opts,
+	int rc = isotp_bind(&wrong_ctx, can_dev, &id_to_peer, &fc_to_gateway, &fc_opts,
 			    K_MSEC(200));
 
 	zassert_equal(rc, ISOTP_N_OK, "bind failed: %d", rc);
 
-	(void)isotp_send(&send_ctx, can_dev, out, sizeof(out), &id_to_gateway, &id_to_peer,
+	(void)isotp_send(&send_ctx, can_dev, out, sizeof(out), &id_to_gateway, &fc_to_peer,
 			 nullptr, nullptr);
 
 	rc = isotp_recv(&wrong_ctx, in, sizeof(in), K_MSEC(200));
@@ -404,7 +419,8 @@ ZTEST(isotp_loopback, test_the_heartbeat_filter_ignores_the_isotp_identifiers)
 	/* uint32_t, not uint16_t: isotp_msg_id::std_id is an 11-bit bitfield of a
 	 * uint32_t, and so is can_frame::id. Narrowing it here would be a
 	 * conversion the compiler is right to refuse. */
-	const uint32_t others[] = {id_to_gateway.std_id, id_to_peer.std_id,
+	const uint32_t others[] = {id_to_gateway.std_id, id_to_peer.std_id, fc_to_gateway.std_id,
+				   fc_to_peer.std_id,
 				   static_cast<uint32_t>(heartbeat_id(kPeerNodeId)) + 1};
 
 	for (size_t i = 0; i < ARRAY_SIZE(others); i++) {

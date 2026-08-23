@@ -15,14 +15,16 @@
  * The address map
  * ---------------------------------------------------------------------------
  *
- * Three identifiers per peer node, all 11-bit standard IDs:
+ * Five identifiers per peer node, all 11-bit standard IDs:
  *
- *   0x700 + id   heartbeat, peer -> gateway, one raw frame at 1 Hz
- *   0x7E0 + n    ISO-TP, gateway -> peer  (commands)
- *   0x7E8 + n    ISO-TP, peer -> gateway  (telemetry and acks)
+ *   0x700 + id   heartbeat,      peer -> gateway, one raw frame at 1 Hz
+ *   0x7E0 + n    ISO-TP data,    gateway -> peer  (commands)
+ *   0x7E4 + n    ISO-TP flow control for the above, peer -> gateway
+ *   0x7E8 + n    ISO-TP data,    peer -> gateway  (telemetry and acks)
+ *   0x7EC + n    ISO-TP flow control for the above, gateway -> peer
  *
  * where `id` is the node id and n = id - 2, since the gateway is node 1 and the
- * first peer is node 2. For node 2 that is 0x702, 0x7E0 and 0x7E8.
+ * first peer is node 2. For node 2 that is 0x702, 0x7E0, 0x7E4, 0x7E8, 0x7EC.
  *
  * The numbers are borrowed rather than invented: 0x700 + node id is CANopen's
  * heartbeat convention, and 0x7E0/0x7E8 is the UDS diagnostic request/response
@@ -30,6 +32,42 @@
  * nothing and means anyone who has met a CAN bus before can read a trace
  * without this file open, which is the only thing an identifier can do for a
  * human -- see notes/can-guide.md §4 for what it does for the bus.
+ *
+ * ---------------------------------------------------------------------------
+ * Why flow control gets identifiers of its own
+ * ---------------------------------------------------------------------------
+ *
+ * The UDS convention this map otherwise borrows from puts a direction's data
+ * frames and its flow-control frames on one pair of identifiers: a transfer on
+ * 0x7E0 is answered by FC frames on 0x7E8, and vice versa. That is not usable
+ * on these controllers, and the reason generalises to any Zephyr CAN target.
+ *
+ * Zephyr's ISO-TP gives every context its own CAN acceptance filter: a bound
+ * receive context filters on the address it receives data on (isotp.c,
+ * add_ff_sf_filter), and a send context filters on the address it expects FC
+ * on (add_fc_filter). Two contexts sharing one identifier therefore install two
+ * filters for it -- and both bxCAN and M_CAN deliver a frame to exactly ONE
+ * callback, the lowest-numbered matching filter. The bind is installed at boot
+ * and so occupies the lower slot, which means every FC frame is handed to the
+ * receive context, which has no case for an FC PCI and drops it ("Got
+ * unexpected frame. Ignore"), while the sender waits out its timeout for flow
+ * control that arrived and was discarded. Single frames are unaffected, so the
+ * signature of the mistake is a link on which heartbeats work perfectly and
+ * nothing segmented completes.
+ *
+ * So each ISO-TP context on a node gets an identifier nothing else on that node
+ * listens to. The peer listens on 0x7E0 (its bind) and 0x7EC (its sender's FC);
+ * the gateway listens on 0x7E8 (its bind) and 0x7E4 (its sender's FC). Four
+ * filters on the link, no two of them on the same id.
+ *
+ * The cost is the peer count: four identifiers spaced four apart leave room for
+ * four peers (n = 0..3, node ids 2..5), which is kMaxPeerNodeId below.
+ *
+ * Note that no test running against an emulated controller can check this
+ * property. Zephyr's zephyr,can-loopback driver invokes every filter a frame
+ * matches rather than only the first, so a colliding map behaves correctly
+ * there. tests/heartbeat/ asserts it on the constants alone instead, where no
+ * driver's semantics can intervene; docs/test-strategy.md has the argument.
  *
  * Note what the low identifiers buy on the bus itself: arbitration is won by
  * the numerically lowest id, so the heartbeat at 0x702 beats every ISO-TP frame
@@ -53,9 +91,23 @@
 constexpr uint8_t kGatewayNodeId = 1;
 constexpr uint8_t kFirstPeerNodeId = 2;
 
+/* The last peer this address map can express. Four identifiers spaced four
+ * apart, so n = 0..3 before 0x7E0 + n would collide with the FC range at
+ * 0x7E4. A fifth peer is not a tight fit, it is a wrong one: it would be given
+ * an identifier another node is already filtering on, and the symptom would be
+ * the same silently-swallowed flow control the map exists to avoid. Asserted in
+ * tests/heartbeat/ rather than left to be discovered. */
+constexpr uint8_t kMaxPeerNodeId = kFirstPeerNodeId + 3;
+
+/* Data and flow control are separated on purpose -- see the header comment. The
+ * suffix names the direction the frame TRAVELS, never the node that cares about
+ * it, because "to gateway" is unambiguous read from either end while "rx" is
+ * only ever true for one of them. */
 constexpr uint16_t kHeartbeatIdBase = 0x700;
 constexpr uint16_t kIsotpToPeerBase = 0x7E0;
+constexpr uint16_t kIsotpFcToGatewayBase = 0x7E4;
 constexpr uint16_t kIsotpToGatewayBase = 0x7E8;
+constexpr uint16_t kIsotpFcToPeerBase = 0x7EC;
 
 constexpr uint16_t heartbeat_id(uint8_t node_id)
 {
@@ -70,6 +122,20 @@ constexpr uint16_t isotp_id_to_peer(uint8_t node_id)
 constexpr uint16_t isotp_id_to_gateway(uint8_t node_id)
 {
 	return kIsotpToGatewayBase + (node_id - kFirstPeerNodeId);
+}
+
+/* Flow control answering a gateway -> peer transfer, so it travels peer ->
+ * gateway: the peer's bind sends it, the gateway's sender listens for it. */
+constexpr uint16_t isotp_fc_id_to_gateway(uint8_t node_id)
+{
+	return kIsotpFcToGatewayBase + (node_id - kFirstPeerNodeId);
+}
+
+/* Flow control answering a peer -> gateway transfer, so it travels gateway ->
+ * peer: the gateway's bind sends it, the peer's sender listens for it. */
+constexpr uint16_t isotp_fc_id_to_peer(uint8_t node_id)
+{
+	return kIsotpFcToPeerBase + (node_id - kFirstPeerNodeId);
 }
 
 /* ---------------------------------------------------------------------------

@@ -153,33 +153,87 @@ ZTEST(heartbeat, test_unpack_rejects_unknown_state)
 
 ZTEST(heartbeat, test_address_map)
 {
-	/* The map for node 2, spelled out. These three numbers appear in the
+	/* The map for node 2, spelled out. These five numbers appear in the
 	 * bring-up procedure in docs/can-bringup.md and in every `can filter
 	 * add` a human will type at the shell, so they are worth being an
 	 * assertion rather than a comment. */
 	zassert_equal(heartbeat_id(2), 0x702, "heartbeat id for node 2");
-	zassert_equal(isotp_id_to_peer(2), 0x7E0, "gateway -> node 2");
-	zassert_equal(isotp_id_to_gateway(2), 0x7E8, "node 2 -> gateway");
+	zassert_equal(isotp_id_to_peer(2), 0x7E0, "commands, gateway -> node 2");
+	zassert_equal(isotp_fc_id_to_gateway(2), 0x7E4, "their flow control, node 2 -> gateway");
+	zassert_equal(isotp_id_to_gateway(2), 0x7E8, "telemetry and acks, node 2 -> gateway");
+	zassert_equal(isotp_fc_id_to_peer(2), 0x7EC, "their flow control, gateway -> node 2");
 
 	/* And a third node would slot in beside it without colliding. */
 	zassert_equal(heartbeat_id(3), 0x703, "heartbeat id for node 3");
-	zassert_equal(isotp_id_to_peer(3), 0x7E1, "gateway -> node 3");
-	zassert_equal(isotp_id_to_gateway(3), 0x7E9, "node 3 -> gateway");
+	zassert_equal(isotp_id_to_peer(3), 0x7E1, "commands, gateway -> node 3");
+	zassert_equal(isotp_fc_id_to_gateway(3), 0x7E5, "their flow control, node 3 -> gateway");
+	zassert_equal(isotp_id_to_gateway(3), 0x7E9, "telemetry and acks, node 3 -> gateway");
+	zassert_equal(isotp_fc_id_to_peer(3), 0x7ED, "their flow control, gateway -> node 3");
+}
+
+/* No node may end up filtering on one identifier twice.
+ *
+ * Zephyr's ISO-TP installs a separate CAN acceptance filter per context, real
+ * controllers deliver a frame to only the lowest matching one, and the loser is
+ * starved with no diagnostic -- can_link.h has the mechanism. The property is
+ * therefore load-bearing, and it belongs here rather than in
+ * tests/isotp_loopback/: it is a fact about these constants alone, checkable
+ * with no controller of any kind. An emulated controller could not check it,
+ * because zephyr,can-loopback invokes every matching filter and so accepts a
+ * colliding map. */
+ZTEST(heartbeat, test_no_node_listens_to_one_identifier_twice)
+{
+	for (uint8_t id = kFirstPeerNodeId; id <= kMaxPeerNodeId; id++) {
+		/* What the gateway filters on for this peer. */
+		zassert_not_equal(isotp_id_to_gateway(id), isotp_fc_id_to_gateway(id),
+				  "gateway's bind and sender collide for node %u", id);
+		zassert_not_equal(isotp_id_to_gateway(id), heartbeat_id(id),
+				  "gateway's bind collides with the heartbeat for node %u", id);
+		zassert_not_equal(isotp_fc_id_to_gateway(id), heartbeat_id(id),
+				  "gateway's sender collides with the heartbeat for node %u", id);
+
+		/* What this peer filters on. */
+		zassert_not_equal(isotp_id_to_peer(id), isotp_fc_id_to_peer(id),
+				  "peer %u's bind and sender collide", id);
+	}
+
+	/* Across peers too: node 3's identifiers must not be anything node 2 is
+	 * already listening to, or a second peer would quietly steal the first
+	 * one's flow control. Every identifier the map produces, all distinct. */
+	uint16_t ids[4 * (kMaxPeerNodeId - kFirstPeerNodeId + 1)];
+	size_t n = 0;
+
+	for (uint8_t id = kFirstPeerNodeId; id <= kMaxPeerNodeId; id++) {
+		ids[n++] = isotp_id_to_peer(id);
+		ids[n++] = isotp_fc_id_to_gateway(id);
+		ids[n++] = isotp_id_to_gateway(id);
+		ids[n++] = isotp_fc_id_to_peer(id);
+	}
+
+	for (size_t i = 0; i < n; i++) {
+		for (size_t j = i + 1; j < n; j++) {
+			zassert_not_equal(ids[i], ids[j], "identifier 0x%03x is used twice",
+					  ids[i]);
+		}
+	}
 }
 
 ZTEST(heartbeat, test_every_id_is_a_valid_standard_identifier)
 {
-	/* 11-bit ids, so the ceiling is 0x7FF. The ISO-TP ranges start at 0x7E0
-	 * and 0x7E8, which leaves room for 8 peers on the response range before
-	 * the identifier space runs out -- and the failure at peer 10 would be
-	 * a silently truncated id, not an error. Worth knowing where the wall
-	 * is before someone adds a ninth node. */
+	/* 11-bit ids, so the ceiling is 0x7FF -- but that ceiling is not what
+	 * bounds this map. The four ISO-TP ranges are spaced four apart from
+	 * 0x7E0, so the wall is kMaxPeerNodeId: past it, 0x7E0 + n walks into the
+	 * flow-control range at 0x7E4 and two nodes start filtering on one
+	 * identifier. Four peers, and the limit is collision rather than
+	 * arithmetic overflow -- worth knowing before someone adds a fifth node. */
 	constexpr uint16_t kMaxStdId = 0x7FF;
 
-	for (uint8_t id = kFirstPeerNodeId; id <= 9; id++) {
+	for (uint8_t id = kFirstPeerNodeId; id <= kMaxPeerNodeId; id++) {
 		zassert_true(heartbeat_id(id) <= kMaxStdId, "heartbeat id for node %u", id);
-		zassert_true(isotp_id_to_peer(id) <= kMaxStdId, "request id for node %u", id);
-		zassert_true(isotp_id_to_gateway(id) <= kMaxStdId, "response id for node %u", id);
+		zassert_true(isotp_id_to_peer(id) <= kMaxStdId, "command id for node %u", id);
+		zassert_true(isotp_fc_id_to_gateway(id) <= kMaxStdId, "command FC for node %u", id);
+		zassert_true(isotp_id_to_gateway(id) <= kMaxStdId, "telemetry id for node %u", id);
+		zassert_true(isotp_fc_id_to_peer(id) <= kMaxStdId, "telemetry FC for node %u", id);
 	}
 
 	/* The heartbeat range must stay below the ISO-TP ranges, because a lower

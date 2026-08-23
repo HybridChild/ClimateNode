@@ -76,12 +76,24 @@ const struct device *const can_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_canbus));
 /* Mirrored from the gateway's point of view: what it calls "to peer" is what we
  * receive, and vice versa. Getting this pair backwards produces a link on which
  * every frame is transmitted correctly and nothing is ever delivered, so the
- * two constructors in can_link.h are named for direction rather than for role. */
+ * constructors in can_link.h are named for direction rather than for role.
+ *
+ * Four addresses rather than two, because our bind and our sender each need an
+ * identifier no other filter on this node is listening to -- can_link.h's header
+ * comment has the mechanism and the symptom of getting it wrong. The pairing to hold on to:
+ * an ISO-TP context's two addresses are always "the data I move" and "the flow
+ * control that answers it", travelling in opposite directions. */
 const struct isotp_msg_id rx_addr = {
-	.std_id = isotp_id_to_peer(kNodeId), /* 0x7E0: gateway -> us */
+	.std_id = isotp_id_to_peer(kNodeId), /* 0x7E0: commands, gateway -> us */
+};
+const struct isotp_msg_id rx_fc_addr = {
+	.std_id = isotp_fc_id_to_peer(kNodeId), /* 0x7EC: FC for our sends, gateway -> us */
 };
 const struct isotp_msg_id tx_addr = {
-	.std_id = isotp_id_to_gateway(kNodeId), /* 0x7E8: us -> gateway */
+	.std_id = isotp_id_to_gateway(kNodeId), /* 0x7E8: telemetry and acks, us -> gateway */
+};
+const struct isotp_msg_id tx_fc_addr = {
+	.std_id = isotp_fc_id_to_gateway(kNodeId), /* 0x7E4: FC for our bind, us -> gateway */
 };
 
 /* Flow control we advertise to a sender: bs = 0 means "send the whole thing,
@@ -226,7 +238,7 @@ int send_message(enum relay_msg_type type, const uint8_t *payload, size_t len)
 	frame[0] = static_cast<uint8_t>(type);
 	memcpy(&frame[1], payload, len);
 
-	int rc = isotp_send(&send_ctx, can_dev, frame, len + 1, &tx_addr, &rx_addr, nullptr,
+	int rc = isotp_send(&send_ctx, can_dev, frame, len + 1, &tx_addr, &rx_fc_addr, nullptr,
 			    nullptr);
 
 	/* ISOTP_N_TIMEOUT_BS (-2) is the signature of an absent gateway: the
@@ -240,16 +252,22 @@ int send_message(enum relay_msg_type type, const uint8_t *payload, size_t len)
 	return rc;
 }
 
-bool send_telemetry(const struct sensor_reading &reading)
+/* Returns the ISO-TP result, not a bool: ISOTP_N_OK, or the code that explains
+ * the failure. note_link() prints it, and the distinction it carries is the
+ * whole diagnosis -- ISOTP_N_TIMEOUT_BS means the first frame went out and no
+ * flow control came back, which is a very different fault from the transmit
+ * itself failing, and the two point at different halves of the link. A bool
+ * cannot carry that distinction. */
+int send_telemetry(const struct sensor_reading &reading)
 {
 	uint8_t payload[node_Telemetry_size];
 	size_t len = encode_telemetry(reading, payload, sizeof(payload));
 
 	if (len == 0) {
-		return false; /* encode_telemetry already logged why */
+		return -EINVAL; /* encode_telemetry already logged why */
 	}
 
-	return send_message(RELAY_MSG_TELEMETRY, payload, len) == ISOTP_N_OK;
+	return send_message(RELAY_MSG_TELEMETRY, payload, len);
 }
 
 /* ---- the heartbeat -------------------------------------------------------- */
@@ -369,15 +387,20 @@ int main(void)
 	 * a receive context to read reassembled payloads from. Until this
 	 * returns, commands from the gateway are dropped by the controller
 	 * itself rather than by us. */
-	rc = isotp_bind(&recv_ctx, can_dev, &rx_addr, &tx_addr, &fc_opts, K_MSEC(200));
+	rc = isotp_bind(&recv_ctx, can_dev, &rx_addr, &tx_fc_addr, &fc_opts, K_MSEC(200));
 
 	if (rc != ISOTP_N_OK) {
 		LOG_ERR("isotp_bind failed: %d", rc);
 		return 0;
 	}
 
-	LOG_INF("node %u on CAN: heartbeat 0x%03x, isotp rx 0x%03x tx 0x%03x", kNodeId,
-		heartbeat_id(kNodeId), rx_addr.std_id, tx_addr.std_id);
+	/* All four identifiers, read back out of can_link.h rather than written
+	 * as literals: seeing them here and mirrored on the gateway's console is
+	 * the cheapest confirmation that both ends computed the same map. */
+	LOG_INF("node %u on CAN: heartbeat 0x%03x, isotp in 0x%03x (fc out 0x%03x), "
+		"out 0x%03x (fc in 0x%03x)",
+		kNodeId, heartbeat_id(kNodeId), rx_addr.std_id, tx_fc_addr.std_id,
+		tx_addr.std_id, rx_fc_addr.std_id);
 
 	int64_t next_beat = k_uptime_get();
 
@@ -465,7 +488,9 @@ int main(void)
 				 * loses its clock. */
 				if (bus_transmittable() &&
 				    (link_up || k_uptime_get() >= tx_retry_at)) {
-					note_link(send_telemetry(reading), "telemetry", 0);
+					int rc = send_telemetry(reading);
+
+					note_link(rc == ISOTP_N_OK, "telemetry", rc);
 				}
 			}
 		}

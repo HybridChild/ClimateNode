@@ -87,12 +87,23 @@ constexpr int kAckWaitMs = 2000;
 
 const struct device *const can_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_canbus));
 
-/* Mirror of the peer's pair: what it calls "to gateway" is what we receive. */
+/* Mirror of the peer's four: what it calls "to gateway" is what we receive.
+ *
+ * Data and flow control are on separate identifiers so that our bind and our
+ * sender never install two acceptance filters for the same id -- can_link.h's
+ * header comment has the mechanism, and the two filters we do install here are
+ * 0x7E8 (bind) and 0x7E4 (sender's FC). */
 const struct isotp_msg_id rx_addr = {
-	.std_id = isotp_id_to_gateway(kPeerNodeId), /* 0x7E8: peer -> us */
+	.std_id = isotp_id_to_gateway(kPeerNodeId), /* 0x7E8: telemetry and acks, peer -> us */
+};
+const struct isotp_msg_id rx_fc_addr = {
+	.std_id = isotp_fc_id_to_gateway(kPeerNodeId), /* 0x7E4: FC for our sends, peer -> us */
 };
 const struct isotp_msg_id tx_addr = {
-	.std_id = isotp_id_to_peer(kPeerNodeId), /* 0x7E0: us -> peer */
+	.std_id = isotp_id_to_peer(kPeerNodeId), /* 0x7E0: commands, us -> peer */
+};
+const struct isotp_msg_id tx_fc_addr = {
+	.std_id = isotp_fc_id_to_peer(kPeerNodeId), /* 0x7EC: FC for our bind, us -> peer */
 };
 
 /* Flow control we advertise to the peer: take the whole transfer, no gaps. The
@@ -271,14 +282,18 @@ void rx_thread(void *, void *, void *)
 		return;
 	}
 
-	rc = isotp_bind(&recv_ctx, can_dev, &rx_addr, &tx_addr, &fc_opts, K_MSEC(200));
+	rc = isotp_bind(&recv_ctx, can_dev, &rx_addr, &tx_fc_addr, &fc_opts, K_MSEC(200));
 	if (rc != ISOTP_N_OK) {
 		LOG_ERR("isotp_bind failed: %d — relay disabled", rc);
 		return;
 	}
 
-	LOG_INF("relay up: peer %u, heartbeat 0x%03x, isotp rx 0x%03x tx 0x%03x", kPeerNodeId,
-		heartbeat_id(kPeerNodeId), rx_addr.std_id, tx_addr.std_id);
+	/* The peer logs the same four with in and out swapped. Reading the two
+	 * consoles side by side is how you confirm both ends agree on the map. */
+	LOG_INF("relay up: peer %u, heartbeat 0x%03x, isotp in 0x%03x (fc out 0x%03x), "
+		"out 0x%03x (fc in 0x%03x)",
+		kPeerNodeId, heartbeat_id(kPeerNodeId), rx_addr.std_id, tx_fc_addr.std_id,
+		tx_addr.std_id, rx_fc_addr.std_id);
 
 	/* Starts UNKNOWN, with the clock running from now. Nothing is published
 	 * until either a beat arrives or the timeout elapses, so a gateway
@@ -360,7 +375,7 @@ void tx_thread(void *, void *, void *)
 		 * what serialises command round trips structurally, which is the
 		 * premise chan_relay_ack's latest-wins observer depends on — see
 		 * relay.h. */
-		int rc = isotp_send(&send_ctx, can_dev, frame, cmd.len + 1, &tx_addr, &rx_addr,
+		int rc = isotp_send(&send_ctx, can_dev, frame, cmd.len + 1, &tx_addr, &rx_fc_addr,
 				    nullptr, nullptr);
 
 		if (rc != ISOTP_N_OK) {
