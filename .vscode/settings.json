@@ -1,4 +1,25 @@
 {
+  // Absolute paths below are deliberate. VS Code does not expand `~` or
+  // ${userHome} in settings values -- each extension has to implement it, and
+  // of the three here only two do, with incompatible spellings (checked
+  // against clangd 0.6.0, trond-snekvik.devicetree 2.3.1, kconfig-lang 1.2.0):
+  //
+  //   clangd.arguments      ${userHome} works -- values are read through the
+  //                         extension's own substitute(). A bare `~` does not.
+  //   kconfig.zephyr.base   a leading `~/` works, from one hand-rolled
+  //                         replace(/^~\//). ${userHome} does not.
+  //   everything else       read raw. A `~` becomes a literal directory name,
+  //                         and the setting quietly stops resolving -- west
+  //                         will not exec, Zephyr is not found, IntelliSense
+  //                         degrades with nothing to point at.
+  //
+  // So this file describes one machine, the same way scripts/probes.conf and
+  // the static IPs in gateway/prj.conf do -- see docs/toolchain.md. On another
+  // checkout, rewrite the seven /Users/... prefixes: the SDK root in
+  // clangd.arguments, five pointers into ~/zephyr-workspace, and
+  // devicetree.ctxFile, which is an absolute path into *this* clone and so
+  // needs changing whatever home is called.
+
   // --- C/C++ IntelliSense via clangd ---------------------------------------
   // clangd reads the merged compile_commands.json at the repo root (the real
   // cross-GCC command line + all generated include paths), so it resolves
@@ -20,6 +41,58 @@
     "--background-index",
     "--header-insertion=never"
   ],
+
+  // --- DeviceTree + Kconfig (trond-snekvik.*) ------------------------------
+  // Both extensions locate Zephyr by running `west topdir` in the folder VS
+  // Code opened. This repo is a *freestanding* app -- the west workspace is
+  // ~/zephyr-workspace, not here -- so that lookup fails and both have to be
+  // pointed at it by hand. west itself lives in the workspace venv, which is
+  // not on VS Code's PATH. Once the Zephyr path is known both extensions run
+  // west with cwd = <zephyr>, so the `west list` they build module include
+  // paths from then works.
+  "devicetree.zephyr": "/Users/esbendn/zephyr-workspace/zephyr",
+  "devicetree.west": "/Users/esbendn/zephyr-workspace/.venv/bin/west",
+  // Binding search path. The default also carries an nRF Connect directory,
+  // which isn't a module here. ${zephyrBase} expands to devicetree.zephyr.
+  "devicetree.bindings": [
+    "${zephyrBase}/dts/bindings"
+  ],
+  // Saved DeviceTree contexts -- one per app: the board .dts plus that app's
+  // overlay, which is what the extension type-checks the overlay against.
+  // Written by hand because the extension predates Zephyr's hardware model
+  // v2: it infers the arch from the first path segment under boards/, which
+  // is now the vendor (boards/st/nucleo_h753zi), and then hunts for the SoC
+  // .dtsi under <zephyr>/dts/st instead of dts/arm, leaving every #include in
+  // the board file unresolved. A context file records the arch explicitly,
+  // which is what makes them resolve. Absolute path: this setting takes no
+  // ${workspaceFolder}. The file is gitignored like the rest of .vscode/, so
+  // it stays per-machine -- recreate it (or press Save on the DeviceTree
+  // context view) on another checkout.
+  "devicetree.ctxFile": "/Users/esbendn/Engineering/Projects/EthernetProtobufZephyr/.vscode/devicetree.json",
+
+  // Kconfig needs the same two pointers, for the same reason.
+  "kconfig.zephyr.base": "/Users/esbendn/zephyr-workspace/zephyr",
+  "kconfig.zephyr.west": "/Users/esbendn/zephyr-workspace/.venv/bin/west",
+  // The board feeds $(BOARD), $(ARCH) and $(BOARD_DIR) to the Kconfig tree,
+  // and decides which defconfig is parsed ahead of an open .conf file. `dir`
+  // is spelled out because the extension would otherwise look for
+  // <board>_defconfig under boards/<arch>/, where hwmv2 no longer puts it.
+  "kconfig.zephyr.board": {
+    "board": "nucleo_h753zi",
+    "arch": "arm",
+    "dir": "/Users/esbendn/zephyr-workspace/zephyr/boards/st/nucleo_h753zi"
+  },
+  // Zephyr's Kconfig tree reaches the module, SoC and board fragments through
+  // $(KCONFIG_BINARY_DIR), which CMake generates per build. Pointing it at a
+  // real build tree is what gets the hwmv2 layout right -- the extension's
+  // own stand-in guesses the pre-hwmv2 paths and finds nothing. So run
+  // scripts/build.sh once before expecting completion, and switch these to
+  // peer-node/ when working on the F072RB (together with the board above).
+  "kconfig.env": {
+    "KCONFIG_BINARY_DIR": "${workspaceFolder}/gateway/build/Kconfig",
+    "KCONFIG_BOARD_DIR": "${BOARD_DIR}",
+    "APPLICATION_SOURCE_DIR": "${workspaceFolder}/gateway"
+  },
 
   // --- performance: don't watch build output -------------------------------
   "files.watcherExclude": {
