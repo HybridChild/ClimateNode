@@ -1,6 +1,6 @@
 # The references
 
-Terse, project-specific documents recording what *this* build decided and why — the CO₂ node on a Nucleo-H753ZI talking to a Raspberry Pi. They are consulted, not read start to finish: jump in to check *which QoS did telemetry get*, *how does the static IP get set with no app code*, *why is the sensor deferred-init* — and leave.
+Terse, project-specific documents recording what *this* build decided and why — a Nucleo-H753ZI that is both a CO₂ node and a CAN gateway, a Nucleo-F072RB peer node behind it, and a Raspberry Pi running the broker. They are consulted, not read start to finish: jump in to check *which QoS did telemetry get*, *how does the static IP get set with no app code*, *why does ISO-TP flow control need its own identifiers* — and leave.
 
 If you want the **concept** rather than the decision, you are in the wrong folder. Each reference here pairs with a from-first-principles teaching guide in [`../notes/`](../notes/); start there if MQTT or devicetree or the sensor API is new to you, and come here for the facts once it isn't. [`../notes/README.md`](../notes/README.md) is the map of the guides, including the order to read them in.
 
@@ -17,7 +17,7 @@ Each row is a reference here and the guide it points back to. The guide teaches 
 | [`can-bringup.md`](can-bringup.md) | How the FDCAN controller is clocked and configured, why the bitrate must be stated explicitly, and the filter behaviour that makes `can dump` lie | [`can-guide.md`](../notes/can-guide.md) |
 | [`test-strategy.md`](test-strategy.md) | What this repo tests, where, and what it deliberately leaves to the bench | [`testing-guide.md`](../notes/testing-guide.md) |
 
-Two guides pair with a **source file** instead of a page here, because there the decision belongs next to the thing it constrains: `protobuf-guide.md` with [`../proto/node.proto`](../proto/node.proto) (the field-numbering rules), and `zbus-guide.md` with the [`app_channels.h`](../shared/app_channels.h) header comment (the observer-kind choice).
+Two guides pair with a **source file** instead of a page here, because there the decision belongs next to the thing it constrains: `protobuf-guide.md` with [`../proto/node.proto`](../proto/node.proto) (the field-numbering rules), and `zbus-guide.md` with the header comments in [`app_channels.h`](../shared/app_channels.h) and [`relay.h`](../gateway/src/relay.h) (the observer-kind choice, and the pool sizing that spans every channel).
 
 ## The two without a guide
 

@@ -4,6 +4,8 @@
 
 A teaching document. It builds up from "what is a device in Zephyr" to the handful of sensor calls in [`gateway/src/sensor.cpp`](../gateway/src/sensor.cpp), using this bench's SCD-40 as the running example. Every code reference is real: this repo's code is cited by function name (it moves), and Zephyr's by `file:line` against v4.4.1 in `~/zephyr-workspace` (pinned, so those hold).
 
+The repo happens to contain the control experiment for the API's central claim. [`peer-node/src/sensor.cpp`](../peer-node/src/sensor.cpp) reads a **BME280** on a different board, from a different vendor, over a different driver, reporting a channel the SCD-40 does not have (`SENSOR_CHAN_PRESS`) and lacking one it does (`SENSOR_CHAN_CO2`) — and the calls are the same four: `DEVICE_DT_GET`, `device_is_ready`, `sensor_sample_fetch`, `sensor_channel_get`. Everything specific to either chip is in its driver and its devicetree node. That is the whole point of §1, demonstrated rather than asserted, and it is worth opening both files side by side once you have read §4.
+
 For how the sensor is wired, described and initialised here, see [`docs/sensor-bringup.md`](../docs/sensor-bringup.md) — that's the terse reference half. This is the concepts half. The chip's own command codes and conversion formulas appear inline below, where the driver actually uses them.
 
 **The shape of this document:**

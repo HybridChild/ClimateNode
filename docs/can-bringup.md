@@ -2,7 +2,7 @@
 
 How the CAN link between the **Nucleo-H753ZI** gateway and the **Nucleo-F072RB** peer node is configured, clocked and verified on this bench. Terse by intent: decisions, rationale, and the facts you need when the link misbehaves. For the concepts underneath — what a differential multi-drop bus is, how arbitration makes a lower ID win, why acceptance filters exist, and what 8 bytes per frame does to a protocol design — see the companion teaching guide, [`can-guide.md`](../notes/can-guide.md).
 
-**Phase 6 works end to end on hardware.** Two SN65HVD230 transceivers, a terminated 500 kbit/s two-node bus, heartbeats acknowledged, telemetry segmented from the peer to `node/2/telemetry`, and a command answered by the peer's own `DeviceInfo` on `node/2/ack`. *Bring-up checks* below are the procedures, in the order worth running them. Two constraints on this design are subtle enough to have their own sections and are worth reading before changing either area: *Flow control needs its own identifiers* and *The zbus pool is sized by every channel*.
+**The link works end to end on hardware.** Two SN65HVD230 transceivers, a terminated 500 kbit/s two-node bus, heartbeats acknowledged, telemetry segmented from the peer to `node/2/telemetry`, and a command answered by the peer's own `DeviceInfo` on `node/2/ack`. *Bring-up checks* below are the procedures, in the order worth running them. Two constraints on this design are subtle enough to have their own sections and are worth reading before changing either area: *Flow control needs its own identifiers* and *The zbus pool is sized by every channel*.
 
 Builds against the shared global Zephyr workspace — see [`toolchain.md`](toolchain.md).
 
@@ -321,7 +321,7 @@ On the peer, step 5's boot lines **without** the `gateway unreachable` warning.
 
 **Not proven:** anything segmented. The heartbeat is one raw 8-byte frame and never touches ISO-TP.
 
-**7. The segmented path, both directions, end to end.** Everything above proves frames move. This proves the *transport* does, and it is the check that closes phase 6.
+**7. The segmented path, both directions, end to end.** Everything above proves frames move. This proves the *transport* does, and it is the last check that needs hardware rather than a test suite.
 
 Run the harness **on the Pi**, which is the only machine that can reach the broker. Regenerate the Python bindings first — they are gitignored, so a Pi that has not run this since the last schema change is silently stale:
 
@@ -364,7 +364,7 @@ host/.venv/bin/python host/command.py --node 2 info   # the actual test
 | `ACK_STATUS_FAILED`, `no response over CAN` | The command reached the peer's identifier but nothing came back — suspect the `0x7E4` flow control. |
 | `ACK_STATUS_FAILED`, `no route to node over CAN` | `isotp_send()` failed outright; the transfer never left the gateway. |
 
-**Proves:** ISO-TP segmentation and reassembly in both directions over real silicon with separate flow-control identifiers; the relay's two threads and their RX/TX rendezvous; the liveness clock driven by a peer's actual cadence; both MQTT sessions publishing concurrently; and the gateway forwarding two different nodes' payloads without decoding either. That is every path in phase 6 that needed hardware.
+**Proves:** ISO-TP segmentation and reassembly in both directions over real silicon with separate flow-control identifiers; the relay's two threads and their RX/TX rendezvous; the liveness clock driven by a peer's actual cadence; both MQTT sessions publishing concurrently; and the gateway forwarding two different nodes' payloads without decoding either. Between them, every part of the relay path that a host test cannot reach.
 
 **8. The peer goes away, and comes back.** Tests the *other* mechanism that writes `node/2/status offline` — the gateway's own liveness timeout, which is firmware-published and has nothing to do with the Last Will (see [`mqtt-design.md`](mqtt-design.md) for that distinction, and do not confuse the two).
 
@@ -392,7 +392,7 @@ With everything running, unplug CANH/CANL between the transceivers and watch the
 
 ## What is deliberately not here
 
-- **No CAN-FD.** The peer node is an STM32F072 with **bxCAN**, which is classic CAN 2.0B only, so the link is classic at 8 bytes per frame regardless of what the H7's FDCAN could do. This is a feature rather than a concession: the 8-byte limit is what forces real segmentation, which is one of the things this phase exists to learn. `CONFIG_CAN_FD_MODE` stays unset, and `can show` correctly omits `fd`.
+- **No CAN-FD.** The peer node is an STM32F072 with **bxCAN**, which is classic CAN 2.0B only, so the link is classic at 8 bytes per frame regardless of what the H7's FDCAN could do. This is a feature rather than a concession: the 8-byte limit is what forces real segmentation, which is one of the things this link exists to exercise. `CONFIG_CAN_FD_MODE` stays unset, and `can show` correctly omits `fd`.
 - **No transceiver node.** Nothing to control — see *Driver behaviour worth knowing*.
 - **No third node.** The address helpers in `can_link.h` all take a node id and `main.cpp`'s sessions are an array, so a third is a row and a pair of ISO-TP contexts rather than a redesign — but nothing has been built or sized for one. `CONFIG_ZVFS_POLL_MAX` and `CONFIG_ZVFS_EVENTFD_MAX` are both set to exactly what two nodes need.
 - **No flow-control throttling.** The peer advertises `bs = 0, stmin = 0` — send the whole transfer, no minimum gap — because the only thing that reaches it is a 20-byte `Command`, which is three frames. Block size exists so a slow receiver can throttle a fast sender mid-transfer; throttling three frames costs a round trip per block and buys nothing. A node receiving a firmware image would answer differently.

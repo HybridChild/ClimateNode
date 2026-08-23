@@ -142,19 +142,20 @@ enum session_state {
 	SESSION_SERVING,
 };
 
-/* Everything that used to be a file-scope singleton, and one thing that used to
- * be worse than that.
+/* One client's entire world, so that two of them cannot share any of it.
  *
  * The will structures are the reason this is a struct rather than four parallel
- * arrays. They were function-local `static`s inside client_setup(), which is
- * correct for exactly one client and silently wrong for two: both would register
- * the same will topic, so one status topic would get two wills and the other
- * none. Nothing would report it, and it is observable only when a node actually
- * dies. Moving them in here is the fix, not a tidy-up.
+ * arrays. mqtt_connect() does not copy them -- client_setup() hands the library
+ * pointers (client.will_topic = &s->will_topic) and it reads through them when
+ * it serialises CONNECT. Anything shorter-lived or shared than the session
+ * therefore breaks: as function-local `static`s they would be one set of bytes
+ * for both clients, so whichever connected last would decide the will topic for
+ * both, one status topic would get two wills and the other none. Nothing
+ * reports that, because a will is only observable when a node actually dies.
  *
- * `next_message_id` moves in for a smaller but similar reason: MQTT packet ids
- * are scoped to a connection, so one shared counter was wrong on principle even
- * while it worked. */
+ * `next_message_id` is per-session for a plainer reason: MQTT packet ids are
+ * scoped to a connection, so a shared counter would be wrong even where it
+ * happened to work. */
 struct node_session {
 	/* Configuration, fixed at startup. */
 	const char *client_id;

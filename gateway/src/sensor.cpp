@@ -2,10 +2,11 @@
  * reading to the chan_telemetry zbus channel.
  *
  * This file knows nothing about MQTT, protobuf or the network — that is the
- * point of the split. Before zbus, the sensor read and the MQTT publish shared
- * one loop in main.cpp, so a reconnect backoff also stopped sampling and the
- * sample period had to be juggled against the keepalive deadline in the same
- * timeout calculation. Now each side has one job and one clock.
+ * point of the split, and the channel is what buys it. Sample the sensor from
+ * the same loop that serves the socket and the two clocks become one: a
+ * reconnect backoff stops sampling, and the sample period has to be reconciled
+ * against the keepalive deadline in a single timeout calculation. Across a
+ * channel, each side has one job and one clock.
  *
  * The module owns both channels (see app_channels.h): the readings it produces,
  * and the commands that retune it. Owning chan_sensor_cmd is what lets the

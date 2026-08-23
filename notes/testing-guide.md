@@ -8,7 +8,7 @@ A teaching document. It explains why testing firmware is awkward, what makes a p
 
 - **§1–§2** — why the target is the wrong place to test, and the one property that decides whether code can be tested at all.
 - **§3–§5** — the machinery: Ztest, the four places a test can run, and Twister.
-- **§6** — three of this repo's suites, read as worked examples: pure logic, a test-owned channel, and a driver under emulation.
+- **§6** — three of this repo's five suites, read as worked examples: pure logic, a test-owned channel, and a driver under emulation.
 - **§7–§8** — what to test and what not to, and why regulated industries make this mandatory rather than optional.
 - **§9** — the whole picture, and what host tests structurally cannot catch.
 - **§10–§12** — a lab, the model in one paragraph, and where to go next.
@@ -45,26 +45,27 @@ The obvious move, when you find you cannot test something, is to carve a hole in
 
 The honest version of the same instinct asks a different question: **why is this hard to test?** Usually the answer is not the function's shape but its *dependencies*.
 
-### This repo, before
+### The untestable shape
 
-`gateway/src/main.cpp` was 713 lines carrying five unrelated jobs: the MQTT session lifecycle, MQTT event handling, protobuf encoding, command semantics, and zbus glue. The protobuf encoder was pure arithmetic — but it lived in a translation unit that could not be compiled without the socket layer and the whole network stack. Nothing in that file was reachable, so nothing in it could be tested.
+Picture the natural first draft of this firmware: one `main.cpp` of several hundred lines carrying five unrelated jobs — the MQTT session lifecycle, MQTT event handling, protobuf encoding, command semantics, and zbus glue. The protobuf encoder in it is pure arithmetic, and it is nonetheless unreachable, because it lives in a translation unit that cannot be compiled without the socket layer and the whole network stack behind it. Nothing in that file can be linked into a test, so nothing in it can be tested.
 
-The problem was never `encode_telemetry()`'s signature. It was that five things shared one file.
+The problem there is not `encode_telemetry()`'s signature. It is that five things share one file.
 
-### This repo, after
+### The shape this repo has
 
-Four translation units, each with one responsibility:
+The gateway is five translation units instead, each with one responsibility:
 
 | File | Owns | Depends on |
 |---|---|---|
 | `sensor.cpp` | acquisition: the SCD-40, the sample period, the bounds | the device, zbus |
 | `protocol.cpp` | the wire format: internal types ↔ protobuf | nanopb |
 | `commands.cpp` | command semantics: dispatch, dedupe, node identity | zbus, protocol |
-| `main.cpp` | the MQTT session: connect, poll, publish, reconnect | everything |
+| `relay.cpp` | the CAN side: heartbeat liveness, ISO-TP both directions | the CAN device, zbus |
+| `main.cpp` | the MQTT sessions: connect, poll, publish, reconnect | everything |
 
-Every function moved essentially verbatim. No seam was carved, no flag added, no parameter injected. What changed is *which file each thing lives in* — and suddenly two of the four compile with no hardware dependency at all, so they can be tested.
+Nothing here is a seam carved for a test — no flag that suppresses a side effect, no parameter only a test supplies. The whole difference is *which file each thing lives in*, and it is what makes `protocol.cpp` and `commands.cpp` compile with no hardware dependency at all, so they can be tested. (`protocol.cpp` and `commands.cpp` live in [`shared/`](../shared/) rather than under `gateway/`, because the peer node links the very same two files — the same argument arriving a second time.)
 
-The test that this was the right change is that **each file is justifiable without mentioning tests.** "The wire format is a separate concern from the MQTT session" is an argument you would make in a review anyway. That is the difference between design improved under pressure from testing, and design damaged by it.
+The check on whether a split like this is design or damage: **each file is justifiable without mentioning tests.** "The wire format is a separate concern from the MQTT session" is an argument you would make in a review anyway. That is the difference between design improved under pressure from testing, and design damaged by it.
 
 > **The rule of thumb:** if a change makes the code easier to explain, testing was the occasion for it, not the cause. If you find yourself explaining a construct by saying "it's like that so we can test it", look for a different change.
 
@@ -168,7 +169,7 @@ Two lessons generalise from it. First, **the emulated driver is often already in
 
 ---
 
-## 6. Three of this repo's suites, read closely
+## 6. Three of the five suites, read closely
 
 ### `tests/protocol/` — pure logic
 
@@ -237,18 +238,18 @@ That distinction matters because it is where the temptation to over-test lives. 
 
 The concrete example is the buffer bound. The gateway reads into `1 + kRelayUpMax` = 161 bytes; `CONFIG_ISOTP_RX_BUF_COUNT` defaults to 4 buffers of 56, which is 224 and fits; the peer node trims that count to 2 to fit 16 KB of RAM, giving 112, which does not. Both settings are correct because each node reassembles a different direction — and no unit test of any function could have said so, because it is not a property of a function. It is a property of two configuration files and a protocol, and the only way to check it is to run all three.
 
-One practical lesson came out of writing it, and it generalises well beyond CAN. **Two of its tests are negative** — a receiver bound to the wrong identifier hears nothing, a heartbeat filter ignores the ISO-TP identifiers — and negative tests pass for free in a broken environment. The first version of this suite forgot that `CAN_MODE_LOOPBACK` must be set explicitly before `can_start()`, so the driver silently delivered nothing at all, and those two tests were the ones that passed. The fix is not vigilance, it is **mutation**: break the thing on purpose and confirm the test notices. Widening the heartbeat filter's mask to `0` must fail the filter test; binding the "wrong" context to the right address must fail the addressing test. A negative test you have never seen fail is not evidence of anything.
+One hazard in it generalises well beyond CAN. **Two of its tests are negative** — a receiver bound to the wrong identifier hears nothing, a heartbeat filter ignores the ISO-TP identifiers — and a negative test passes for free in an environment where nothing is delivered at all. This suite has a live trap of exactly that kind: `CAN_MODE_LOOPBACK` must be set explicitly before `can_start()`, and without it `can_loopback.c` drops every frame while still returning success, so the two negative tests are the only ones that would still pass. The defence is not vigilance, it is **mutation**: break the thing on purpose and confirm the test notices. Widening the heartbeat filter's mask to `0` must fail the filter test; binding the "wrong" context to the right address must fail the addressing test. A negative test you have never seen fail is not evidence of anything.
 
 ---
 
 ## 7. What to test, and what not to
 
-The suites here are small — 50 cases — and chosen on one principle: **test behaviour that something outside this code depends on.**
+The suites here are small — 51 cases across five suites — and chosen on one principle: **test behaviour that something outside this code depends on.**
 
 What that selected:
 
 - **The contract with the host.** Every field of a `Telemetry` survives a round trip; the internal status enum maps to the right wire enum; an `Ack`'s detail truncates at its bound rather than overflowing. A host written against `node.proto` depends on all of it.
-- **The decisions that are hard to reason about.** That a warming-up reading is *shorter* on the wire than a full one, because proto3 omits defaults. That `garbage` is rejected but `hi` is accepted as a structurally legal `Command` with no arm set — and is then caught by dispatch rather than by decoding. Those are the claims in [`protobuf-guide.md`](protobuf-guide.md) §4–§5, turned into assertions so the guide and the firmware cannot drift apart quietly.
+- **The decisions that are hard to reason about.** That a warming-up reading is *shorter* on the wire than a full one, because an unset field is not transmitted. That `garbage` is rejected but `hi` is accepted as a structurally legal `Command` with no arm set — and is then caught by dispatch rather than by decoding. Those are the claims in [`protobuf-guide.md`](protobuf-guide.md) §4–§5, turned into assertions so the guide and the firmware cannot drift apart quietly.
 - **The behaviour that only shows up under failure.** A rejected command leaves the channel *unchanged* — the atomicity claim in [`zbus-guide.md`](zbus-guide.md) §6. A duplicate is acked but not executed. Both are invisible in normal operation and both are the reason the code is shaped as it is.
 
 What it deliberately left alone:
@@ -324,7 +325,7 @@ The suite runs on the Mac with nothing attached.
 
 ```
 INFO    - 5 of 5 executed test configurations passed (100.00%), 0 built (not run), 0 failed
-INFO    - 50 of 50 executed test cases passed (100.00%)
+INFO    - 51 of 51 executed test cases passed (100.00%)
 ```
 
 About thirty seconds, most of it building five full Zephyr images. **Proves:** the whole loop works with no board, no broker and no sensor — which is the entire point of §1.
@@ -380,7 +381,7 @@ int rc = isotp_bind(&wrong_ctx, can_dev, &id_to_gateway, &id_to_peer, &fc_opts, 
  FAIL - test_the_heartbeat_filter_ignores_the_isotp_identifiers
 ```
 
-Revert both. **Proves:** each test fails for the reason it claims to check, rather than because the environment delivers nothing. Try it once with the `can_set_mode(can_dev, CAN_MODE_LOOPBACK)` line in `setup()` removed as well, and watch both mutations pass — that is the failure this exercise exists to rule out, and it is what the suite did on its first run.
+Revert both. **Proves:** each test fails for the reason it claims to check, rather than because the environment delivers nothing. Try it once with the `can_set_mode(can_dev, CAN_MODE_LOOPBACK)` line in `setup()` removed as well, and watch both mutations pass: with the mode bit clear the driver delivers nothing, so a negative test cannot fail no matter what you break. That is the failure this exercise exists to rule out.
 
 ### Exercise 5 — Add one
 
@@ -404,7 +405,7 @@ Firmware is awkward to test because the target is slow, physical and singular �
 ## 12. Where to go next
 
 - **[`test-strategy.md`](../docs/test-strategy.md)** — the reference half: what this project tests, what it deliberately does not, and why `qemu_cortex_m3`.
-- **The labs in the other guides** — [`communication-guide.md`](communication-guide.md) §9, [`can-guide.md`](can-guide.md) §10, [`zbus-guide.md`](zbus-guide.md) §10, [`sensor-api-guide.md`](sensor-api-guide.md) §11 and [`protobuf-guide.md`](protobuf-guide.md) §12 are the hardware half of this job, run by hand. They are the specification for a future HIL suite.
+- **The labs in the other guides** — [`communication-guide.md`](communication-guide.md) §9, [`can-guide.md`](can-guide.md) §10, [`zbus-guide.md`](zbus-guide.md) §10, [`sensor-api-guide.md`](sensor-api-guide.md) §11, [`protobuf-guide.md`](protobuf-guide.md) §12, [`zephyr-build-system-guide.md`](zephyr-build-system-guide.md) §12 and [`language-cpp.md`](language-cpp.md) §12 are the hardware half of this job, run by hand. They are the specification for a future HIL suite.
 - **Hardware-in-the-loop from the Pi** — it already has the broker, `command.py`, `monitor.py` and a cable to the board. The gap between §9's two boxes is the work.
 - **CI** — the suites are the hard part and they exist now; a GitHub Actions workflow that builds the firmware and runs `scripts/test.sh` on every push is mostly plumbing. Note that a Linux runner can use `native_sim` and finish in a fraction of the time.
 - **Zephyr's own tests** — `~/zephyr-workspace/zephyr/tests/` is thousands of worked examples. `tests/subsys/zbus/` is the closest to this repo's concerns.

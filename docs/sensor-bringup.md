@@ -4,6 +4,8 @@ How the Adafruit **SCD-40** (CO₂ / temperature / humidity) is wired, described
 
 Builds against the shared global Zephyr workspace — see [`toolchain.md`](toolchain.md).
 
+**Scope: the gateway's sensor only.** The peer node's **BME280** is wired and described the same way and read through the same four API calls, on the same pins of the other board; what differs is the driver, the channel set (pressure instead of CO₂) and that it needs no deferred init. Its wiring is in the README's hardware table and its devicetree node in [`peer-node/boards/nucleo_f072rb.overlay`](../peer-node/boards/nucleo_f072rb.overlay); nothing below is specific to it except the SCD-40 sections that say so.
+
 ## The sensor path
 
 Four files, each doing one thing:

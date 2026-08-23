@@ -197,7 +197,7 @@ The practical payoff at the prompt: you rarely type a device or channel name in 
 
 ## 6. The built-in shells on this bench
 
-Nothing above required writing a command; the value on this bench comes from the shells other subsystems already register once you enable them. Four are worth knowing:
+Nothing above required writing a command; the value on this bench comes from the shells other subsystems already register once you enable them. Five are worth knowing:
 
 | Root | Enabled by | What it answers | Registered at |
 |---|---|---|---|
@@ -205,11 +205,13 @@ Nothing above required writing a command; the value on this bench comes from the
 | `device` | comes with `CONFIG_SHELL` | what devices exist and their init status | `subsys/shell/modules/device_service.c:269` |
 | `net`    | `CONFIG_NET_SHELL=y` | interface state, IP/MAC, `net ping` | `subsys/net/lib/shell/net_shell.c:235` |
 | `sensor` | `CONFIG_SENSOR_SHELL=y` | read channels/attributes straight from a driver | `drivers/sensor/sensor_shell.c:1147` |
+| `can`    | `CONFIG_CAN_SHELL=y` | controller state and error counters, send a frame, add a receive filter | `drivers/can/can_shell.c:1242` |
 
-Two of these earn their place in this project specifically:
+Three of these earn their place in this project specifically:
 
 - **`net`** is how the bench proves the link. `net iface` shows whether the Ethernet PHY has linked and which static IPv4 address `net_config` applied; `net ping 192.168.10.1` sends ICMP *from the board* to the Pi, verifying the Nucleo→Pi direction that a ping from the Pi cannot. `prj.conf` turns it on with `CONFIG_NET_SHELL=y`, and the comment there records exactly this use. See [`communication-guide.md`](communication-guide.md) for the networking side.
 - **`sensor`** is a ground-truth read of the SCD-40 that bypasses your application entirely — no zbus channel, no protobuf, no MQTT. That is what makes it a pipeline bisector, and it is the reason `CONFIG_SENSOR_SHELL=y` is in the build at all. The details, and the RTIO machinery that flag quietly pulls in, are [`sensor-api-guide.md` §7](sensor-api-guide.md).
+- **`can`** does for the CAN link what `net` does for Ethernet, and rather more, because a CAN controller can be driven end to end from the prompt with no application code: set a bitrate, enter loopback mode, send a frame, install a receive filter, watch what arrives. `can show` also reports the error counters and the controller state, which is the difference between knowing *that* a link is unhappy and knowing *which end*. [`can-guide.md` §10](can-guide.md) is built on it, and [`can-bringup.md`](../docs/can-bringup.md) uses it as the bisect between firmware and wiring. One trap comes with it: an application that installs its own receive filter first will shadow `can dump`, because real controllers deliver a frame to only the lowest matching filter — the mechanism is in [`can-guide.md` §7](can-guide.md).
 
 `kernel` and `device` come *free* with `CONFIG_SHELL` — you did not ask for them, but `kernel threads` (which threads exist, their stacks and states) and `device list` (did every device initialise?) are both useful when something hangs at boot.
 
@@ -218,6 +220,8 @@ Two of these earn their place in this project specifically:
 ## 7. What it costs, and the knobs
 
 The shell is not free. It brings its own thread (a stack you are paying for), a line buffer, command history, and the iterable command sections. On a 2 MB-flash STM32H753 that is noise; on a tighter part it is a real line item, and it is common to gate `CONFIG_SHELL` behind a debug build.
+
+This repo has both parts in one place. The gateway simply turns the shell on. The peer node — 16 KB of RAM — cannot: a **stock** shell with default settings takes it from 65 % to **95 %** of RAM before a single command set is added, and `CONFIG_SENSOR_SHELL` does not link at all, overflowing by 5856 B. So the peer's shell is a build variant rather than a default, and every knob below appears in [`peer-node/debug.conf`](../peer-node/debug.conf) with the bytes it saves written next to it, bringing the same shell plus the `can` commands back down to 83 %. Read that file alongside this section; it is this section with the numbers filled in.
 
 A few knobs you may meet:
 

@@ -149,8 +149,8 @@ constexpr uint16_t isotp_fc_id_to_peer(uint8_t node_id)
  * That byte exists because ISO-TP has no equivalent of an MQTT topic, and
  * docs/mqtt-design.md's rule still applies: the type is not on the wire
  * (notes/protobuf-guide.md §4), so something outside the payload has to assert
- * it. On MQTT the topic does; here this byte does. It is the same decision,
- * paying the same one-byte price it used to get free.
+ * it. On MQTT the topic does; here this byte does -- the same decision, paid
+ * for in a payload byte because there is no topic to carry it.
  *
  * The alternative was a separate address pair per message type, which would
  * mean two binds, two receive contexts and either two threads or a poll over

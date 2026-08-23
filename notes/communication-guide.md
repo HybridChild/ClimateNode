@@ -336,6 +336,8 @@ The idiom, which `mqtt-design.md` adopts:
 
 Now `node/1/status` is *always* correct, permanently, for anyone who subscribes — and the node needed no code for the failure case. The broker covers it. This is the cheapest and most instructive piece of MQTT's lifecycle machinery.
 
+**One will per connection, and that number is a design constraint.** `CONNECT` carries at most one will topic, so a client speaking for *two* devices can hand the broker a death notice for only one of them. Anything representing several logical devices — a gateway forwarding for nodes that have no network of their own — therefore has a choice: publish the others' status from its own code, which fails in exactly the case status matters (the gateway itself dying), or open one connection per identity and let the broker do it. This repo takes the second option: [`mqtt-design.md`](../docs/mqtt-design.md) has the two client ids and what a single node's death costs in RAM against a fabricated `offline` that never arrives.
+
 ---
 
 ## 8. The whole path, end to end

@@ -39,7 +39,7 @@ Two things are worth noticing before anything else.
 
 **`main()` is a state machine over sessions, not a connect-and-serve function.** Most introductory MQTT code is written as "connect once, then loop publishing", with reconnection bolted on afterwards as an `if (error) ...`. Here **disconnection is the expected control flow**. Each `struct node_session` is independently `IDLE` (waiting out a backoff), `CONNECTING` (CONNACK outstanding) or `SERVING`, and the loop steps all of them on every pass — so one connection can be backing off while another publishes.
 
-That shape is what a second identity required. An earlier version of this file had a blocking `run_session()` that connected, served until the link dropped, and returned; with two sessions it would have had to serve one while the other was down, which a blocking function cannot do. The state machine is the same program with the blocking removed.
+That shape is what a second identity forces. The obvious alternative is a blocking `run_session()` that connects, serves until the link drops, and returns — which is fine for one connection and cannot be made to work for two, because it would have to serve one session while the other is down. The state machine is that same program with the blocking taken out.
 
 **The other three threads do not participate in any of that.** None of them has heard of MQTT. The sensor keeps sampling and the relay keeps beating and listening through a connect, a disconnect and a 30-second backoff, and the readings taken meanwhile simply pile up as a gap in the `sequence` field. That separation is the whole reason the threads exist: fold any of them into this loop and its clock becomes hostage to the socket, so a reconnect backoff would stop the sensor — and would let the peer time out as dead while it was merely unheard.
 
@@ -113,16 +113,16 @@ Zephyr's native socket API is namespaced with `zsock_`. Zephyr can *also* expose
 
 `client_setup(s)` does not *do* anything — it populates a configuration record. Every field is read later, when `mqtt_connect()` serialises the `CONNECT` packet.
 
-It takes a `struct node_session *` because there are two of them. That struct holds one client's entire world — the `mqtt_client`, its broker address, its buffers, its will, its packet-id counter, its connection state and its backoff — and `sessions[]` holds one per node identity. Every function below that used to read a file-scope variable now takes a session instead, which is the mechanical half of this file's history and the least interesting.
+It takes a `struct node_session *` because there are two of them. That struct holds one client's entire world — the `mqtt_client`, its broker address, its buffers, its will, its packet-id counter, its connection state and its backoff — and `sessions[]` holds one per node identity. Every function below takes a session rather than reading a file-scope variable, which is the mechanical part of supporting two.
 
-The *interesting* half is one field that used to be a `static` inside `client_setup()`:
+The part worth dwelling on is why the **will structures** are session fields. The natural place to put them is a `static` inside `client_setup()`, which is where they would land in a one-client program:
 
 ```c
-static struct mqtt_topic will_topic;      /* the old version */
+static struct mqtt_topic will_topic;      /* wrong the moment there are two clients */
 static struct mqtt_utf8 will_message;
 ```
 
-Correct for exactly one client, and silently wrong for two: both clients would point at the same storage, so whichever connected last would decide the will topic for both. One status topic would get two wills and the other none — and nothing reports it, because a will is only observable when a node actually dies. Moving those two fields into the session was a bug fix wearing the clothes of a refactor.
+`mqtt_connect()` does not copy them. `client_setup()` stores *pointers* — `s->client.will_topic = &s->will_topic` — and the library reads through them when it serialises CONNECT. So a function-local `static` is shared storage: both clients would point at the same bytes, whichever connected last would decide the will topic for both, and one status topic would get two wills while the other got none. Nothing reports that, because a will is only observable when a node actually dies. Per-session storage is what makes each will independent, and it is the reason this is a struct rather than four parallel arrays.
 
 | Field | What it becomes |
 |---|---|
@@ -233,7 +233,7 @@ void session_connect(node_session *s)
 
 `mqtt_connect()` returning `0` only means *"TCP is up and the CONNECT packet was sent."* The CONNACK is a **reply** and arrives later, and it will only arrive if somebody keeps calling `mqtt_input()`. The main loop does that for every session that has a socket, and checks each pass whether the callback has flipped `connected`, `connect_failed`, or whether `connack_due` has passed — which converts "broker never answers" from a hang into a reportable failure.
 
-An earlier version of this file spun a 5-second `for` loop right here, pumping input until the flag flipped. That was simpler to read and impossible to generalise: while it spun, the *other* session's socket went unread. Anything blocking in a program with N connections is a program with N-1 connections it is neglecting.
+The tempting shortcut here is a 5-second `for` loop that pumps input until the flag flips. It is simpler to read and it does not generalise: while it spins, the *other* session's socket goes unread. Anything blocking in a program with N connections is a program with N-1 connections it is neglecting.
 
 ### One callback, two clients
 
@@ -286,7 +286,7 @@ Six descriptors and four producers, and the timeout is still a single number —
 
 The reason is that **no producer's clock lives here.** The sensor keeps its own sample period, the relay keeps its own heartbeat timeout, the peer keeps its own beat — and each of them says so through a descriptor rather than by making this loop track it. So growing from one node to two added descriptors and `if`s, and nothing at all to reconcile.
 
-Contrast a loop that owns a producer's clock, which is what this file used to be before zbus:
+Contrast a loop that owns a producer's clock — what this file would have to look like if the sensor were sampled inline instead of on its own thread:
 
 ```c
 int64_t until_sample = next_sample - k_uptime_get();
@@ -350,9 +350,9 @@ while (remaining > 0) {
 
 The drain deliberately targets a **separate** `discard` buffer. Reusing `payload` looks like a free optimisation — the bytes are being thrown away, so why allocate more stack? — but it overwrites the prefix that was just kept.
 
-That bug is unusually well camouflaged, and it was caught on hardware rather than by the compiler. When the payload is a uniform test string the overwritten data is identical to what it replaced, so the only symptom was a few bytes of stack garbage where the string terminator had been. With real content the log would have shown the *discarded tail* as though it were the message. Worth remembering whenever one scratch buffer serves both a "keep" and a "discard" path.
+That failure is unusually well camouflaged, and no compiler warns about it. With a uniform test string as the payload the overwritten data is identical to what it replaced, so the only symptom is a few bytes of stack garbage where the terminator was; with real content the log shows the *discarded tail* as though it were the message. Worth remembering whenever one scratch buffer serves both a "keep" and a "discard" path.
 
-Now that payloads are Protobuf, `payload` is a `uint8_t` array with no terminator, and `oversized` is carried forward so the message can be **rejected outright** rather than decoded from a truncated buffer — a partial message can decode into something plausible. See [`protobuf-guide.md`](../notes/protobuf-guide.md) §10.
+Because payloads are Protobuf, `payload` is a `uint8_t` array with no terminator, and `oversized` is carried forward so the message can be **rejected outright** rather than decoded from a truncated buffer — a partial message can decode into something plausible. See [`protobuf-guide.md`](../notes/protobuf-guide.md) §10.
 
 ### The QoS 1 obligation
 

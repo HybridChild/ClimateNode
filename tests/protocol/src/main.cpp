@@ -140,11 +140,11 @@ ZTEST(protocol, test_telemetry_omits_unset_fields)
 	 * yet is *shorter* on the wire than a full one -- a telemetry message is
 	 * smallest exactly when it has least to say. notes/protobuf-guide.md §5.
 	 *
-	 * This assertion predates explicit presence and survived it, but the
-	 * reason it holds has changed underneath: it used to be true because
-	 * every measurement was *zero*, and proto3 omits defaults. Now it is true
-	 * because every measurement is *absent*, which the sensor thread states
-	 * deliberately. The next test is the half that did not survive. */
+	 * Note which property this rests on, because two different ones would
+	 * both produce a shorter message. Without explicit presence it would hold
+	 * because every measurement is *zero* and proto3 omits defaults; here it
+	 * holds because every measurement is *absent*, which the sensor thread
+	 * states deliberately. The next test is the one that separates them. */
 	uint8_t full_buf[node_Telemetry_size];
 	uint8_t warm_buf[node_Telemetry_size];
 

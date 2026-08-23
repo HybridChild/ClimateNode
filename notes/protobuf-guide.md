@@ -302,7 +302,7 @@ Every tag is one byte, because every field number is ≤ 15. The message is not 
 
 Note that these 26 bytes are unchanged by the `optional` markers. All three measurements are present and nonzero, so the same three fields are written either way — presence costs nothing on a message that had something to say.
 
-And a warming-up reading is smaller still. Keep the counters above and drop the three measurements — which is exactly what `sensor.cpp` does before the first conversion completes — and only `08 01`, the 4-byte `sequence`, the 5-byte `uptime_ms` and `38 02` remain: **13 bytes**. A telemetry message is *shortest* precisely when it has least to say. The reason it is short has changed, though, and the difference is the whole of the previous section: it used to be short because those fields were *zero*, and it is now short because they are *unstated*. The bytes are the same; what the host may conclude from them is not.
+And a warming-up reading is smaller still. Keep the counters above and drop the three measurements — which is exactly what `sensor.cpp` does before the first conversion completes — and only `08 01`, the 4-byte `sequence`, the 5-byte `uptime_ms` and `38 02` remain: **13 bytes**. A telemetry message is *shortest* precisely when it has least to say. Note *why* it is short, because the previous section is the whole of the difference: without `optional`, those bytes would be absent because the fields hold *zero* and proto3 omits defaults; with it, they are absent because the fields are *unstated*. The bytes on the wire are identical either way; what the host may conclude from them is not.
 
 ---
 

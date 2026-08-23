@@ -167,13 +167,13 @@ Honest accounting, because "add a bus" is not free:
 - **Indirection** — "who handles this?" is answered by a `ZBUS_OBSERVERS()` list rather than by a function call you can follow. Enable `CONFIG_ZBUS_CHANNEL_NAME` and `CONFIG_ZBUS_OBSERVER_NAME` so at least the logs name things.
 - **New failure modes** — publish timeouts, queue-full conditions, and callbacks that block the producer.
 
-For the two threads and two channels this project started with, that is arguably more machinery than a mutex and a semaphore would have needed. The payoff is at the *next* consumer: adding one is a line in an observers list, with no edit to the producer at all. Whether that trade is worth it depends on whether you expect a third participant.
+For a firmware of two threads and two channels, that is arguably more machinery than a mutex and a semaphore would need. The payoff is at the *next* consumer: adding one is a line in an observers list, with no edit to the producer at all. Whether the trade is worth it depends on whether you expect a third participant.
 
-This project got to find out. A later phase added a CAN relay — two more threads, four more channels, a second MQTT identity, and a whole second node's traffic passing through the same firmware. `sensor.cpp` was not touched by any of it, and the one edit to the header both sides include changed nothing but a comment. The thread that reads the SCD-40 still publishes one reading to one channel and knows nothing about a peer node, a CAN bus or a second broker connection, because the only thing it was ever coupled to was the channel. The consumer side did change substantially, which is the honest half of the accounting: `main.cpp` grew four listeners and the publish paths behind them. But that is the direction the design promised to make cheap, and the promise held. §9 is what it grew into.
+This gateway is the case where the answer is yes, and the evidence is what a CAN relay costs it. The relay is two more threads, four more channels, a second MQTT identity and a whole second node's traffic through the same firmware — and none of it reaches `sensor.cpp`. The thread that reads the SCD-40 publishes one reading to one channel and knows nothing about a peer node, a CAN bus or a second broker connection, because the only thing it is coupled to is the channel. The honest half of the accounting is that the *consumer* side carries the whole cost: `main.cpp` holds four listeners and the publish paths behind them. But that is the direction the design makes cheap, which is the trade taken deliberately. §9 is the result.
 
 ## 9. What this project wires up
 
-Everything above is general. Here is the whole of this firmware's bus — six channels across three translation units, with four threads publishing to them. That is more than it was when the guide was written, and the interesting part is what did *not* have to change to accommodate it.
+Everything above is general. Here is the whole of the gateway's bus: six channels, defined across four translation units, with three threads publishing to them. (The peer node runs a cut-down version of the same idea — one channel, `chan_telemetry`, from its sensor thread to its CAN session — off the same `shared/app_channels.h`.)
 
 ```
    sensor.cpp                  main.cpp                    relay.cpp
@@ -204,7 +204,8 @@ Everything above is general. Here is the whole of this firmware's bus — six ch
  │ chan_relay_command   │──▶ tx_thread()        then out over ISO-TP
  └──────────┬───────────┘
             ▲
-            │   published by main(), on a Command arriving off the socket
+            │   published on a Command arriving off the socket: commands.cpp
+            │   for chan_sensor_cmd, main.cpp for chan_relay_command
 ```
 
 | Channel | Direction | Message | Observer | Why that kind |
