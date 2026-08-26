@@ -71,7 +71,7 @@ struct relay_status {
  * -- despite riding listener channels, because every publish copies its whole
  * message into a pool buffer before any observer is consulted. Getting it wrong
  * is a silent overrun of a fixed-size slot, so it is checked rather than
- * trusted; docs/can-bringup.md has the mechanism.
+ * trusted; docs/zbus-design.md has the mechanism.
  *
  * Guarded because the test suites enable CONFIG_ZBUS without the message
  * subscriber, so the symbol does not exist there. */

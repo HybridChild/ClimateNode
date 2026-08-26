@@ -341,7 +341,7 @@ That single omission decided this bench's sampling strategy. The obvious design 
 
 So the timed poll is not a shortcut past an available feature — **the feature isn't plumbed through**.
 
-That splits one story across two sections, so it is worth naming the split: **this section is why the alternative to polling is unavailable; §8.1 is what polling then costs you at runtime.** Read them as a pair. The decision to accept that cost is settled and recorded under *Accepted limitation* in [`docs/sensor-bringup.md`](../docs/sensor-bringup.md).
+What that costs at runtime is §8.1, and the decision to accept it is settled under *Accepted limitation* in [`docs/sensor-bringup.md`](../docs/sensor-bringup.md).
 
 The general habit worth taking away: **check the driver's API table before designing around a datasheet feature.** The chip's capabilities and the driver's exposed surface are different lists, and only the second one is callable.
 
@@ -450,7 +450,7 @@ It fails fast rather than blocking. Expect this if a shell read overlaps a trigg
 
 ### 8.1 `sample_fetch` can succeed without new data
 
-This is the sharpest edge in the whole path, and the other half of §6.3: that section explained why the data-ready *signal* is not reachable through the trigger API; this one is what its absence costs you every time you poll. In `SCD4X_MODE_NORMAL` — your mode, per §2.2 — `scd4x_sample_fetch` checks readiness first (`scd4x.c:604`):
+This is the sharpest edge in the whole path, and it is what a timed poll costs you — the only option, since the driver exposes no data-ready trigger (§6.3). In `SCD4X_MODE_NORMAL` — your mode, per §2.2 — `scd4x_sample_fetch` checks readiness first (`scd4x.c:604`):
 
 ```c
 ret = scd4x_data_ready(dev, &is_data_ready);

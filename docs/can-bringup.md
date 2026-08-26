@@ -2,7 +2,7 @@
 
 How the CAN link between the **Nucleo-H753ZI** gateway and the **Nucleo-F072RB** peer node is configured, clocked and verified on this bench. Terse by intent: decisions, rationale, and the facts you need when the link misbehaves. For the concepts underneath — what a differential multi-drop bus is, how arbitration makes a lower ID win, why acceptance filters exist, and what 8 bytes per frame does to a protocol design — see the companion teaching guide, [`can-guide.md`](../notes/can-guide.md).
 
-**The link works end to end on hardware.** Two SN65HVD230 transceivers, a terminated 500 kbit/s two-node bus, heartbeats acknowledged, telemetry segmented from the peer to `node/2/telemetry`, and a command answered by the peer's own `DeviceInfo` on `node/2/ack`. *Bring-up checks* below are the procedures, in the order worth running them. Two constraints on this design are subtle enough to have their own sections and are worth reading before changing either area: *Flow control needs its own identifiers* and *The zbus pool is sized by every channel*.
+**The link works end to end on hardware.** Two SN65HVD230 transceivers, a terminated 500 kbit/s two-node bus, heartbeats acknowledged, telemetry segmented from the peer to `node/2/telemetry`, and a command answered by the peer's own `DeviceInfo` on `node/2/ack`. *Bring-up checks* below are the procedures, in the order worth running them. One constraint on this design is subtle enough to have its own section and is worth reading before changing the address map: *Flow control needs its own identifiers*. The relay's zbus channels, and the pool sizing the second node forced, are in [`zbus-design.md`](zbus-design.md).
 
 Builds against the shared global Zephyr workspace — see [`toolchain.md`](toolchain.md).
 
@@ -45,10 +45,10 @@ Decisions worth keeping:
 - **The gateway reads exactly one byte of what it carries.** `[0]` is the message type from `can_link.h`; `[1..]` is forwarded verbatim. Which channel a payload lands on decides its topic, and that is the whole of the gateway's knowledge about it. `publish_relayed()` in `main.cpp` is one function long on purpose.
 - **One eventfd per relay channel, three more in the same poll set.** The descriptor is the event's identity, not merely its occurrence: a shared one could not say *which* channel had news, and the reader would republish stale telemetry as new. [`zbus-guide.md`](../notes/zbus-guide.md) §9 has the mechanism, and makes the argument for all four. The serve loop is six descriptors and still **one deadline** — the nearest across every session.
 - **`chan_relay_ack` is a listener, not a message subscriber**, despite an ack being an event. At most one ack is ever outstanding, because `isotp_send()` blocks until the transfer completes and the TX thread then blocks on the ack: latest-wins cannot collapse a set of one. The eventfd's counter checks that premise for free, and `main.cpp` logs a coalesced ack at **ERROR** where it logs coalesced telemetry at WARN.
-- **The upward message is 164 B and the downward one 32 B**, which follows from what each direction carries and is independent of the observer kinds. It buys no RAM: every publish copies its whole message into a pool buffer regardless of who observes the channel — see *The zbus pool is sized by every channel* below.
+- **The upward message is 164 B and the downward one 32 B**, which follows from what each direction carries and is independent of the observer kinds. It buys no RAM: every publish copies its whole message into a pool buffer regardless of who observes the channel — see *The pool is sized by every channel* in [`zbus-design.md`](zbus-design.md).
 - **One honest compromise, named.** To correlate an Ack it synthesizes for a command the peer never answered, the gateway must know that command's `sequence` — so `main.cpp` decodes the Command **envelope**, one header field, and never the payload arm. What that buys over synthesizing nothing and letting the host time out is priced in *One deliberate exception to the gateway's opacity* in [`mqtt-design.md`](mqtt-design.md).
 
-Kconfig this cost, all in `gateway/prj.conf` and all previously defaults nobody had set: `CONFIG_ISOTP=y`, `CONFIG_ZVFS_EVENTFD_MAX=4` (a hard count — the fourth `zvfs_eventfd()` just fails without it), `CONFIG_ZVFS_POLL_MAX=6`, `CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE` 16 → 164 (sized by `relay_up`; see below), `CONFIG_MAIN_STACK_SIZE` 2048 → 3072, `CONFIG_SYSTEM_WORKQUEUE_STACK_SIZE` 1024 → 2048 (ISO-TP drives every segmented transfer from `k_work_submit()`, which is the *shared* system workqueue). The whole gateway image builds at **248 352 B flash and 62 012 B RAM** on a part with 2 MB and 512 KB, so none of this is close to a constraint. Read the current numbers off `scripts/build.sh -t rom_report` rather than trusting these.
+Kconfig this cost, all in `gateway/prj.conf` and all previously defaults nobody had set: `CONFIG_ISOTP=y`, `CONFIG_ZVFS_EVENTFD_MAX=4` (a hard count — the fourth `zvfs_eventfd()` just fails without it), `CONFIG_ZVFS_POLL_MAX=6`, `CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE` 16 → 164 (sized by `relay_up`; see [`zbus-design.md`](zbus-design.md)), `CONFIG_MAIN_STACK_SIZE` 2048 → 3072, `CONFIG_SYSTEM_WORKQUEUE_STACK_SIZE` 1024 → 2048 (ISO-TP drives every segmented transfer from `k_work_submit()`, which is the *shared* system workqueue). The whole gateway image builds at **248 352 B flash and 62 012 B RAM** on a part with 2 MB and 512 KB, so none of this is close to a constraint. Read the current numbers off `scripts/build.sh -t rom_report` rather than trusting these.
 
 ### The address map
 
@@ -69,26 +69,6 @@ The two flow-control identifiers are *not* borrowed, and they are the one place 
 The ordering is load-bearing, though, and not decorative: a lower identifier wins arbitration, so heartbeats outrank every ISO-TP frame and liveness cannot be starved by a long segmented transfer. `tests/heartbeat/` asserts that relationship rather than trusting it to survive an edit.
 
 **One byte of protocol sits above ISO-TP**: `[0]` is the message type (telemetry / ack / command), `[1..]` is the protobuf payload verbatim. ISO-TP has no equivalent of an MQTT topic, and [`mqtt-design.md`](mqtt-design.md)'s rule still holds — the type is not on the wire, so something outside the payload must assert it. On MQTT the topic does that for free; here it costs a byte. The gateway will read that byte, strip it and forward the rest untouched, which is the whole of what "the gateway does not decode the peer's payload" means in practice.
-
-## The zbus pool is sized by every channel, not every message subscriber
-
-`CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE` is **164** on the gateway and **44** on the peer, and both numbers are the largest message on *any* channel in that application — not the largest on a message-subscriber channel, which is what the option's name suggests.
-
-**Why.** With `CONFIG_ZBUS_MSG_SUBSCRIBER=y`, `_zbus_vded_exec()` allocates a pool buffer and copies the entire message into it on **every** `zbus_chan_pub()`, before it examines a single observer (`subsys/zbus/zbus.c:244-256`). That block is guarded by the Kconfig symbol alone, never by the channel's observer kinds. A listener channel skips the *delivery*, not the copy — so putting large messages on listeners buys nothing here, and every channel's message must fit a slot.
-
-The message sizes, read off the ELF with `arm-zephyr-eabi-gdb -ex 'print sizeof(struct …)'`:
-
-| Struct | Size | Channels |
-|---|---|---|
-| `relay_up` | 164 B | `chan_relay_telemetry`, `chan_relay_ack` (listeners) |
-| `sensor_reading` | 44 B | `chan_telemetry` (listener) |
-| `relay_down` | 32 B | `chan_relay_command` (message subscriber) |
-| `sensor_cmd` | 8 B | `chan_sensor_cmd` (message subscriber) |
-| `relay_status` | 2 B | `chan_relay_status` (listener) |
-
-**The failure mode is why this is worth a section.** Undersize the pool and `net_buf_add_mem()` writes past a fixed slot in a contiguous `uint8_t[count][size]` array. There is no error: zbus's own `__ASSERT` for it (`zbus.c:46`) is compiled out unless `CONFIG_ASSERT=y`, which neither app sets. A small overrun lands inside the next buffer of the same pool, which is about to be reused anyway, and can run indefinitely with no visible symptom. A large one escapes the array and corrupts whatever follows, surfacing much later as a fault in an unrelated thread — typically an imprecise bus fault inside `__aeabi_memcpy4` with the return address in `_zbus_vded_exec`, in whichever thread next published something. If you ever see that signature, this option is the first thing to check.
-
-`static_assert`s in [`shared/app_channels.h`](../shared/app_channels.h) and [`gateway/src/relay.h`](../gateway/src/relay.h) tie every channel's message size to the Kconfig value, so adding a channel or growing a message fails the build instead. Enabling `CONFIG_ASSERT=y` for bench builds — as `peer-node/debug.conf` layers a shell — is the other half of the defence, and turns a class of silent corruption into a named message.
 
 ## Flow control needs its own identifiers
 

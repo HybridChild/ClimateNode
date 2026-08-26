@@ -2,7 +2,7 @@
 
 Ten teaching documents, each building one concept from first principles and using this repo — a Nucleo-H753ZI sensor node and CAN gateway, a Nucleo-F072RB peer node behind it, and a Raspberry Pi host — as the running example. They are meant to be readable by someone who has never seen this project.
 
-Most guides have a **reference half** in [`../docs/`](../docs/) recording what *this* project decided and why. The guides explain concepts; the references record facts. Each links to the other, and the pairing is listed in the table below. Two guides pair with a source file instead, and two (`language-cpp.md`, `shell-guide.md`) have no reference half at all — there was no project *decision* to record — as the table's last column notes.
+Most guides have a **reference half** in [`../docs/`](../docs/) recording what *this* project decided and why. The guides explain concepts; the references record facts. Each links to the other, and the pairing is listed in the table below. One guide pairs with a source file instead, and two (`language-cpp.md`, `shell-guide.md`) have no reference half at all — there was no project *decision* to record — as the table's last column notes.
 
 ## Where to start
 
@@ -62,11 +62,11 @@ The rows are in the reading order above (#1–#10), so the column you scan for "
 | 5 | [`protobuf-guide.md`](protobuf-guide.md) | How does a reading become bytes, and what does a schema actually buy? | binary/hex, and MQTT topics (the guide above) | [`node.proto`](../proto/node.proto), decisions inline |
 | 6 | [`network-stack-guide.md`](network-stack-guide.md) | How does `prj.conf` plus one devicetree node become a live socket with no app code — and how portable is that to USB/Wi-Fi? | devicetree & Kconfig (the build-system guide); enough of the communication guide that MQTT rides on a socket | [`network-bringup.md`](../docs/network-bringup.md) |
 | 7 | [`can-guide.md`](can-guide.md) | What is a bus with no addresses, no connection and eight payload bytes — and what must a protocol do about that? | roughly what a bit on a wire is; the MQTT comparisons in §8–§9 read better after #4 | [`can-bringup.md`](../docs/can-bringup.md) |
-| 8 | [`zbus-guide.md`](zbus-guide.md) | What is an in-process message bus, and why does a multi-threaded firmware want one? | threads and blocking calls; `poll()` and mutexes are explained in §1–§2 | [`app_channels.h`](../shared/app_channels.h) and [`relay.h`](../gateway/src/relay.h) header comments |
+| 8 | [`zbus-guide.md`](zbus-guide.md) | What is an in-process message bus, and why does a multi-threaded firmware want one? | threads and blocking calls; `poll()` and mutexes are explained in §1–§2 | [`zbus-design.md`](../docs/zbus-design.md), plus the header comments |
 | 9 | [`shell-guide.md`](shell-guide.md) | What is the `uart:~$` prompt, and how does typing `net iface` call a function inside the firmware? | what a Kconfig option is (the build-system guide); the rest is built up | *(none — a stock subsystem, no project decision to record)* |
 | 10 | [`testing-guide.md`](testing-guide.md) | How do you test firmware on a machine that is not the target — and what has to be true of the code first? | roughly what a unit test is; the rest is built up | [`test-strategy.md`](../docs/test-strategy.md) |
 
-Two of the ten pair with a **source file** rather than a `docs/` page, because in those cases the decisions belong next to the thing they constrain: the field-numbering rules live in the schema, and the observer-kind choice lives in the header both threads include.
+One of the ten pairs with a **source file** rather than a `docs/` page, because there the decisions belong next to the thing they constrain: the field-numbering rules live in the schema. `zbus-guide.md` has both — a page for what spans the whole bus, and header comments for what belongs beside one channel.
 
 ## How each guide is built
 

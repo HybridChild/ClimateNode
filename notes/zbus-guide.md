@@ -188,7 +188,7 @@ This gateway is the case where the answer is yes, and the evidence is what a CAN
 
 ## 9. What this project wires up
 
-Everything above is general. Here is the whole of the gateway's bus: six channels, defined across two translation units, with three threads publishing to them. (The peer node runs a cut-down version of the same idea — one channel, `chan_telemetry`, from its sensor thread to its CAN session — off the same `shared/app_channels.h`.)
+Everything above is general. Here is the whole of the gateway's bus: six channels, defined across two translation units, with three threads publishing to them. (The peer node runs a cut-down version of the same idea off the same `shared/app_channels.h`: `chan_telemetry` from its sensor thread to its CAN session, and `chan_sensor_cmd` for the commands the gateway relays to it.)
 
 ```
    sensor.cpp                  main.cpp                    relay.cpp
@@ -223,14 +223,16 @@ Everything above is general. Here is the whole of the gateway's bus: six channel
             │   for chan_sensor_cmd, main.cpp for chan_relay_command
 ```
 
-| Channel | Direction | Message | Observer | Why that kind |
-|---|---|---|---|---|
-| `chan_telemetry` | sensor → MQTT | `sensor_reading` | **listener** | state; a superseded reading is one the host is better off not getting |
-| `chan_relay_telemetry` | CAN → MQTT | `relay_up` | **listener** | same argument, for a reading this node did not take |
-| `chan_relay_ack` | CAN → MQTT | `relay_up` | **listener** | an event — but at most one is ever outstanding (below) |
-| `chan_relay_status` | CAN → MQTT | `relay_status` | **listener** | liveness is state, and latest-wins is what a retained topic means |
-| `chan_sensor_cmd` | MQTT → sensor | `sensor_cmd` | **message subscriber** | an event with no successor; validated (§6) |
-| `chan_relay_command` | MQTT → CAN | `relay_down` | **message subscriber** | an event with no successor |
+| Channel | Direction | Observer | Why that kind |
+|---|---|---|---|
+| `chan_telemetry` | sensor → MQTT | **listener** | state; a superseded reading is one the host is better off not getting |
+| `chan_relay_telemetry` | CAN → MQTT | **listener** | same argument, for a reading this node did not take |
+| `chan_relay_ack` | CAN → MQTT | **listener** | an event — but at most one is ever outstanding (below) |
+| `chan_relay_status` | CAN → MQTT | **listener** | liveness is state, and latest-wins is what a retained topic means |
+| `chan_sensor_cmd` | MQTT → sensor | **message subscriber** | an event with no successor; validated (§6) |
+| `chan_relay_command` | MQTT → CAN | **message subscriber** | an event with no successor |
+
+The message types and their sizes are in [`zbus-design.md`](../docs/zbus-design.md); what matters here is the right-hand column.
 
 **The table sorts itself by direction, and that is the finding.** Every channel carrying data *toward* the network is a listener; every channel carrying a command *away* from it is a message subscriber. Nobody imposed that rule — the relay's four channels were chosen one at a time on §4's question ("if two arrive before I handle the first, what should happen?") and landed on the same split the original two had. Data flowing up is state, which has a next one coming. Commands flowing down are events, which do not. And the same split holds one layer out, where telemetry is QoS 0 and command/ack are QoS 1: the argument is about the data, so it reaches the same answer inside the chip and across the wire.
 
@@ -240,9 +242,9 @@ Everything above is general. Here is the whole of the gateway's bus: six channel
 
 **The observer kinds do *not* decide the pool RAM.** That is a natural thing to assume, and it is worth dismantling carefully, because assuming it produces a memory-corruption bug that can stay hidden for a long time. The message-subscriber net_buf pool is a single pool shared across channels, sized by `CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE`; listener channels store their message in the channel itself. From that it seems to follow that a listener-only channel never touches the pool, and therefore that putting your big messages on listeners lets you size the pool for the small ones.
 
-It does not follow. Read `_zbus_vded_exec()` (`subsys/zbus/zbus.c:244-256`): when `CONFIG_ZBUS_MSG_SUBSCRIBER=y`, **every** `zbus_chan_pub()` allocates a pool buffer and `net_buf_add_mem()`s the entire message into it *before the observer loop begins*. The allocate-and-copy is guarded by the Kconfig symbol alone — nothing consults the channel's observers. A listener channel skips the *delivery*, not the copy. So the pool must be sized by the largest message on **any** channel, full stop.
+It does not follow. Every `zbus_chan_pub()` copies the whole message into a pool buffer *before the observer loop begins*, guarded by the Kconfig symbol alone — nothing consults the channel's observers. A listener channel skips the *delivery*, not the copy. So the pool must be sized by the largest message on **any** channel, full stop. The call that does it, and the numbers it forced on both applications, are in [`zbus-design.md`](../docs/zbus-design.md).
 
-Get it wrong and there is no error. `net_buf_add_mem()` writes past the end of a fixed slot in a contiguous `uint8_t[count][size]` array, and the `__ASSERT` that would catch it (`zbus.c:46`) is compiled out unless `CONFIG_ASSERT=y`. How badly that behaves scales with how far past the slot you write, which is the nastiest property of the whole thing: an overrun of a few bytes stays inside the next buffer of the same pool, which is about to be reused anyway, and can run for as long as you like with no symptom at all. An overrun large enough to escape the array corrupts whatever follows it in RAM, and surfaces later — often much later, in a different thread — as a fault with no visible connection to the publish that caused it.
+Get it wrong and there is no error, because the assertion that would catch it is compiled out unless `CONFIG_ASSERT=y`. The nastiest property is that how badly it behaves scales with how far past the slot you write: an overrun of a few bytes stays inside the next buffer of the same pool, which is about to be reused anyway, and can run for as long as you like with no symptom at all. A larger one escapes the array and surfaces later — often much later, in a different thread — as a fault with no visible connection to the publish that caused it.
 
 Three things follow, and they generalise well past zbus. **A shared pool is a global constraint, so it has to be reasoned about globally** — the question is never "does this channel need the pool?" but "what is the largest thing anyone publishes?". **A silent corrupter is worse than a loud failure**, which is the argument for `CONFIG_ASSERT=y` in bench builds even when the release image does not carry it. And **an invariant spanning a Kconfig value and a struct definition belongs in a `static_assert`** rather than a comment, because nothing else is in a position to check it: `shared/app_channels.h` and `gateway/src/relay.h` carry them here.
 
@@ -252,7 +254,7 @@ Three details worth noticing in the code:
 - **The observers live with the consumer, not the producer.** All four `ZBUS_LISTENER_DEFINE`s sit in `main.cpp`, because the network side owns the observers that feed the network. A channel definition and its observers being in different files is normal and is most of what the bus is for.
 - **The definitions sit at global scope**, outside each file's anonymous namespace. `ZBUS_CHAN_DEFINE` emits symbols that `ZBUS_CHAN_DECLARE` names from another translation unit; internal linkage would break the match. See [`language-cpp.md`](language-cpp.md) §6.
 
-The reference half of this section is split the same way the code is: the header comment in `shared/app_channels.h` records the decisions behind the two sensor channels, and the one in `gateway/src/relay.h` does the same for the four relay channels — including why they are deliberately *not* in `app_channels.h`, whose stated contract is that nothing in it touches a transport.
+The reference half of this section is [`zbus-design.md`](../docs/zbus-design.md), which carries the inventory, the sizes and the two Kconfig counts. Part of it stays inline, deliberately: the header comment in `shared/app_channels.h` records the decisions behind the two sensor channels and the one in `gateway/src/relay.h` does the same for the four relay channels — including why they are deliberately *not* in `app_channels.h`, whose stated contract is that nothing in it touches a transport.
 
 ## 10. Exercising the bus
 

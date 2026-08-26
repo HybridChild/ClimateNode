@@ -180,7 +180,7 @@ That one port serves them all at once because a TCP connection is identified by 
 
 The arrows in the diagram show only **one** of two directions that matter, and it is easy to assume they show the other.
 
-- **Connection direction** — *who dials whom*, i.e. who opened the TCP connection. This is what the arrows mean (each is labelled `connect`), and per §3.4 they all point at the broker because the broker is the only listener. `mosquitto_sub` is the case worth pausing on: it *receives* messages, so you would naturally expect its arrow to point outward, from the broker toward it. But receiving data is not the same as opening a connection — the subscriber dials the broker like everyone else.
+- **Connection direction** — *who dials whom*. This is what the arrows mean (each is labelled `connect`), and by §3.4 they all point at the broker, subscribers included.
 - **Data-flow direction** — *which way messages travel* once a connection is open. A different question, and for one of the two roles it runs **opposite** to the arrow:
 
 | Role | Connection (who dials) | Data (which way messages go) | |

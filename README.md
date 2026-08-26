@@ -23,7 +23,7 @@ To make the telemetry *real* (rather than a hard-coded counter), each node reads
   - **CAN transceivers:** two 3.3 V SN65HVD230 breakouts, one per board. They are not optional and not skippable — the MCU peripheral exposes only digital `TX`/`RX`, and the transceiver supplies both the differential pair and the wired-AND behaviour that arbitration and in-frame acknowledgement depend on. Three wires between them: **CANH, CANL and GND**, with 120 Ω at each end. See [`notes/can-guide.md`](notes/can-guide.md) §2, and the wiring table in [`docs/can-bringup.md`](docs/can-bringup.md) *Bring-up checks* step 6.
 - **Host:** Raspberry Pi 5 (Linux) — native Gigabit Ethernet, wired **direct-cable** to the Nucleo (no switch). Static IPs on both ends in one subnet: Pi `192.168.10.1` / Nucleo `192.168.10.2`, mask `255.255.255.0`, no gateway. On the firmware side this is configured entirely in `gateway/prj.conf` via `CONFIG_NET_CONFIG_SETTINGS` — `net_config` applies it at boot, so **no application code touches interface bring-up**. The Nucleo's LAN8742 PHY has Auto-MDIX, so a normal straight-through cable works. Runs a **Mosquitto MQTT broker** plus the Python test harness (a paho-mqtt client that subscribes to telemetry and publishes commands); can stay permanently wired as a dedicated bench host.
 
-## Scope and status
+## What it does
 Two Zephyr applications, both written in **C++ (C++17)** to match how production firmware of this kind is written; see [`notes/language-cpp.md`](notes/language-cpp.md). Everything below describes the gateway on the H753ZI unless it says otherwise; the peer node is the section after it.
 
 The gateway runs **four threads** across **five translation units**, one responsibility each: `sensor.cpp` (acquisition), `protocol.cpp` (the wire format), `commands.cpp` (command semantics), `relay.cpp` (the CAN side, two threads) and `main.cpp` (the MQTT sessions). They meet on the zbus channels declared in [`shared/app_channels.h`](shared/app_channels.h) and [`gateway/src/relay.h`](gateway/src/relay.h). `main.cpp` is walked through line by line in [`docs/firmware-mqtt-walkthrough.md`](docs/firmware-mqtt-walkthrough.md); `protocol.cpp` and `commands.cpp` have no hardware dependency at all, which is what lets [`tests/`](tests/) exercise them on a laptop — and what lets the peer node link the same two files.
@@ -109,26 +109,7 @@ host/.venv/bin/python host/command.py interval 2000 # retune the publish period 
 ## Documentation
 Split by *kind*, not by topic: **`notes/`** holds from-first-principles teaching guides — general concepts, largely portable beyond this repo. **`docs/`** holds terse project references — decisions, verified facts, and what was actually built here. Most topics have one of each.
 
-**[`notes/README.md`](notes/README.md) is the index for the guides** — a suggested reading order, what each one assumes you already know, and which depend on which. Start there rather than with the table below if you are reading the material rather than looking a topic up.
-
-| Topic | Guide (`notes/`) | Reference (`docs/`) |
-|---|---|---|
-| Communication (MQTT, QoS, topics) | [`communication-guide.md`](notes/communication-guide.md) | [`mqtt-design.md`](docs/mqtt-design.md) |
-| Network stack (interface, sockets) | [`network-stack-guide.md`](notes/network-stack-guide.md) | [`network-bringup.md`](docs/network-bringup.md) |
-| CAN (frames, arbitration, ISO-TP) | [`can-guide.md`](notes/can-guide.md) | [`can-bringup.md`](docs/can-bringup.md) |
-| Zephyr build system | [`zephyr-build-system-guide.md`](notes/zephyr-build-system-guide.md) | [`build-system-overview.md`](docs/build-system-overview.md) |
-| Sensor API (and the `sensor` shell) | [`sensor-api-guide.md`](notes/sensor-api-guide.md) | [`sensor-bringup.md`](docs/sensor-bringup.md) |
-| Protobuf / nanopb | [`protobuf-guide.md`](notes/protobuf-guide.md) | [`proto/node.proto`](proto/node.proto) (decisions inline) |
-| zbus (the internal bus) | [`zbus-guide.md`](notes/zbus-guide.md) | [`shared/app_channels.h`](shared/app_channels.h) and [`relay.h`](gateway/src/relay.h) (decisions in the header comments) |
-| Testing (host-side, no hardware) | [`testing-guide.md`](notes/testing-guide.md) | [`test-strategy.md`](docs/test-strategy.md) |
-
-The Protobuf and zbus rows pair a guide with a **source file** rather than a `docs/` page, because in both cases the decisions belong next to the thing they constrain: the field-numbering and evolution rules live in the schema, and the observer-kind choice lives in the headers the communicating threads include.
-
-Guides without a reference half: [`language-cpp.md`](notes/language-cpp.md) — why C++17, and the C↔C++ boundary; and [`shell-guide.md`](notes/shell-guide.md) — what the `uart:~$` prompt is and how typing `net iface` reaches a function inside the firmware. Neither has one because neither records a project decision: the C++ boundary shows up in the source files themselves, and the shell is a stock subsystem used as it ships.
-
-References without a guide half: [`toolchain.md`](docs/toolchain.md) — both toolchains, build/flash workflow, and the host venv.
-
-Neither, and deliberately so: [`firmware-mqtt-walkthrough.md`](docs/firmware-mqtt-walkthrough.md) — a guided reading of `gateway/src/main.cpp` that connects the others. It teaches, but it tracks this repo's code, so it lives with the references and must stay in sync when the client changes.
+Two indexes, and which one you want depends on what you are doing. **[`notes/README.md`](notes/README.md)** is the map for *reading*: a suggested order through the guides, what each assumes you already know, and which depend on which. **[`docs/README.md`](docs/README.md)** is the map for *looking something up*: every guide↔reference pairing, and the few topics that deviate from the pattern — the schema that carries its own decisions inline, the two guides with no reference half, and the one teaching document that lives with the references because it tracks this repo's code.
 
 ## References
 

@@ -113,7 +113,7 @@ struct sensor_cmd {
  * subscriber pool -- including the ones only listeners observe, which is not
  * what the option's name suggests and is the whole point of these asserts.
  * Undersizing it overruns a fixed slot with no diagnostic. The mechanism and the
- * failure signature are in docs/can-bringup.md *The zbus pool is sized by every
+ * failure signature are in docs/zbus-design.md *The pool is sized by every
  * channel*; adding a channel or growing a message means revisiting these.
  *
  * Guarded because the test suites enable CONFIG_ZBUS without the message
