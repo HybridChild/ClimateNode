@@ -4,6 +4,8 @@
 
 This is a teaching document, not project documentation. It explains the concepts, the machinery, and the sharp edges of writing a Zephyr application in C++, in the order that makes them easiest to learn. It uses this repository — a CO₂ sensor node built from five C++ translation units — only as a running example to keep the ideas concrete. For how the build system underneath works at all, see its companion, [`zephyr-build-system-guide.md`](zephyr-build-system-guide.md).
 
+**Prerequisites:** C++ basics — classes, namespaces, `static`. On the Zephyr side, only what a `prj.conf` option is ([`zephyr-build-system-guide.md`](zephyr-build-system-guide.md) §5); the freestanding and boundary consequences are the subject rather than an assumption.
+
 **The shape of this document:**
 
 - **§1–§2** — the two facts everything else follows from, and how to switch C++ on.

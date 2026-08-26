@@ -6,7 +6,9 @@ A teaching document. It explains the concepts in the order that makes them easie
 
 Every byte sequence below is verifiable, and was re-checked with `protoc --decode_raw` while writing this. The `Command` byte strings are captures from packets this bench actually sent; the `Telemetry` breakdown is reconstructed field by field from a logged reading, and reproduces the exact length the node reported on the console.
 
-Roughly, the shape of the document:
+**Prerequisites:** binary and hex, and MQTT topics already meaning something ([`communication-guide.md`](communication-guide.md) §4) — §4's central argument turns on the topic being what asserts a payload's type. No Protobuf knowledge: the encoding is taken apart byte by byte in §2–§3.
+
+**The shape of this document:**
 
 - **§1** — what a schema buys you that text and a hand-rolled struct do not.
 - **§2–§3** — the encoding itself: tags, varints and wire types, then a real captured packet taken apart byte by byte.
@@ -639,7 +641,9 @@ grep _size gateway/build/node.pb.h
 
 The last one should print the constants §9 works through by hand — `node_Telemetry_size` 42, `node_Command_size` 20, `node_Ack_size` 140, `node_DeviceInfo_size` 75. If your arithmetic in §9 disagrees with the generator, the generator is right and the interesting question is which field's worst case you mis-counted.
 
-**Exercise A — feel why field numbers are permanent (§7).** Change one field number in `node.proto`, rebuild, and re-run the decode above. The bytes still decode cleanly, exit status 0 — and they mean something entirely different. Nothing anywhere reports an error. That is the single most important property of the format to internalise, and it takes about thirty seconds to prove. Revert afterwards.
+**Exercise A — feel why field numbers are permanent (§7).** Change one field number in `node.proto`, rebuild, and re-run the decode above. The bytes still decode cleanly, exit status 0 — and they mean something entirely different. Nothing anywhere reports an error. Revert afterwards.
+
+**Proves:** a field number *is* the field's identity, and nothing in the format checks that two sides agree on it — the single most important property to internalise, and thirty seconds to see.
 
 **Exercise B — confirm the type is not on the wire** (§4)**.** Decode the same six bytes as each of the three message types:
 
@@ -649,7 +653,9 @@ for T in Command Telemetry Ack; do
 done
 ```
 
-All three succeed. **Proves:** a serialised message carries no type identity; the topic it arrived on is what asserts the type, which is why the topic hierarchy is part of the contract and not just housekeeping.
+All three succeed.
+
+**Proves:** a serialised message carries no type identity; the topic it arrived on is what asserts the type, which is why the topic hierarchy is part of the contract and not just housekeeping.
 
 **Exercise C — watch explicit presence appear and disappear (§5).** `protoc --decode` prints only the fields a message actually contains, which makes presence directly visible. Encode a `Telemetry` whose measurements are all zero, once as the schema stands and once with the `optional` markers removed:
 
@@ -662,7 +668,9 @@ That prints `schema_version: 1` and `co2_ppm: 0`. Now delete `optional` from `co
 
 **Proves:** presence is a property of the *reader's schema*, not of the bytes. The same payload means "measured zero" to one side and "said nothing" to the other, which is exactly the failure mode §5 exists to remove.
 
-**Exercise D — decode old↔new without a second board (§7).** `./scripts/test.sh` runs `tests/protocol/` on qemu in about eighteen seconds. Two of its cases, `test_old_reader_decodes_new_telemetry` and `test_new_reader_decodes_old_telemetry`, hand-build a descriptor for the *previous* schema with nanopb's `PB_BIND` X-macro and run both directions against the current one. Read those two tests: they are the shortest statement in the repo of what "additive changes are safe" actually promises, and of the one thing it does not.
+**Exercise D — decode old↔new without a second board (§7).** `./scripts/test.sh` runs `tests/protocol/` on qemu in about eighteen seconds. Two of its cases, `test_old_reader_decodes_new_telemetry` and `test_new_reader_decodes_old_telemetry`, hand-build a descriptor for the *previous* schema with nanopb's `PB_BIND` X-macro and run both directions against the current one. Read those two tests: they are the shortest statement in the repo of what "additive changes are safe" actually promises.
+
+**Proves:** §7's rules hold in both directions against a real previous schema — and that an old writer's zeros are the one thing a new reader cannot recover, because they were never on the wire to recover.
 
 ### With the node: the round trip
 
@@ -693,7 +701,9 @@ Now the important half. Publish two bytes that *are* structurally legal:
 printf 'hi' | mosquitto_pub -h 192.168.10.1 -t node/1/command -q 1 -s
 ```
 
-This one comes back `ACK_STATUS_UNSUPPORTED`, not `MALFORMED`. **Proves:** `MALFORMED` catches corrupt framing, not wrong content. `garbage` was rejected only because its first byte encodes wire type 7, which is invalid; `hi` decodes into field 13 as an unknown field and yields a `Command` with everything defaulted. The node survives it by construction — `which_payload == 0` hits the `default:` arm — not by detection. That gap is exactly what `schema_version` exists to cover.
+This one comes back `ACK_STATUS_UNSUPPORTED`, not `MALFORMED`.
+
+**Proves:** `MALFORMED` catches corrupt framing, not wrong content. `garbage` was rejected only because its first byte encodes wire type 7, which is invalid; `hi` decodes into field 13 as an unknown field and yields a `Command` with everything defaulted. The node survives it by construction — `which_payload == 0` hits the `default:` arm — not by detection. That gap is exactly what `schema_version` exists to cover.
 
 ---
 

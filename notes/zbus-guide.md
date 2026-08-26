@@ -4,6 +4,8 @@ What an in-process message bus is, why a firmware app wants one, and how Zephyr'
 
 The single most important thing up front: **zbus has nothing to do with the network.** It sits next to "MQTT" in this project's concept list, and the vocabulary is identical — publish, subscribe, channels, observers — but it never touches a wire. It is threads inside one MCU talking to each other. Getting that straight early saves a lot of confusion.
 
+**Prerequisites:** threads, and what it means for a call to block. `poll()` and mutexes are explained where they first matter (§1–§2), and no zbus knowledge is assumed — though §4's central argument lands harder if you have already met QoS ([`communication-guide.md`](communication-guide.md) §5).
+
 **The shape of this document:**
 
 - **§1–§2** — the problem a bus solves, and why the obvious fixes fall short.

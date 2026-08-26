@@ -51,7 +51,7 @@ zephyr-build-system ───┤     the SCD-40                               �
 
 ## The ten
 
-The rows are in the reading order above (#1–#10), so the column you scan for "can I start here?" is **Assumes you know**.
+The rows are in the reading order above (#1–#10), so the column you scan for "can I start here?" is **Assumes you know**. It digests each guide's own `Prerequisites:` line, which is fuller — it also says what you can safely skip.
 
 | # | Guide | Answers | Assumes you know | Reference half |
 |---|---|---|---|---|
@@ -72,6 +72,7 @@ One of the ten pairs with a **source file** rather than a `docs/` page, because 
 
 They share a skeleton, so you can navigate any of them the same way:
 
+- a **`Prerequisites:`** line — what you need before starting, and as often what you explicitly do *not*;
 - an opening **roadmap** of the sections, so you can skip to what you need;
 - numbered concept sections, each building on the one before;
 - a **synthesis** — an end-to-end trace or cheat sheet — where the guide has one;

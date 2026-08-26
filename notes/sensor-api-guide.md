@@ -8,6 +8,8 @@ The repo happens to contain the control experiment for the API's central claim. 
 
 For how the sensor is wired, described and initialised here, see [`docs/sensor-bringup.md`](../docs/sensor-bringup.md) — that's the terse reference half. This is the concepts half. The chip's own command codes and conversion formulas appear inline below, where the driver actually uses them.
 
+**Prerequisites:** devicetree basics — what an overlay is and what `compatible` does ([`zephyr-build-system-guide.md`](zephyr-build-system-guide.md) §4) — and roughly what I²C is. No sensor-subsystem knowledge: the device model is built up in §2.
+
 **The shape of this document:**
 
 - **§1–§2** — why the API exists at all, and the device model underneath it: what a `struct device` is, how devicetree creates one, and who runs its single init attempt.

@@ -4,6 +4,8 @@
 
 One thing up front, because it is the difference that explains most of the others: **MQTT is a messaging protocol running on a network, and CAN is a wire with a convention about voltage.** There is no broker, no connection, no address, and nothing that knows another node exists. What CAN has instead is a shared electrical medium where every node hears every bit at the same time, and a set of rules — arbitration, in-frame acknowledgement, error counters — that turn that into something reliable. Almost every design decision later in this guide follows from "every node hears every bit".
 
+**Prerequisites:** roughly what a bit on a wire is. No CAN knowledge. §8 and §9 argue against the MQTT side throughout, so [`communication-guide.md`](communication-guide.md) helps there but is not a prerequisite.
+
 **The shape of this document:**
 
 - **§1–§2** — what kind of thing CAN is, and the two wires underneath it. §2 is where the transceiver stops being an accessory and becomes mandatory.
@@ -14,8 +16,6 @@ One thing up front, because it is the difference that explains most of the other
 - **§9** — what this project wires up, and how each choice mirrors or inverts one from the MQTT side.
 - **§10** — exercises on the running node, most of which need no hardware at all.
 - **§11–§12** — the whole model in a paragraph, and where to go next.
-
-Assumed: roughly what a bit on a wire is. No CAN knowledge. §8 and §9 compare against MQTT, so [`communication-guide.md`](communication-guide.md) helps there but is not a prerequisite.
 
 ---
 
@@ -302,6 +302,8 @@ Power both boards and read the gateway console for `peer node 2 is online`. Now 
 So one line of log discharges the entire physical layer, and it does so without a scope. That is unusual, and it is a direct consequence of the ACK slot existing at all: a protocol with no in-frame acknowledgement (UART, or CAN's own transmit-only view of the world) can be wired wrong and look perfectly healthy from the sending end. Compare what it took to be sure the MQTT link was up.
 
 The converse is the useful bisect, and it is a common enough failure to be worth naming: heartbeats crossing while segmented transfers fail cannot be electrical, because the heartbeat has already proven the electrical layer. Look at §7's filter semantics instead.
+
+**Proves:** the differential pair, the common ground, the termination and both bitrates, all at once and without a scope — because §5's acknowledgement slot means a transmission that *completes* cannot have happened without every one of them.
 
 ## 11. The model in one paragraph
 

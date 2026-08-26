@@ -6,6 +6,8 @@ A teaching document. It builds up from "the board has no screen and no debugger 
 
 This guide has **no reference half** in `../docs/` — there is no project *decision* to record about the shell the way there is for the sensor or the MQTT client; the shell is a stock subsystem we simply switch on. What *this repo* does with it is two `prj.conf` lines (`CONFIG_SHELL`, `CONFIG_NET_SHELL`) and one more that pulls a shell in as a side effect (`CONFIG_SENSOR_SHELL`), all covered below. The sensor shell's own quirks — its command table and the RTIO detour it drags in — stay in [`sensor-api-guide.md` §7](sensor-api-guide.md), because those are sensor concerns; this guide is the general machinery underneath them.
 
+**Prerequisites:** what a Kconfig option is ([`zephyr-build-system-guide.md`](zephyr-build-system-guide.md) §5). Everything else — the backend, the command tree, the linker section commands are registered through, dynamic completion — is built from nothing.
+
 **The shape of this document:**
 
 - **§1** — why a shell exists at all: the board has no keyboard, and you still need to poke it while it runs.

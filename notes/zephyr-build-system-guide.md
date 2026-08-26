@@ -4,6 +4,8 @@
 
 This is a teaching document, not project documentation. It explains the concepts, components, and flow of the Zephyr build system in the order that makes them easiest to learn. It uses this repository — a CO₂ sensor node on an ST Nucleo-H753ZI — only as a running example to keep the ideas concrete. For the project-specific details (exact file paths, verified line numbers, the artifact-by-artifact table), see its companion, [`build-system-overview.md`](../docs/build-system-overview.md).
 
+**Prerequisites:** C, and what a compiler and linker do. Nothing Zephyr-specific — this is the guide the others assume, so it starts from the beginning.
+
 **The shape of this document:**
 
 - **§1–§3** — why the build feels strange, the two questions it answers, and the three tools that answer them.

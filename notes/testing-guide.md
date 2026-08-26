@@ -4,6 +4,8 @@
 
 A teaching document. It explains why testing firmware is awkward, what makes a piece of code testable at all, and how Zephyr's Ztest and Twister actually work — using this repository's own suites in [`tests/`](../tests/) as the running example. For what *this* project decided to test and what it deliberately does not, see its companion, [`test-strategy.md`](../docs/test-strategy.md).
 
+**Prerequisites:** roughly what a unit test is. Ztest, Twister and the four places a test can run are all built up; §6 reads this repo's own suites, so it lands better once you have met the files they test.
+
 **The shape of this document:**
 
 - **§1–§2** — why the target is the wrong place to test, and the one property that decides whether code can be tested at all.
@@ -328,7 +330,9 @@ INFO    - 5 of 5 executed test configurations passed (100.00%), 0 built (not run
 INFO    - 51 of 51 executed test cases passed (100.00%)
 ```
 
-About thirty seconds, most of it building five full Zephyr images. **Proves:** the whole loop works with no board, no broker and no sensor — which is the entire point of §1.
+About thirty seconds, most of it building five full Zephyr images.
+
+**Proves:** the whole loop works with no board, no broker and no sensor — which is the entire point of §1.
 
 ### Exercise 2 — Make it fail
 
@@ -345,7 +349,9 @@ a rejected publish must leave the channel unchanged
  FAIL - test_out_of_range_interval_is_rejected_atomically in 0.002 seconds
 ```
 
-Revert it afterwards. **Proves:** failures are reported with the file, the line, the values and your message — and that the assertion was genuinely running rather than silently skipped. Note the log line printed just before it: that context is why §5's `prj.conf` leaves logging on.
+Revert it afterwards.
+
+**Proves:** failures are reported with the file, the line, the values and your message — and that the assertion was genuinely running rather than silently skipped. Note the log line printed just before it: that context is why §5's `prj.conf` leaves logging on.
 
 ### Exercise 3 — Watch a real bug get caught
 
@@ -381,7 +387,9 @@ int rc = isotp_bind(&wrong_ctx, can_dev, &id_to_gateway, &id_to_peer, &fc_opts, 
  FAIL - test_the_heartbeat_filter_ignores_the_isotp_identifiers
 ```
 
-Revert both. **Proves:** each test fails for the reason it claims to check, rather than because the environment delivers nothing. Try it once with the `can_set_mode(can_dev, CAN_MODE_LOOPBACK)` line in `setup()` removed as well, and watch both mutations pass: with the mode bit clear the driver delivers nothing, so a negative test cannot fail no matter what you break. That is the failure this exercise exists to rule out.
+Revert both.
+
+**Proves:** each test fails for the reason it claims to check, rather than because the environment delivers nothing. Try it once with the `can_set_mode(can_dev, CAN_MODE_LOOPBACK)` line in `setup()` removed as well, and watch both mutations pass: with the mode bit clear the driver delivers nothing, so a negative test cannot fail no matter what you break. That is the failure this exercise exists to rule out.
 
 ### Exercise 5 — Add one
 

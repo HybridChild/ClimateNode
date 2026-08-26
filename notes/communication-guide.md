@@ -4,6 +4,8 @@
 
 This is a teaching document, not project documentation. It explains the concepts and the flow in the order that makes them easiest to learn, using this repository — a CO₂ sensor node on an ST Nucleo-H753ZI talking to a Raspberry Pi — as the running example. For the project's actual decisions (topic table, QoS per topic, broker config), see its companion, [`mqtt-design.md`](../docs/mqtt-design.md). Once these concepts make sense, [`firmware-mqtt-walkthrough.md`](../docs/firmware-mqtt-walkthrough.md) reads the firmware that implements them, line by line.
 
+**Prerequisites:** that TCP/IP exists. No MQTT knowledge at all — the broker, topics, QoS, sessions and the will are built from nothing — and no devicetree or Kconfig, so this guide pairs with [`protobuf-guide.md`](protobuf-guide.md) as a self-contained route through the comms material, readable without any of the Zephyr-side guides.
+
 **The shape of this document:**
 
 - **§1–§2** — the stack as a chain of "…and therefore we also need…", and what each layer refuses to do for you.
