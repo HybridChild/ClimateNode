@@ -1,21 +1,14 @@
 /* The CAN link contract: everything the two ends of the wire must agree on.
  *
  * Included by both applications, because a link is symmetric -- the F072RB peer
- * node sends what the H753ZI gateway expects, and neither is in a position to
- * be right on its own. Anything that only one side needs does NOT belong here.
+ * node sends what the H753ZI gateway expects, and neither is in a position to be
+ * right on its own. Anything only one side needs does NOT belong here.
  *
- * Deliberately free of protobuf, MQTT, zbus and Zephyr driver headers. It is
- * plain constants and two inline functions, which is what lets tests/ compile
- * it with nothing attached. The concepts underneath -- why a CAN identifier
- * names a message rather than a node, why 8 bytes forces this file to exist at
- * all, and what ISO-TP does about it -- are in notes/can-guide.md; the
- * bring-up facts are in docs/can-bringup.md.
+ * Deliberately free of protobuf, MQTT, zbus and Zephyr driver headers: plain
+ * constants and two inline functions, which is what lets tests/ compile it with
+ * nothing attached.
  *
- * ---------------------------------------------------------------------------
- * The address map
- * ---------------------------------------------------------------------------
- *
- * Five identifiers per peer node, all 11-bit standard IDs:
+ * Five 11-bit identifiers per peer, `id` the node id and n = id - 2:
  *
  *   0x700 + id   heartbeat,      peer -> gateway, one raw frame at 1 Hz
  *   0x7E0 + n    ISO-TP data,    gateway -> peer  (commands)
@@ -23,57 +16,16 @@
  *   0x7E8 + n    ISO-TP data,    peer -> gateway  (telemetry and acks)
  *   0x7EC + n    ISO-TP flow control for the above, gateway -> peer
  *
- * where `id` is the node id and n = id - 2, since the gateway is node 1 and the
- * first peer is node 2. For node 2 that is 0x702, 0x7E0, 0x7E4, 0x7E8, 0x7EC.
+ * Three properties of that map are load-bearing, and each is explained in
+ * docs/can-bringup.md *The address map* / *Flow control needs its own
+ * identifiers*: no two contexts on a node share an identifier (the loser is
+ * starved with no diagnostic); the heartbeat sorts below the ISO-TP ranges, so
+ * liveness cannot be starved by a segmented transfer; and the four-apart spacing
+ * caps the peer count at kMaxPeerNodeId. tests/heartbeat/ asserts all three on
+ * the constants alone, where no driver's semantics can intervene.
  *
- * The numbers are borrowed rather than invented: 0x700 + node id is CANopen's
- * heartbeat convention, and 0x7E0/0x7E8 is the UDS diagnostic request/response
- * pair. Neither protocol is implemented here. Borrowing the ranges costs
- * nothing and means anyone who has met a CAN bus before can read a trace
- * without this file open, which is the only thing an identifier can do for a
- * human -- see notes/can-guide.md §4 for what it does for the bus.
- *
- * ---------------------------------------------------------------------------
- * Why flow control gets identifiers of its own
- * ---------------------------------------------------------------------------
- *
- * The UDS convention this map otherwise borrows from puts a direction's data
- * frames and its flow-control frames on one pair of identifiers: a transfer on
- * 0x7E0 is answered by FC frames on 0x7E8, and vice versa. That is not usable
- * on these controllers, and the reason generalises to any Zephyr CAN target.
- *
- * Zephyr's ISO-TP gives every context its own CAN acceptance filter: a bound
- * receive context filters on the address it receives data on (isotp.c,
- * add_ff_sf_filter), and a send context filters on the address it expects FC
- * on (add_fc_filter). Two contexts sharing one identifier therefore install two
- * filters for it -- and both bxCAN and M_CAN deliver a frame to exactly ONE
- * callback, the lowest-numbered matching filter. The bind is installed at boot
- * and so occupies the lower slot, which means every FC frame is handed to the
- * receive context, which has no case for an FC PCI and drops it ("Got
- * unexpected frame. Ignore"), while the sender waits out its timeout for flow
- * control that arrived and was discarded. Single frames are unaffected, so the
- * signature of the mistake is a link on which heartbeats work perfectly and
- * nothing segmented completes.
- *
- * So each ISO-TP context on a node gets an identifier nothing else on that node
- * listens to. The peer listens on 0x7E0 (its bind) and 0x7EC (its sender's FC);
- * the gateway listens on 0x7E8 (its bind) and 0x7E4 (its sender's FC). Four
- * filters on the link, no two of them on the same id.
- *
- * The cost is the peer count: four identifiers spaced four apart leave room for
- * four peers (n = 0..3, node ids 2..5), which is kMaxPeerNodeId below.
- *
- * Note that no test running against an emulated controller can check this
- * property. Zephyr's zephyr,can-loopback driver invokes every filter a frame
- * matches rather than only the first, so a colliding map behaves correctly
- * there. tests/heartbeat/ asserts it on the constants alone instead, where no
- * driver's semantics can intervene; docs/test-strategy.md has the argument.
- *
- * Note what the low identifiers buy on the bus itself: arbitration is won by
- * the numerically lowest id, so the heartbeat at 0x702 beats every ISO-TP frame
- * on the link. That is the right way round -- liveness must not be starved by
- * a long segmented transfer -- and it is a property of the numbering, not of
- * any code below.
+ * Concepts -- why an identifier names a message rather than a node, and what
+ * ISO-TP does about 8-byte frames -- are in notes/can-guide.md.
  */
 #ifndef CAN_LINK_H_
 #define CAN_LINK_H_
@@ -146,16 +98,9 @@ constexpr uint16_t isotp_fc_id_to_peer(uint8_t node_id)
  * verbatim. The gateway reads byte 0, strips it, and forwards the remainder
  * untouched -- it never decodes what a peer sent.
  *
- * That byte exists because ISO-TP has no equivalent of an MQTT topic, and
- * docs/mqtt-design.md's rule still applies: the type is not on the wire
+ * ISO-TP has no equivalent of an MQTT topic, and the type is not on the wire
  * (notes/protobuf-guide.md §4), so something outside the payload has to assert
- * it. On MQTT the topic does; here this byte does -- the same decision, paid
- * for in a payload byte because there is no topic to carry it.
- *
- * The alternative was a separate address pair per message type, which would
- * mean two binds, two receive contexts and either two threads or a poll over
- * structures isotp.h marks internal. One byte is cheaper, and it keeps the
- * address map short enough to hold in your head.
+ * it. On MQTT the topic does that for free; here it costs a byte.
  */
 enum relay_msg_type : uint8_t {
 	RELAY_MSG_TELEMETRY = 1,
@@ -167,14 +112,10 @@ enum relay_msg_type : uint8_t {
  * The heartbeat frame
  * ---------------------------------------------------------------------------
  *
- * Exactly 8 bytes, hand-packed, sent as one raw CAN frame -- no ISO-TP. This is
- * where the eight-byte limit stops being an abstraction: a protobuf Telemetry
- * cannot fit, and a heartbeat that needed segmenting would defeat its own
- * purpose, since the thing it reports on is the link that would have to carry
- * the segments.
- *
- * So the layout is fixed by agreement, in the style a DBC file records for a
- * real vehicle bus (notes/can-guide.md §8):
+ * Exactly 8 bytes, hand-packed, sent as one raw CAN frame -- no ISO-TP, because
+ * a heartbeat that needed segmenting would depend on the very link it reports
+ * on. The layout is fixed by agreement, in the style of a DBC file
+ * (notes/can-guide.md §8):
  *
  *   byte 0   layout version, currently 1
  *   byte 1   node state (enum heartbeat_state)
@@ -182,20 +123,12 @@ enum relay_msg_type : uint8_t {
  *   byte 6   low 8 bits of the telemetry sequence
  *   byte 7   reserved, 0xFF
  *
- * Two decisions worth keeping:
- *
- * Byte 0 is a version, and it is first, because this layout has none of the
- * evolution machinery protobuf gives the payloads. Nothing else in the frame
- * can tell a reader that the sender's idea of byte 3 has changed. Its cost is
- * one byte of eight -- 12.5% of the frame spent on being able to change the
- * other seven -- and that is the honest price of hand-packing.
- *
- * Byte 6 is the sequence truncated to 8 bits, which is deliberate and lossy.
- * The gateway compares it against the last telemetry it relayed and can see a
- * gap without decoding anything; wrapping every 256 samples is harmless because
- * the comparison is only ever between adjacent beats. A full uint32 would not
- * have fitted beside the uptime anyway, which is the sort of thing eight bytes
- * decides for you.
+ * Byte 0 is a version, and first, because this layout has none of the evolution
+ * machinery protobuf gives the payloads -- nothing else in the frame could tell
+ * a reader that the sender's idea of byte 3 has changed. Byte 6 is truncated to
+ * 8 bits deliberately: the gateway only ever compares adjacent beats, so
+ * wrapping every 256 samples is harmless, and a full uint32 would not have fitted
+ * beside the uptime anyway.
  */
 constexpr uint8_t kHeartbeatLayoutVersion = 1;
 constexpr size_t kHeartbeatLen = 8;

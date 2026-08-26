@@ -1,43 +1,25 @@
 /* The CAN session: this node's whole conversation with the gateway.
  *
  * The counterpart of gateway/src/main.cpp, which owns the MQTT session on the
- * gateway. Reading them side by side is the point of the exercise, because the
- * two files do the same job over transports that agree on almost nothing:
+ * gateway. Reading them side by side is the point of the exercise: the same job
+ * over transports that agree on almost nothing, and every mechanism MQTT gives
+ * away for free has to be re-earned here. notes/can-guide.md §9 sets the two
+ * out row by row.
  *
- *                       gateway (MQTT)              this node (CAN)
- *   addressing          topic string                11-bit frame id
- *   framing             one payload, delivered      8 bytes; ISO-TP segments
- *                       whole                       and reassembles
- *   which type is this  the topic asserts it        one byte at the front
- *   connection          CONNECT/keepalive/will      none; there is nothing to
- *                                                   connect to
- *   liveness            broker's Last Will          a heartbeat we send, and a
- *                                                   timeout the gateway runs
- *   acknowledgement     PUBACK, per recipient       ISO-TP flow control, and
- *                                                   nothing above it
+ * The rows that put code in this file and not in the gateway's are liveness and
+ * acknowledgement: a CAN bus cannot tell a silent node from an absent one, so
+ * liveness is a heartbeat this node publishes rather than something a broker
+ * infers.
  *
- * The last two rows are why this file has code the gateway does not: liveness
- * has to be published rather than inferred, because a CAN bus cannot tell a
- * silent node from an absent one. notes/can-guide.md §5 and §9.
+ * Everything below runs on main. That is a correctness property before it is
+ * thrift: two isotp_send() calls on one address from different contexts
+ * interleave their frames and corrupt both transfers, so the single-writer rule
+ * is load-bearing. It also fits a part with 16 KB of RAM.
  *
- * ---------------------------------------------------------------------------
- * One thread, one clock, one writer
- * ---------------------------------------------------------------------------
- *
- * Everything below runs on main. That is not thrift, it is a correctness
- * property: two isotp_send() calls on the same address from different contexts
- * interleave their frames on one CAN id and corrupt both transfers, so the
- * single-writer rule is load-bearing rather than tidy. It also happens to fit a
- * part with 16 KB of RAM, where a second stack is a real fraction of the
- * budget.
- *
- * The loop's shape follows from that. The heartbeat is the clock: wake at least
- * once per kHeartbeatPeriodMs, and spend the time in between blocked in
- * isotp_recv() waiting for a command. Telemetry arrives asynchronously on a
- * zbus channel and is picked up on whichever wake comes next, so a reading can
- * wait up to one heartbeat period before it is sent -- acceptable against a 5 s
- * sample cadence, and the alternative (a second thread, or a poll over
- * structures isotp.h marks internal) costs more than the latency is worth.
+ * The loop's shape follows: wake at least once per kHeartbeatPeriodMs, and spend
+ * the time between blocked in isotp_recv(). Telemetry arrives asynchronously on
+ * a zbus channel and goes out on whichever wake comes next, so a reading can
+ * wait up to one heartbeat period -- acceptable against a 5 s sample cadence.
  */
 #include <zephyr/kernel.h>
 #include <zephyr/canbus/isotp.h>
@@ -75,15 +57,14 @@ const struct device *const can_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_canbus));
 /* ---- ISO-TP addressing ---------------------------------------------------- */
 
 /* Mirrored from the gateway's point of view: what it calls "to peer" is what we
- * receive, and vice versa. Getting this pair backwards produces a link on which
- * every frame is transmitted correctly and nothing is ever delivered, so the
+ * receive. Getting this pair backwards produces a link on which every frame is
+ * transmitted correctly and nothing is ever delivered, which is why the
  * constructors in can_link.h are named for direction rather than for role.
  *
  * Four addresses rather than two, because our bind and our sender each need an
- * identifier no other filter on this node is listening to -- can_link.h's header
- * comment has the mechanism and the symptom of getting it wrong. The pairing to hold on to:
- * an ISO-TP context's two addresses are always "the data I move" and "the flow
- * control that answers it", travelling in opposite directions. */
+ * identifier no other filter on this node listens to (can_link.h). The pairing
+ * to hold on to: an ISO-TP context's two addresses are always "the data I move"
+ * and "the flow control that answers it", travelling in opposite directions. */
 const struct isotp_msg_id rx_addr = {
 	.std_id = isotp_id_to_peer(kNodeId), /* 0x7E0: commands, gateway -> us */
 };
@@ -97,15 +78,11 @@ const struct isotp_msg_id tx_fc_addr = {
 	.std_id = isotp_fc_id_to_gateway(kNodeId), /* 0x7E4: FC for our bind, us -> gateway */
 };
 
-/* Flow control we advertise to a sender: bs = 0 means "send the whole thing,
- * do not wait for me again", stmin = 0 means "no minimum gap between frames".
- *
- * Both are the permissive end of the range, and they are right here because the
- * only thing that ever sends to this node is a Command -- 20 bytes worst case,
- * three frames. Block size exists so a slow receiver can throttle a fast sender
- * mid-transfer (notes/can-guide.md §8); throttling three frames would buy
- * nothing and cost a round trip per block. A node receiving a firmware image
- * would answer this question differently. */
+/* Flow control we advertise to a sender: bs = 0 is "send the whole thing", stmin
+ * = 0 is "no minimum gap". Both are the permissive end, and right here because
+ * the only thing that ever sends to this node is a Command -- 20 bytes worst
+ * case, three frames. A node receiving a firmware image would answer
+ * differently (notes/can-guide.md §8). */
 const struct isotp_fc_opts fc_opts = {
 	.bs = 0,
 	.stmin = 0,
@@ -139,19 +116,15 @@ void on_telemetry(const struct zbus_channel *chan)
 
 /* ---- link state ----------------------------------------------------------- */
 
-/* A peer node whose gateway is absent is in a **normal operating condition**,
- * not an error state. It happens whenever the gateway reboots, whenever the bus
- * is unplugged, and for as long as this node is powered before its gateway is.
+/* A peer node whose gateway is absent is a **normal operating condition**, not
+ * an error state: it happens whenever the gateway reboots, whenever the bus is
+ * unplugged, and for as long as this node is powered before its gateway is.
  *
- * Treating it as an error costs twice over: a failure line per heartbeat, which
- * buries anything else the console has to say, and a full second of the loop
- * spent inside every isotp_send() waiting for a flow control frame nobody is
- * going to send. The node ends up healthy and unreadable.
- *
- * So the rule below is the same one gateway/src/main.cpp applies to a broker
- * that will not accept a connection: back off, stay quiet, keep sampling. The
- * sensor thread never learns about any of this — it publishes to the channel on
- * its own cadence regardless, which is the whole reason the channel is there.
+ * Treating it as an error costs twice -- a failure line per heartbeat burying
+ * everything else, and a full second inside every isotp_send() waiting for flow
+ * control nobody will send. So: back off, stay quiet, keep sampling, the same
+ * rule gateway/src/main.cpp applies to a broker that will not accept a
+ * connection. The sensor thread never learns about any of it.
  */
 constexpr uint32_t kTxBackoffMinMs = 2000;
 constexpr uint32_t kTxBackoffMaxMs = 30000;
@@ -281,24 +254,12 @@ struct heartbeat hb_state = {
 
 /* Transmission bookkeeping for the heartbeat, written from the CAN TX ISR.
  *
- * The heartbeat must be sent with a completion callback, because can_send()
- * without one blocks for an unbounded time on this controller -- and main is
- * the only thread this node has.
- *
- * Two things combine to make the wait unbounded. First, a NULL callback means
- * z_impl_can_send() installs its own and does k_sem_take(K_FOREVER) on
- * completion (can_common.c:69); the k_timeout_t argument bounds only the wait
- * for a free transmit mailbox (can_stm32_bxcan.c:800-808), so K_NO_WAIT does
- * not make the call non-blocking. Second, completion may never come: the driver
- * clears NART, so the hardware retries an unacknowledged frame indefinitely,
- * and sets ABOM, so the bus-off that would abort the retrying is recovered from
- * automatically. There is no state a lone transmitter reaches where the
- * hardware gives up.
- *
- * A blocking heartbeat therefore parks main for as long as the link is down,
- * which stops telemetry and -- since main also owns isotp_recv() -- stops
- * command handling too. Worse, it does so invisibly: the send eventually
- * succeeds when the bus returns, so note_link() is never told anything changed.
+ * The heartbeat MUST be sent with a completion callback. can_send() without one
+ * waits K_FOREVER on completion, the k_timeout_t argument bounds only the wait
+ * for a free mailbox, and on this controller completion may never come at all --
+ * so a blocking heartbeat parks main for the whole outage, taking telemetry and
+ * command handling with it, and does so invisibly. docs/can-bringup.md *Driver
+ * behaviour worth knowing* has the mechanism.
  *
  * With a callback, can_send() returns as soon as the frame is queued and the
  * link verdict is formed from what has actually COMPLETED rather than from what
@@ -342,23 +303,17 @@ void send_heartbeat(void)
 		atomic_inc(&beats_in_flight);
 	}
 
-	/* Three things have to hold for the link to count as up, and each of
-	 * them fails in a different way:
+	/* Three things have to hold for the link to count as up:
 	 *
-	 *   rc == 0            the frame was accepted. -EAGAIN here means all
-	 *                      three transmit mailboxes are still occupied by
-	 *                      earlier beats, which is the steady state of an
-	 *                      unacknowledged bus.
-	 *   in flight <= 1     the PREVIOUS beat completed. At 1 Hz, a beat
-	 *                      still outstanding when the next one is queued
-	 *                      means nothing is acknowledging us. This is what
-	 *                      notices the fault at t+2s instead of t+4s, when
-	 *                      the mailboxes finally fill.
+	 *   rc == 0            the frame was accepted. -EAGAIN means all three
+	 *                      mailboxes are still occupied by earlier beats.
+	 *   in flight <= 1     the PREVIOUS beat completed. At 1 Hz, one still
+	 *                      outstanding means nothing is acknowledging us --
+	 *                      which notices the fault at t+2s rather than t+4s.
 	 *   no error           the last completed beat reported success.
 	 *
 	 * Reading a result that belongs to the previous beat is deliberate: a
-	 * transmission that has not finished has no verdict yet, and inventing
-	 * one is precisely the mistake this replaces. */
+	 * transmission that has not finished has no verdict yet. */
 	int err = (rc != 0) ? rc : static_cast<int>(atomic_get(&last_beat_error));
 
 	if (err == 0 && atomic_get(&beats_in_flight) > 1) {
@@ -525,17 +480,13 @@ int main(void)
 				hb_state.sequence_low =
 					static_cast<uint8_t>(reading.sequence & 0xFF);
 
-				/* On change only, same rule as the link state. It
-				 * matters because sensor.cpp announces the sensor
-				 * once at boot and never again, so a console
-				 * attached later — the normal case, since screen
-				 * cannot be open before the board resets — has no
-				 * way to know whether readings are real. An
-				 * ERROR reading is also nearly invisible on the
-				 * wire: with every measurement absent it encodes
-				 * to about ten bytes rather than twenty-five, so
-				 * "the telemetry looks short" is the only other
-				 * clue you would get. */
+				/* On change only, same rule as the link state, and it
+				 * matters here because sensor.cpp announces the sensor
+				 * once at boot and never again -- a console attached
+				 * later would otherwise have no way to know whether the
+				 * readings are real. An ERROR reading is nearly
+				 * invisible on the wire too, encoding to about ten bytes
+				 * rather than twenty-five. */
 				if (hb_state.state != was) {
 					if (hb_state.state == HEARTBEAT_STATE_SENSOR_ERROR) {
 						LOG_ERR("sensor reads are failing — telemetry "

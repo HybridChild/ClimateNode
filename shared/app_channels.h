@@ -1,66 +1,39 @@
-/* zbus channels shared between the sensor thread and the MQTT thread.
+/* zbus channels shared between the sensor thread and the transport thread.
  *
  * zbus is an *in-process* pub/sub bus between threads on the MCU. Nothing here
- * touches the network — it is the internal decoupling that lets the sensor be
- * read on its own cadence while the MQTT client is busy connecting, blocked in
- * poll(), or backing off after a dropped link.
+ * touches a network or a transport -- it is the internal decoupling that lets
+ * the sensor be read on its own cadence while the transport is busy connecting,
+ * blocked in poll(), or backing off after a dropped link.
  *
- * This header is the decisions half of the zbus documentation; the concepts
- * from first principles — channels, the three observer kinds, why latest-wins
- * is a feature, validators, and waiting on a bus and a socket at once — are in
- * notes/zbus-guide.md.
+ * This header is the decisions half of the zbus documentation; the concepts from
+ * first principles are in notes/zbus-guide.md.
  *
  * The two channels deliberately use different observer styles, for the same
- * reasons the two MQTT topics use different QoS (docs/mqtt-design.md):
+ * reason the two MQTT topics use different QoS (docs/mqtt-design.md):
  *
- *   chan_telemetry   sensor -> MQTT.  Observed by a LISTENER that only signals;
- *                    the reader then takes the channel's *current* value. A
- *                    channel stores exactly one message, so a reading produced
- *                    while the reader is busy is overwritten — latest wins.
- *                    That is correct here: a stale reading is worse than a
- *                    missing one, and `sequence` makes the loss visible. Same
- *                    argument as telemetry being QoS 0 on the wire.
+ *   chan_telemetry   sensor -> transport.  A LISTENER that only signals; the
+ *                    reader then takes the channel's *current* value. State, so
+ *                    latest wins and `sequence` makes the loss visible.
  *
- *   chan_sensor_cmd  MQTT -> sensor.  Observed by a MESSAGE SUBSCRIBER, which
- *                    receives a *copy* of every message in order. A command has
- *                    no next one coming, so none may be collapsed. Same
- *                    argument as command/ack being QoS 1 on the wire.
+ *   chan_sensor_cmd  transport -> sensor.  A MESSAGE SUBSCRIBER, which receives
+ *                    a *copy* of every message in order. A command has no next
+ *                    one coming, so none may be collapsed.
  *
- * Both channels are defined in sensor.cpp: the sensor module owns the readings
- * it produces *and* the sample period the commands adjust, so the bounds and
- * the validator live with the code they constrain.
+ * Both channels are DECLARED here and DEFINED by whoever links this header --
+ * each app's own sensor.cpp, or the test in tests/commands/. That seam is why
+ * two applications share this file: the H753ZI gateway and the F072RB peer node
+ * both include it, each for its own sensor. Neither app owns it, and nothing in
+ * it may depend on one.
  *
- * ---------------------------------------------------------------------------
- * Two applications share this header, which is why it lives in shared/
- * ---------------------------------------------------------------------------
+ * The SCD-40 measures CO2, temperature and humidity; the BME280 temperature,
+ * humidity and pressure. Neither is a subset of the other, which is why struct
+ * sensor_reading carries a presence flag per measurement rather than a value
+ * that has to mean "none" -- notes/protobuf-guide.md §5 for the wire half.
  *
- * The H753ZI gateway and the F072RB peer node both include it, and both DEFINE
- * these two channels — each in its own sensor.cpp, for its own sensor. Neither
- * app owns this file; that is the whole reason it sits in shared/ rather than
- * inside one of them. ZBUS_CHAN_DECLARE expands to `extern`, so the header
- * declares and whoever links supplies the definition; tests/commands/ has been
- * using that same seam for chan_sensor_cmd all along, and commands.h now uses
- * it for the node identity.
- *
- * That is what makes the description above hold for both nodes without a word
- * of it being about either one. The SCD-40 fills in CO2, temperature and
- * humidity; the BME280 fills in temperature, humidity and pressure. Neither is
- * a subset of the other, which is why struct sensor_reading carries a presence
- * flag per measurement rather than a value that has to mean "none" — see the
- * comment on it below, and notes/protobuf-guide.md §5 for the wire half.
- *
- * What is NOT here: anything to do with CAN. The link's address map, heartbeat
- * frame and message-type byte live in can_link.h, because they are a contract
- * between two *boards* rather than between two threads; the gateway's relay
- * channels live in relay.h. This header's whole claim is that nothing in it
- * touches a transport, and the relay channels exist precisely to carry one.
- *
- * Worth reading the two side by side, because they avoid generated Protobuf
- * types for opposite reasons. Here, the internal types exist so a schema change
- * stops at protocol.cpp instead of reaching the sensor thread. There, the relay
- * carries raw bytes so a schema change on the *peer* does not reach the gateway
- * at all — it never decodes what it forwards. Same goal, approached from either
- * end: a schema change that does not ripple.
+ * What is NOT here: anything to do with a transport. The CAN address map and
+ * heartbeat frame are in can_link.h, a contract between two *boards*; the
+ * gateway's relay channels are in relay.h, and exist precisely to carry a
+ * transport's bytes.
  */
 #ifndef APP_CHANNELS_H_
 #define APP_CHANNELS_H_
@@ -137,24 +110,11 @@ struct sensor_cmd {
 };
 
 /* Every message on every channel must fit one buffer of the zbus message
- * subscriber pool -- including the ones only listeners observe.
- *
- * That "including" is the whole point of the assert, and it is not what the
- * pool's name suggests. With CONFIG_ZBUS_MSG_SUBSCRIBER=y, _zbus_vded_exec()
- * (subsys/zbus/zbus.c:244-256) allocates a pool buffer and net_buf_add_mem()s
- * the entire message into it on EVERY zbus_chan_pub(), before it examines a
- * single observer. A channel with no message subscriber still pays for the
- * copy; what it skips is only the delivery. So the pool is sized by the largest
- * message on ANY channel, not by the largest on a message-subscriber channel.
- *
- * Undersize it and the copy runs past a fixed slot in a contiguous
- * uint8_t[count][size] array and corrupts whatever follows -- with no
- * diagnostic, because zbus's own __ASSERT for exactly this (zbus.c:46) needs
- * CONFIG_ASSERT=y, which neither app builds with. A small overrun stays inside
- * the pool and can run for a long time without a visible symptom; a large one
- * escapes the array and surfaces later as a fault in an unrelated thread. That
- * failure mode is why the invariant is a static_assert and not a comment: it
- * spans a Kconfig value and a struct definition, so nothing else checks it.
+ * subscriber pool -- including the ones only listeners observe, which is not
+ * what the option's name suggests and is the whole point of these asserts.
+ * Undersizing it overruns a fixed slot with no diagnostic. The mechanism and the
+ * failure signature are in docs/can-bringup.md *The zbus pool is sized by every
+ * channel*; adding a channel or growing a message means revisiting these.
  *
  * Guarded because the test suites enable CONFIG_ZBUS without the message
  * subscriber, so the symbol does not exist there -- and nothing in them
@@ -170,11 +130,10 @@ static_assert(sizeof(struct sensor_cmd) <= CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_ST
 #endif
 
 /* The rule the chan_sensor_cmd validator enforces, stated next to the bounds it
- * compares against rather than in sensor.cpp -- the constants and the
- * comparison drifting apart is exactly the failure a single definition
- * prevents. sensor_cmd_valid() in sensor.cpp is the zbus *adapter* around this
- * (it takes a const void *, as the bus requires); this is the rule itself, and
- * being an ordinary function it can be tested directly. */
+ * compares against rather than in sensor.cpp -- the constants and the comparison
+ * drifting apart is exactly what a single definition prevents.
+ * sensor_cmd_valid() in each sensor.cpp is the zbus *adapter* around this; being
+ * an ordinary function, the rule itself can be tested directly. */
 static inline bool sensor_cmd_in_range(const struct sensor_cmd *cmd)
 {
 	switch (cmd->kind) {

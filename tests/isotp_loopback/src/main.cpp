@@ -1,59 +1,26 @@
-/* The CAN transport, end to end, with no hardware — shared/can_link.h
- * carried over Zephyr's ISO-TP through an emulated controller.
+/* The CAN transport, end to end, with no hardware -- shared/can_link.h carried
+ * over Zephyr's ISO-TP through an emulated controller.
  *
- * ---------------------------------------------------------------------------
- * What this suite is for, and how it differs from the others
- * ---------------------------------------------------------------------------
+ * The only suite here that runs a driver. tests/heartbeat/ and tests/relay/ call
+ * a static inline function and look at what it returned; that is fast and total,
+ * and it cannot prove those bytes ever reach a receive filter. `zephyr,can-
+ * loopback` delivers transmitted frames back to this node's own filters, so the
+ * whole of ISO-TP genuinely executes -- First Frame, Flow Control, Consecutive
+ * Frames, reassembly.
  *
- * tests/heartbeat/ and tests/relay/ are unit tests in the strict sense: they
- * call a static inline function and look at what it returned. Nothing moves.
- * That is what makes them fast and total, and it is also their limit — they can
- * prove heartbeat_pack() produces eight correct bytes, and cannot prove those
- * eight bytes ever reach a receive filter.
+ * Its edge is worth knowing before trusting it: the emulated controller invokes
+ * EVERY filter a frame matches where real silicon invokes only the first, so a
+ * colliding address map passes here and fails on a board. That property is
+ * asserted in tests/heartbeat/ instead, on the constants alone.
+ * docs/test-strategy.md has both arguments, and what is left for the bench.
  *
- * This suite runs a driver. `zephyr,can-loopback` is an emulated CAN controller
- * that delivers transmitted frames back to this same node's receive filters,
- * so the whole of ISO-TP genuinely executes: a First Frame is sent, a Flow
- * Control frame comes back, Consecutive Frames follow with their rolling
- * sequence numbers, and the receiver reassembles. None of that is our code, but
- * all of it is code our framing depends on, and this is the only suite that
- * exercises any of it.
- *
- * What it therefore proves that nothing else does:
- *
- *   - a payload the size of the gateway's receive buffer survives segmentation
- *     and reassembly byte for byte, which is 1 First Frame + 1 Flow Control +
- *     23 Consecutive Frames rather than an assertion about a memcpy;
- *   - the ISO-TP receive pool the two prj.conf files configure is actually big
- *     enough for the direction each node has to reassemble;
- *   - the identifiers can_link.h computes are the identifiers a receive filter
- *     matches, which no amount of arithmetic testing can establish;
- *   - the type byte above ISO-TP arrives at offset 0 of a reassembled payload,
- *     which is the one byte the gateway reads and the whole basis of its
- *     routing.
- *
- * What it still cannot prove is everything electrical: differential levels,
- * termination, a common ground, arbitration between two real transmitters, and
- * the in-frame acknowledgement that makes a node alone on a bus unable to
- * transmit at all. Those need two transceivers and are listed in
- * docs/test-strategy.md as bench work; the value of this file is that the list
- * is that short.
- *
- * ---------------------------------------------------------------------------
- * Why the sizes below are transport boundaries and not schema sizes
- * ---------------------------------------------------------------------------
- *
- * There is no nanopb here and no node.pb.h. The sizes tested are the ones the
- * *transport* changes behaviour at — 7 bytes is the largest Single Frame under
- * standard addressing, 8 is the first size that must segment, and 1 +
- * kRelayUpMax is the largest payload gateway/src/relay.cpp will ever read into.
- *
- * Testing against kRelayUpMax rather than against node_Ack_size is deliberate
- * and is the stronger of the two: 160 is above 140, and the link between the
- * buffer and the schema is already a static_assert in relay.cpp — the one
- * translation unit allowed to include the generated header. A schema that grew
- * past the buffer would fail to compile there. This file's job is the other
- * half: that the buffer, whatever the schema does, is a size the transport can
+ * The sizes below are TRANSPORT boundaries, not schema sizes -- there is no
+ * nanopb here. 7 bytes is the largest Single Frame under standard addressing, 8
+ * is the first size that must segment, and 1 + kRelayUpMax is the largest
+ * payload gateway/src/relay.cpp will ever read into. Testing against
+ * kRelayUpMax rather than node_Ack_size is deliberate and stronger: relay.cpp
+ * already static_asserts the schema against the buffer, so this file's job is
+ * that the buffer, whatever the schema does, is a size the transport can
  * actually deliver.
  */
 #include <zephyr/ztest.h>

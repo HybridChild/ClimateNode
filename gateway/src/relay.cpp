@@ -1,33 +1,15 @@
 /* The CAN half of the gateway. See relay.h for what a relay is and why the
- * channels are shaped the way they are.
+ * channels are shaped the way they are; docs/can-bringup.md for the link's
+ * configuration and the alternatives rejected in arriving at this shape.
  *
- * This file is the mirror of peer-node/src/main.cpp, seen from the other end
- * of the wire: what that file sends, this one receives, and vice versa. Reading
- * the two together is the clearest statement of the link there is.
+ * This file is the mirror of peer-node/src/main.cpp seen from the other end of
+ * the wire: what that file sends, this one receives.
  *
- * ---------------------------------------------------------------------------
- * Two threads, split by what they block on
- * ---------------------------------------------------------------------------
- *
- * The peer node runs one thread because it has 16 KB of RAM and a heartbeat to
- * keep. The gateway has neither constraint and a harder problem: it must be
- * receiving whenever the peer transmits, *and* able to send a command that
- * arrived from the broker at any moment. One thread doing both would have to
- * choose between blocking in isotp_recv() and blocking in isotp_send().
- *
- * So: an RX thread that only ever reads the link, and a TX thread that only ever
- * writes it. The single-writer rule is not tidiness — two isotp_send() calls on
- * one address from different contexts interleave their frames and corrupt both
- * transfers — and confining every write to one thread is how it is enforced
- * without a mutex.
- *
- * Rejected alternatives, for the record: k_poll on the receive context's fifo
- * (it lives inside struct isotp_recv_ctx, which isotp.h marks internal), and a
- * k_timer for the liveness timeout (expiry runs in ISR context and
- * zbus_chan_pub() takes a mutex, so it would need a work item purely to
- * publish). A timed isotp_recv() gives the same result with neither: the loop
- * that receives also owns the clock, which is the pattern sensor.cpp already
- * uses and docs/sensor-bringup.md already defends.
+ * Two threads, split by what they block on — RX only ever reads the link, TX
+ * only ever writes it. The single-writer rule is a correctness property, not
+ * tidiness: two isotp_send() calls on one address from different contexts
+ * interleave their frames and corrupt both transfers, and confining every write
+ * to one thread enforces it without a mutex.
  */
 #include "relay.h"
 
@@ -89,10 +71,10 @@ const struct device *const can_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_canbus));
 
 /* Mirror of the peer's four: what it calls "to gateway" is what we receive.
  *
- * Data and flow control are on separate identifiers so that our bind and our
- * sender never install two acceptance filters for the same id -- can_link.h's
- * header comment has the mechanism, and the two filters we do install here are
- * 0x7E8 (bind) and 0x7E4 (sender's FC). */
+ * Data and flow control are on separate identifiers so our bind and our sender
+ * never install two acceptance filters for the same id — one of them would be
+ * starved with no diagnostic. can_link.h names the map; docs/can-bringup.md
+ * *Flow control needs its own identifiers* has the mechanism. */
 const struct isotp_msg_id rx_addr = {
 	.std_id = isotp_id_to_gateway(kPeerNodeId), /* 0x7E8: telemetry and acks, peer -> us */
 };
@@ -179,10 +161,9 @@ void publish_status(bool online)
 /* An ISO-TP payload has arrived from the peer. Read byte 0, route on it, and
  * forward the remainder untouched.
  *
- * Reading that byte is not decoding. It is the topic, moved inside the payload
- * because ISO-TP has no topic to put it on (can_link.h); the gateway needs it
- * for exactly the same reason a subscriber needs to know which topic a message
- * came from, and learns nothing else about the message from it. */
+ * Reading that byte is not decoding: it is the topic, moved inside the payload
+ * because ISO-TP has none of its own (can_link.h). The gateway learns nothing
+ * else about the message from it. */
 void handle_relayed(const uint8_t *buf, size_t len)
 {
 	if (len < 1) {
@@ -264,13 +245,10 @@ void rx_thread(void *, void *, void *)
 		return;
 	}
 
-	/* Installed before the ISO-TP bind so it takes the lower filter slot.
-	 * That ordering is deliberate and has a visible consequence: `can dump`
-	 * from the shell installs a catch-all through the same lowest-free-slot
-	 * allocator, and on M_CAN matching stops at the first match — so once
-	 * this filter exists, `can dump` will show nothing while heartbeats
-	 * arrive perfectly. Use `can filter add <dev> 0x702` instead. The whole
-	 * mechanism is in docs/can-bringup.md. */
+	/* Installed before the ISO-TP bind so it takes the lower filter slot. One
+	 * visible consequence: matching stops at the first match, so once this
+	 * filter exists `can dump` shows nothing while heartbeats arrive perfectly.
+	 * Use `can filter add <dev> 0x702` instead — docs/can-bringup.md. */
 	const struct can_filter hb_filter = {
 		.id = heartbeat_id(kPeerNodeId),
 		.mask = CAN_STD_ID_MASK,
@@ -324,15 +302,10 @@ void rx_thread(void *, void *, void *)
 /* Answer a command the peer did not. The gateway is allowed to *author* an Ack;
  * it still never decodes the peer's.
  *
- * This is the one place the gateway's opacity is compromised, and the
- * compromise is minimal and named: to correlate this Ack the gateway needs the
- * command's sequence, which main.cpp read out of the Command envelope before
- * forwarding it. One header field, never the payload arm.
- *
- * The alternative was to synthesize nothing and let the host time out. That is
- * genuinely simpler and strictly worse: the host cannot distinguish "the peer is
- * gone" from "the gateway dropped it", and would have to invent its own timeout
- * to say anything at all. Recorded in docs/mqtt-design.md. */
+ * The one place its opacity is compromised, minimally and by name: correlating
+ * this Ack needs the command's sequence, which main.cpp read out of the Command
+ * envelope. Synthesizing nothing would leave the host unable to distinguish "the
+ * peer is gone" from "the gateway dropped it". Recorded in docs/mqtt-design.md. */
 void send_synthetic_ack(uint32_t sequence, const char *detail)
 {
 	uint8_t buf[node_Ack_size];
@@ -421,8 +394,9 @@ ZBUS_CHAN_DEFINE(chan_relay_status, struct relay_status,
 		 ZBUS_OBSERVERS(relay_status_listener),
 		 ZBUS_MSG_INIT(0));
 
-/* The one downward channel, and the only relay message on the message-subscriber
- * pool — which is why that pool stays sized for 32 bytes rather than 164. */
+/* The one downward channel, and the only relay message a message subscriber
+ * actually receives — though every channel's message still has to fit the pool.
+ * See the static_asserts in relay.h. */
 ZBUS_CHAN_DEFINE(chan_relay_command, struct relay_down,
 		 nullptr, nullptr,
 		 ZBUS_OBSERVERS(relay_cmd_sub),

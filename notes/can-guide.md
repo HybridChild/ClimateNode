@@ -225,9 +225,13 @@ The mirror-image comparison against the MQTT side is where the two halves of thi
 | What names a message | the topic | the frame ID |
 | Who decides what arrives | broker subscription | hardware acceptance filter |
 | Framing | free — payloads arrive whole | 8 bytes, so ISO-TP or hand-packing |
+| Which type is this | the topic asserts it | one byte at the front of the payload |
+| Connection | CONNECT, keepalive, will | none; there is nothing to connect to |
 | Acknowledgement | PUBACK, per hop, per recipient | one bit, in-frame, anonymous |
 | Liveness | keepalive plus a retained Last Will | a heartbeat and a timeout, in firmware |
 | Priority | none; QoS is about reliability | the ID, by arbitration |
+
+`gateway/src/main.cpp` and `peer-node/src/main.cpp` are that table as two files: the same job — sample, encode, answer commands, report liveness — over transports that agree on almost nothing. Reading them side by side is the shortest route to the whole comparison.
 
 The liveness row is the one to dwell on. MQTT hands you a broker that notices a dead node and publishes on its behalf. CAN hands you nothing — a silent node is indistinguishable from an absent one (§1) — so the gateway has to build it: a heartbeat at a known ID, a timeout, and an explicit publish. Every mechanism MQTT gave away for free has to be re-earned, and re-earning it is how you learn what it was doing.
 

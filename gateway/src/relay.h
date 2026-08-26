@@ -1,56 +1,25 @@
 /* The relay: the gateway's CAN side, and the channels that join it to the MQTT
  * side.
  *
- * Deliberately NOT in app_channels.h. That header's stated contract is that
- * nothing in it touches a transport, and it is the documented reference half of
- * notes/zbus-guide.md; the channels below exist precisely to carry another
- * transport's bytes. What both boards must agree on lives in can_link.h — the
- * address map, the heartbeat frame, the message-type byte. This file is the
- * gateway's half alone, and the peer node includes none of it.
- *
- * ---------------------------------------------------------------------------
- * What the relay is, in one paragraph
- * ---------------------------------------------------------------------------
+ * Deliberately NOT in app_channels.h, whose stated contract is that nothing in
+ * it touches a transport; these channels exist precisely to carry one. What both
+ * boards must agree on is in can_link.h. This file is the gateway's half alone,
+ * and the peer node includes none of it.
  *
  * The gateway is a **transport hop**, not an aggregator. A peer node encodes its
  * own Telemetry and its own Acks, and the gateway moves those bytes between CAN
- * and MQTT without decoding them. It reads exactly one byte of what it carries —
- * can_link.h's message type, which says which topic the payload belongs on — and
- * strips it. Everything after that byte is opaque.
+ * and MQTT without decoding them. It reads exactly one byte -- can_link.h's
+ * message type, which says which topic the payload belongs on -- and strips it.
  *
- * That opacity is a property worth being able to demonstrate: add a field to the
- * peer's schema, reflash only the peer, and the gateway relays the new bytes
- * untouched while an old host still decodes them. It is also why the message
- * types below are byte arrays rather than node_Telemetry — a generated protobuf
- * type in this header would make a schema change rebuild the gateway, which is
- * exactly the coupling the design is claiming not to have.
+ * That opacity is why the message types below are byte arrays rather than
+ * node_Telemetry: a generated protobuf type in this header would make a schema
+ * change on the *peer* rebuild the gateway, which is exactly the coupling the
+ * design claims not to have. Compare app_channels.h, which avoids protobuf types
+ * for the opposite reason -- there a schema change must stop at protocol.cpp.
+ * Same goal from either end: a schema change that does not ripple.
  *
- * Compare app_channels.h, which avoids protobuf types for the *opposite* reason:
- * there, a schema change must stop at protocol.cpp instead of reaching the
- * sensor thread. Same goal — a schema change that does not ripple — approached
- * from either end.
- *
- * ---------------------------------------------------------------------------
- * Why the message types are asymmetric
- * ---------------------------------------------------------------------------
- *
- * relay_up is 164 bytes and relay_down is 32, and that gap is deliberate rather
- * than incidental: it follows from what each direction has to carry. The
- * observer kinds below follow from how each one is consumed, and the two
- * questions are independent -- which is worth stating, because it is tempting
- * to assume the second buys something on the first. It does not.
- *
- * Specifically, the zbus message-subscriber net_buf pool is not per-observer-
- * kind. With CONFIG_ZBUS_MSG_SUBSCRIBER=y, _zbus_vded_exec()
- * (subsys/zbus/zbus.c:244-256) allocates a buffer and net_buf_add_mem()s the
- * whole message into it on EVERY zbus_chan_pub(), before it examines a single
- * observer -- the code is guarded by the Kconfig symbol alone. A listener
- * channel does not skip the copy; it skips only the delivery. So putting the
- * large messages on listeners saves nothing, and
- * CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE must cover relay_up, the
- * largest message on any channel in this application. The static_asserts below
- * hold that invariant, since it spans a Kconfig value and a struct definition
- * and nothing else would catch it breaking.
+ * This header is the decisions half of notes/zbus-guide.md for the relay's four
+ * channels, as app_channels.h is for the sensor's two.
  */
 #ifndef RELAY_H_
 #define RELAY_H_
@@ -99,11 +68,13 @@ struct relay_status {
 
 /* relay_up is the largest message on any channel in this application, and so it
  * is what CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE must be sized to
- * -- despite riding listener channels. The long form of the argument is in
- * shared/app_channels.h; the short form is that every publish copies its whole
- * message into a pool buffer before any observer is consulted, so "only
- * listeners observe it" buys nothing. Getting it wrong is a silent overrun of a
- * fixed-size slot, so it is checked here rather than trusted. */
+ * -- despite riding listener channels, because every publish copies its whole
+ * message into a pool buffer before any observer is consulted. Getting it wrong
+ * is a silent overrun of a fixed-size slot, so it is checked rather than
+ * trusted; docs/can-bringup.md has the mechanism.
+ *
+ * Guarded because the test suites enable CONFIG_ZBUS without the message
+ * subscriber, so the symbol does not exist there. */
 #ifdef CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE
 static_assert(sizeof(struct relay_up) <= CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE,
 	      "raise CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE to sizeof(struct "
@@ -120,30 +91,20 @@ static_assert(sizeof(struct relay_status) <= CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_
  * The channels
  * ---------------------------------------------------------------------------
  *
- * The observer kind follows direction, exactly as it does in app_channels.h and
- * for the same argument:
+ * The observer kind follows direction, exactly as in app_channels.h and for the
+ * same argument -- state latest-wins, events not collapsed:
  *
- *   chan_relay_telemetry  LISTENER.  State, latest-wins. A reading superseded
- *                         while the network thread was busy is a reading the
- *                         host is better off not receiving. Same reasoning as
- *                         chan_telemetry, and as telemetry being QoS 0.
- *
+ *   chan_relay_telemetry  LISTENER.  State; a superseded reading is one the host
+ *                         is better off not receiving.
  *   chan_relay_ack        LISTENER.  An ack is an event, which would normally
- *                         argue for a message subscriber — but at most one ack
- *                         is ever outstanding, because relay.cpp serialises
- *                         command round-trips structurally (isotp_send() blocks
- *                         until the transfer completes, and the ack wait blocks
- *                         after it). Latest-wins cannot collapse a set of one.
- *                         The eventfd counter checks that premise for free:
- *                         more than one signal means the invariant broke, which
- *                         main.cpp logs at ERROR rather than WARN.
- *
+ *                         argue for a message subscriber -- but relay.cpp
+ *                         serialises command round trips structurally, so at
+ *                         most one is ever outstanding and latest-wins cannot
+ *                         collapse a set of one. main.cpp's eventfd counter
+ *                         checks that premise and logs a breach at ERROR.
  *   chan_relay_status     LISTENER.  Liveness is state, and latest-wins is
  *                         precisely what a retained topic means.
- *
- *   chan_relay_command    MESSAGE SUBSCRIBER.  A command has no next one
- *                         coming, so none may be collapsed. Same argument as
- *                         chan_sensor_cmd, and as command/ack being QoS 1.
+ *   chan_relay_command    MESSAGE SUBSCRIBER.  A command has no next one coming.
  *
  * All four are defined in relay.cpp, per the convention that the owning module
  * defines its channels. The three listeners are defined in main.cpp beside
@@ -159,14 +120,13 @@ ZBUS_CHAN_DECLARE(chan_relay_command);
  * ---------------------------------------------------------------------------
  *
  * MQTT hands the gateway liveness for free: the broker notices a dead client and
- * publishes its will. CAN hands it nothing — a silent node and an absent node
- * are the same thing (notes/can-guide.md §1) — so the gateway builds it from a
+ * publishes its will. CAN hands it nothing -- a silent node and an absent node
+ * are the same thing (notes/can-guide.md §1) -- so the gateway builds it from a
  * heartbeat and a clock.
  *
  * The state machine is a pure function so it can be tested without a bus, a
- * clock or a thread. That is the same move sensor_cmd_in_range() makes in
- * app_channels.h: the *rule* is an ordinary function, and the code that has to
- * touch hardware only supplies its arguments.
+ * clock or a thread, the same move sensor_cmd_in_range() makes in
+ * app_channels.h. tests/relay/ is what exercises it.
  */
 enum peer_liveness {
 	/* Before anything is known. Distinct from OFFLINE on purpose: a gateway

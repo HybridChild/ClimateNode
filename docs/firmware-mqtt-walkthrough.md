@@ -63,6 +63,21 @@ The wrinkle here is *when* that init runs. The SCD-40 node carries `zephyr,defer
 
 What the code does when that check *fails* is worth a moment. It does not abort. The sensor thread keeps running and publishes a reading with `SENSOR_READING_ERROR` every period, which crosses the bus and reaches the host as `SENSOR_STATUS_ERROR`. Going silent would be the easier code and the worse behaviour: from the host's side, a node with a dead sensor and a node that fell off the network look identical. An explicit error is a fact the host can act on — and you can still reach the node over MQTT to ask it what is wrong.
 
+### Defining a thread
+
+The other three threads are declared statically, not spawned:
+
+```c
+K_THREAD_DEFINE(sensor_tid, kSensorStackSize, sensor_thread, NULL, NULL, NULL,
+                kSensorPriority, 0, 0);
+```
+
+Nine arguments: the thread-id symbol (a `k_tid_t`, for later `k_thread_*` calls — nothing needs it here), the stack size in bytes reserved statically, the entry function, its three `void *` parameters (unused; these threads take all their input from channels), the priority, thread options, and a start delay in milliseconds.
+
+Two of those repay a second look. **A priority `>= 0` is preemptible**, and the sensor and relay threads sit numerically *above* `main` — a higher number is a lower priority — so the thread with a keepalive deadline wins whenever both are runnable. **Options** is where `K_ESSENTIAL`, `K_FP_REGS` and friends would go; none apply here, and `K_ESSENTIAL` in particular would make a thread's death panic the kernel, which is not wanted for a sensor.
+
+The **start delay** is `0`, meaning the kernel starts the thread during boot; `K_FOREVER` would leave it suspended for an explicit `k_thread_start()`. Note where the SCD-40's power-up wait is *not*: it is inside the thread function (`kSensorPowerUpMs`) rather than expressed as a delay here, so it holds up only that thread and not the boot sweep.
+
 ### Logging
 
 ```c

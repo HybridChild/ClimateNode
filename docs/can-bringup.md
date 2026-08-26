@@ -36,6 +36,10 @@ Command   ◀── ISO-TP 0x7E0 ── TX thread ◀── chan_relay_command  
 
 The two threads are split by **what they block on**: RX only ever reads the link (a timed `isotp_recv()`, so the loop that receives also owns the liveness clock), TX only ever writes it. That is a correctness property, not tidiness — two `isotp_send()` calls on one address from different contexts interleave frames and corrupt both transfers, and confining every write to one thread enforces it without a mutex.
 
+Two threads rather than the peer node's one, because the gateway has the harder problem: it must be receiving whenever the peer transmits *and* able to send a command that arrived from the broker at any moment, and one thread doing both would have to choose between blocking in `isotp_recv()` and blocking in `isotp_send()`. The peer has neither the second obligation nor the RAM for a second stack.
+
+**Two alternatives were rejected, both for the RX side's timeout.** `k_poll()` on the receive context's fifo would let one thread wait on the link and the bus together — but that fifo lives inside `struct isotp_recv_ctx`, which `isotp.h` marks internal, so it would be reaching past a documented boundary. A `k_timer` for the liveness timeout would fire in ISR context, where `zbus_chan_pub()` cannot be called because it takes a mutex, so it would need a work item purely to publish. A timed `isotp_recv()` gives the same result with neither: the loop that receives also owns the clock, which is the pattern `sensor.cpp` already uses.
+
 Decisions worth keeping:
 
 - **The gateway reads exactly one byte of what it carries.** `[0]` is the message type from `can_link.h`; `[1..]` is forwarded verbatim. Which channel a payload lands on decides its topic, and that is the whole of the gateway's knowledge about it. `publish_relayed()` in `main.cpp` is one function long on purpose.

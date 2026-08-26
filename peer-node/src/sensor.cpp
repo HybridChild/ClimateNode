@@ -2,18 +2,14 @@
  * reading to the chan_telemetry zbus channel.
  *
  * The gateway's gateway/src/sensor.cpp is the same file for a different sensor,
- * and the two are deliberately NOT shared. What they have in common -- the
- * channels, the period bounds, the reading struct -- is already shared, in
- * app_channels.h; what differs is every line below, because acquisition is
- * exactly the part that is per-sensor. Merging them would mean one file with two
- * sensors in it and a build-time switch, which is more coupling than either node
- * has reason to carry.
+ * and the two are deliberately NOT shared: what they have in common -- the
+ * channels, the period bounds, the reading struct -- is already in
+ * app_channels.h, and acquisition is exactly the part that is per-sensor.
  *
- * The interesting difference is what each node can measure. The SCD-40 gives
- * CO2, temperature and humidity; the BME280 gives temperature, humidity and
- * pressure. Neither is a subset of the other, and neither has to lie about the
- * gap: struct sensor_reading carries a presence flag per measurement, and those
- * become proto3 `optional` fields at the wire boundary. See notes/protobuf-guide.md §5.
+ * The SCD-40 gives CO2, temperature and humidity; the BME280 temperature,
+ * humidity and pressure. Neither is a subset of the other, and neither has to
+ * lie about the gap -- struct sensor_reading carries a presence flag per
+ * measurement (notes/protobuf-guide.md §5).
  */
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
@@ -72,19 +68,13 @@ void read_bme280(bool device_ok, struct sensor_reading *out)
 	out->humidity_rh = static_cast<float>(sensor_value_to_double(&hum));
 	out->has_humidity_rh = true;
 
-	/* Pressure is converted by hand rather than through
-	 * sensor_value_to_double(), and the reason is this part: the M0 has no
-	 * FPU, so every float operation is a soft-float library call. The
-	 * conversion is exact integer arithmetic instead.
-	 *
-	 * SENSOR_CHAN_PRESS is documented as kilopascals, with val2 the
-	 * micro-kPa fraction (include/zephyr/drivers/sensor.h). So one whole
-	 * pascal is val1 * 1000, and val2 / 1000 is the rest of it, with no
-	 * rounding anywhere -- 1 uKPa is 1 mPa, well below the sensor's own
-	 * accuracy. That exactness is also the argument for `uint32 pressure_pa`
-	 * in the schema instead of a float: nothing in this path ever needed
-	 * one. Atmospheric pressure is roughly 30 000-110 000 Pa, so a uint32 is
-	 * ample and cannot overflow on anything the sensor can report. */
+	/* Converted by hand rather than through sensor_value_to_double(), because
+	 * the M0 has no FPU and every float operation is a soft-float library call;
+	 * this is exact integer arithmetic instead. SENSOR_CHAN_PRESS is
+	 * kilopascals with val2 the micro-kPa fraction, so a whole pascal is
+	 * val1 * 1000 and val2 / 1000 is the rest, with no rounding. That
+	 * exactness is also the argument for `uint32 pressure_pa` in the schema:
+	 * atmospheric pressure is ~30 000-110 000 Pa, which cannot overflow one. */
 	out->pressure_pa = static_cast<uint32_t>(press.val1) * 1000U +
 			   static_cast<uint32_t>(press.val2) / 1000U;
 	out->has_pressure_pa = true;
@@ -194,22 +184,20 @@ bool sensor_cmd_valid_impl(const void *msg, size_t msg_size)
 
 ZBUS_MSG_SUBSCRIBER_DEFINE(sensor_cmd_sub);
 
-/* Sensor -> CAN. A LISTENER, exactly as on the gateway: the channel stores one
- * reading and the newest overwrites the last, which is what "latest wins" means
- * and what telemetry wants. If the CAN link is mid-transfer when a sample lands,
- * the sample is dropped and the sequence gap says so.
+/* Sensor -> CAN. A LISTENER, exactly as on the gateway, and for the same reason:
+ * telemetry is state, so latest wins and a sample dropped mid-transfer shows up
+ * as a sequence gap.
  *
- * The observer differs from the gateway's, though, and the difference is
- * instructive. There it signals an eventfd, because the reader is parked in
- * zsock_poll() on a socket and a bus notification has to become a file
- * descriptor to be waited on alongside it. Here the reader is parked in
- * isotp_recv(), which takes a k_timeout and no descriptor, so a semaphore is
- * the whole bridge. Same channel, same observer kind, different signal -- the
- * transport below is what decides which. */
+ * The *signal* differs, and instructively. The gateway's listener writes an
+ * eventfd because its reader is parked in zsock_poll() and a bus notification
+ * has to become a descriptor to be waited on beside a socket. Here the reader is
+ * parked in isotp_recv(), which takes a k_timeout and no descriptor, so a
+ * semaphore is the whole bridge. The transport below decides which.
+ *
+ * No validator: an ERROR reading is a fact to report, not a value to reject. */
 ZBUS_CHAN_DEFINE(chan_telemetry, struct sensor_reading,
-		 nullptr,                            /* no validator: an ERROR reading is a
-						      * fact to report, not a value to reject */
-		 nullptr,                            /* no user data */
+		 nullptr,
+		 nullptr,
 		 ZBUS_OBSERVERS(telemetry_listener), /* defined in main.cpp */
 		 ZBUS_MSG_INIT(0));
 

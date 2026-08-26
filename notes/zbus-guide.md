@@ -78,6 +78,21 @@ ZBUS_CHAN_DEFINE(chan_telemetry, struct sensor_reading,
 
 Note **exactly one message**. A channel is not a queue. Publishing overwrites. This is the single most important property to internalise, and §5 is about its consequences.
 
+The six arguments, since only two of them are self-evident:
+
+| # | Argument | What it is |
+|---|---|---|
+| 1 | name | The symbol. `ZBUS_CHAN_DECLARE` names this same one from another translation unit, which is why the definition must sit at global scope rather than inside an anonymous namespace — see [`language-cpp.md`](language-cpp.md) §6. |
+| 2 | type | The message type. The channel stores exactly one instance, statically; publishing *copies* into it, so there is no queue and no allocation. |
+| 3 | validator | `bool (*)(const void *msg, size_t msg_size)`, called inside `zbus_chan_pub()` before the message is stored. `NULL` for none. §6. |
+| 4 | user data | A `void *` carried on the channel that zbus never reads. For observers shared between channels that need to tell which one they were invoked for. |
+| 5 | observers | Who is notified, in the order listed — **that order is the notification priority**. |
+| 6 | init value | The channel's contents before anything is published. `ZBUS_MSG_INIT`'s own arguments are ordinary positional initialisers for the message struct, not a zbus concept. |
+
+Argument 6 is worth one more sentence, because it invites a wrong reading: it is only ever the channel's *initial contents*. Defining a channel notifies nobody, so no observer ever receives this value. Where it names something a thread also has its own copy of — a default sample period, say — matching the two is a courtesy to whoever reads one without the other, not a mechanism.
+
+`ZBUS_MSG_SUBSCRIBER_DEFINE(name)` takes only the symbol; it expands to a `k_fifo`, the observer struct, and an enabled flag, defaulting to enabled (`ZBUS_MSG_SUBSCRIBER_DEFINE_WITH_ENABLE` takes that explicitly). The private copies it receives come from a fixed `net_buf` pool sized in `prj.conf` by `CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_POOL_SIZE` and `_STATIC_DATA_SIZE`, never the heap — the same no-allocator policy as nanopb, and a pool whose sizing has a sharp edge covered in §9.
+
 **Publishing** — `zbus_chan_pub(&chan, &msg, timeout)` takes the channel lock, copies the message in, runs every observer, and releases. It is a *copy*, so the publisher's local variable can go out of scope immediately.
 
 **Observer** — something registered to be told when a channel changes. zbus offers three kinds, and choosing between them is the real design decision:
