@@ -34,7 +34,7 @@ Use the wrappers; they source the workspace venv, export `ZEPHYR_BASE`, and pass
 ./scripts/console.sh      # serial console @115200; quit with Ctrl-A then K
 ```
 
-**There are two apps now**, and all three take `-a <app>` (or `APP=`), defaulting to `gateway`:
+**There are two apps**, and all three scripts take `-a <app>` (or `APP=`), defaulting to `gateway`:
 
 ```sh
 ./scripts/build.sh   -a peer-node -p    # the F072RB peer node
@@ -50,7 +50,7 @@ The board follows from the app rather than being something to remember — `gate
 ./scripts/build.sh -a peer-node --debug -p    # trimmed shell + the `can` commands, 83 % RAM
 ```
 
-**Two boards attached at once is the normal case now**, and it breaks the two scripts that have to pick one. `./scripts/probe.sh` is what they ask:
+**Two boards attached at once is the normal case**, and it breaks the two scripts that have to pick one. `./scripts/probe.sh` is what they ask:
 
 ```
 $ ./scripts/probe.sh

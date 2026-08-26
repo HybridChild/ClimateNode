@@ -248,7 +248,7 @@ The board's `net` shell (enabled by `CONFIG_NET_SHELL=y`) exposes the exact obje
 uart:~$ net iface
 ```
 
-Read the output against §3's diagram: the interface is `Ethernet`, which names its **L2**; it carries the **IPv4 address** `net_config` assigned in step (4); it shows the derived **MAC** (the driver, step 1); and its state (`up`/`dormant`) is the **carrier** of step (2). One command, the whole vertical slice.
+Read the output against §3's diagram: the interface is `Ethernet`, which names its **L2**; it carries the **IPv4 address** `net_config` assigned in step (3); it shows the derived **MAC** (the driver, step 1); and its state (`up`/`dormant`) is the **carrier** of step (2). One command, the whole vertical slice.
 
 **Proves:** the `net_if` is real and singular, and everything below the socket the app never touched is nonetheless present and configured.
 

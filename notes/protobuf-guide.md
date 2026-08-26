@@ -704,7 +704,7 @@ A Protobuf message is **fields back to back, each preceded by a tag** packing a 
 ## 14. Where to go next
 
 - **[`proto/node.proto`](../proto/node.proto)** — the reference half of this guide. The schema decisions and their rationale live inline in its comments.
-- **The schema-versioning exercise**, the one thing this repo still has outstanding: add a field, regenerate both sides, and prove an old reader still parses a new message and vice versa. §7 says it is safe; doing it is how you believe it.
+- **`tests/protocol/`'s two evolution cases** — `test_old_reader_decodes_new_telemetry` and `test_new_reader_decodes_old_telemetry` run the previous schema against the current one in both directions, so §7's promise is an assertion rather than a claim. §12's Exercise D reads them; doing the same thing by hand on the wire — add a field, regenerate both sides, reflash only one end — is how you come to believe it.
 - **[`firmware-mqtt-walkthrough.md`](../docs/firmware-mqtt-walkthrough.md)** — the surrounding MQTT client, and where `encode_telemetry()` and `decode_command()` are called from in the event loop.
 - **[`testing-guide.md`](testing-guide.md)** — `tests/protocol/` turns much of this guide into assertions: that a warming-up reading is shorter on the wire (§5), and that `hi` decodes into a legal `Command` while `garbage` does not (§4, §8).
 - **[`zbus-guide.md`](zbus-guide.md)** — the internal channel a reading crosses *before* it reaches the encoder, and why the wire type deliberately stops there.

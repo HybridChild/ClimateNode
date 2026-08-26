@@ -319,7 +319,7 @@ The `retain` flag makes one exception. The broker keeps **the most recent retain
 
 It is a **last-known-value cache**, not a history — exactly one message per topic, the newest. Publishing a retained *empty* payload clears it.
 
-Why it matters here: a harness that starts up mid-flight gets the last reading instantly instead of waiting up to 5 s for the next sample.
+Why it matters here: `status` is retained, so a harness that starts up mid-flight learns whether the node is alive without waiting for it to say anything. Telemetry deliberately is **not** — a stored reading describes air that no longer exists, and hands a late subscriber no way to tell how stale it is. See *Telemetry is not retained* in [`mqtt-design.md`](../docs/mqtt-design.md).
 
 ### Last Will and Testament: speaking after you die
 
@@ -547,7 +547,7 @@ This time the subscriber prints `node/1/status online` **immediately on connecti
 mosquitto_pub -h 192.168.10.1 -t 'node/1/status' -m '' -r
 ```
 
-**Proves:** retain is a **last-known-value cache** (exactly one message per topic, the newest), not a history. It's what lets a harness starting up mid-flight know the node's state instantly instead of waiting for the next 5 s sample.
+**Proves:** retain is a **last-known-value cache** (exactly one message per topic, the newest), not a history. It's what lets a harness starting up mid-flight learn the node's state instantly — which is why `status` carries the flag here and telemetry does not.
 
 ### Exercise 4 — QoS on the wire
 
@@ -635,7 +635,7 @@ host/.venv/bin/python host/monitor.py
 
 ```
 14:02:11  node/1/status        [retained] online
-14:02:16  node/1/telemetry     seq=1042  co2=  812 ppm  temp=22.41 C  rh=41.3 %  up=  5210.4s  SENSOR_STATUS_OK  (schema v1)
+14:02:16  node/1/telemetry     seq=1042  co2=  812 ppm  temp=22.41 C  rh=41.3 %  p=    -- Pa  up=  5210.4s  SENSOR_STATUS_OK  (schema v1)
 ```
 
 Same bytes, same broker, same topics — the only thing added is Protobuf, decoding a payload MQTT carried verbatim and never inspected.
@@ -668,7 +668,7 @@ Ethernet moves frames across one cable; IP addresses machines; TCP turns that in
 ## 11. Where to go next
 
 - **[`mqtt-design.md`](../docs/mqtt-design.md)** — the reference half of this guide: the topic table, the QoS decision per topic and its rationale, the broker config, and the packet-filter procedure for testing the *node's* will rather than a CLI client's.
-- **[`firmware-mqtt-walkthrough.md`](../docs/firmware-mqtt-walkthrough.md)** — the same concepts as running code: the connect/keepalive/reconnect state machine, the single `poll()` with its two deadlines, and where each MQTT event is handled.
+- **[`firmware-mqtt-walkthrough.md`](../docs/firmware-mqtt-walkthrough.md)** — the same concepts as running code: the connect/keepalive/reconnect state machine, the single `poll()` that waits on both sockets and the whole bus at once, and where each MQTT event is handled.
 - **[`protobuf-guide.md`](protobuf-guide.md)** — the layer above, and the one thing `mosquitto_sub` could not show you in Exercise 6.
 - **[`zbus-guide.md`](zbus-guide.md)** — the same publish/subscribe idea applied *inside* the chip, which is the other decoupling boundary in §8's diagram.
 - **The MQTT 3.1.1 specification** — short, readable, and the authority for anything this guide simplified. Sections 3.1 (`CONNECT`) and 3.3 (`PUBLISH`) cover most of what the firmware touches.

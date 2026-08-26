@@ -323,7 +323,7 @@ uart:~$ net ping 192.168.10.1
 uart:~$ help
 ```
 
-The list includes `kernel` and `device` (free with `CONFIG_SHELL`), `net` (from `CONFIG_NET_SHELL`), and `sensor` (from `CONFIG_SENSOR_SHELL`) — four roots, registered by four different pieces of code you never call directly.
+The list includes `kernel` and `device` (free with `CONFIG_SHELL`), `net` (from `CONFIG_NET_SHELL`), `sensor` (from `CONFIG_SENSOR_SHELL`) and `can` (from `CONFIG_CAN_SHELL`) — five roots, registered by five different pieces of code you never call directly.
 
 **Proves:** registration is a link-time act (§3). Each subsystem dropped its root into the same `shell_root_cmds` section just by being compiled in; the `help` list is that section read back.
 

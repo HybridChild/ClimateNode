@@ -188,7 +188,7 @@ This gateway is the case where the answer is yes, and the evidence is what a CAN
 
 ## 9. What this project wires up
 
-Everything above is general. Here is the whole of the gateway's bus: six channels, defined across four translation units, with three threads publishing to them. (The peer node runs a cut-down version of the same idea — one channel, `chan_telemetry`, from its sensor thread to its CAN session — off the same `shared/app_channels.h`.)
+Everything above is general. Here is the whole of the gateway's bus: six channels, defined across two translation units, with three threads publishing to them. (The peer node runs a cut-down version of the same idea — one channel, `chan_telemetry`, from its sensor thread to its CAN session — off the same `shared/app_channels.h`.)
 
 ```
    sensor.cpp                  main.cpp                    relay.cpp

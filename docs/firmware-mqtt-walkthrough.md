@@ -419,7 +419,7 @@ Every path that gives up on a connection goes through this one function, and `re
 
 Exponential backoff without the reset is a classic bug: after a handful of unrelated disconnects the delay is pinned at maximum, and a node that recovers instantly still waits 30 s to notice.
 
-**Note what the backoff is not: a sleep.** The old version called `k_msleep(backoff)`, which was fine with one connection and unacceptable with two — a 30-second sleep waiting for one broker connection would have stopped serving the other. `retry_at` is a deadline instead, `next_deadline_ms()` folds it in with the keepalives, and the loop keeps running throughout. Turning a sleep into a deadline is most of what "make it a state machine" actually means.
+**Note what the backoff is not: a sleep.** `k_msleep(backoff)` would be fine with one connection and unacceptable with two — a 30-second sleep waiting for one broker connection would stop serving the other. `retry_at` is a deadline instead, `next_deadline_ms()` folds it in with the keepalives, and the loop keeps running throughout. Turning a sleep into a deadline is most of what "make it a state machine" actually means.
 
 ## 10. C APIs from C++
 
@@ -510,7 +510,7 @@ Note also that `chan_sensor_cmd` uses a **message subscriber**, not a listener: 
 
 Two details are worth more than the table.
 
-**Three eventfds, not one.** A shared descriptor would say only "something happened", and because `zbus_chan_read()` returns the channel's current value whether or not it is fresh, the reader would have to read all three on every wake — and would republish stale telemetry as though it were new. The descriptor *is* the identity of the event, and that is why growing the poll set is the cheap way to add a producer.
+**Three eventfds, not one**, and for the same reason the sensor's exists — [`zbus-guide.md`](../notes/zbus-guide.md) §9 makes that argument once, for all four. What it buys here is worth naming: the descriptor *is* the identity of the event, which is why growing the poll set is the cheap way to add a producer.
 
 **The ack channel is a listener despite an ack being an event**, which contradicts the rule the other three follow. It is allowed because the relay serialises command round trips *structurally*: `isotp_send()` blocks until the whole segmented transfer completes, and the TX thread then blocks waiting for the ack, so at most one is ever outstanding and latest-wins cannot collapse a set of one. That is a premise rather than a proof, so the eventfd counter checks it for free — `publish_relayed()` logs a coalesced ack at **ERROR** where it logs coalesced telemetry at WARN. A design that depends on an invariant should say out loud when the invariant breaks.
 
@@ -522,6 +522,6 @@ Two details are worth more than the table.
 - **No persistence.** The sample period survives reconnects but not reboots; a `SetInterval` is lost on power cycle. Zephyr's settings subsystem is the usual answer.
 - **Single-slot command dedupe.** `last_command_sequence`, in `commands.cpp`, remembers only the most recent command, so back-to-back duplicates are caught but an interleaved `A, B, A` is not. A deliberate simplification for a node with one command source, and one the tests pin in both directions (`tests/commands/`).
 - **No backpressure from the bus.** The sensor thread publishes regardless of whether the MQTT thread is keeping up, and never learns that a reading was discarded — only the reader sees the coalesce count. Fine for latest-wins telemetry; wrong for anything that must not be lost.
-- **No per-session command routing.** `handle_incoming_publish()` decides which node a command is for by comparing the *topic string*, not by which session it arrived on. Those agree today, and nothing enforces it. Keying on the session would be marginally tighter and would lose the property that the topic is the contract (notes/protobuf-guide.md §4).
+- **No per-session command routing.** `handle_incoming_publish()` decides which node a command is for by comparing the *topic string*, not by which session it arrived on. Those agree today, and nothing enforces it. Keying on the session would be marginally tighter and would lose the property that the topic is the contract ([`protobuf-guide.md`](../notes/protobuf-guide.md) §4).
 - **The two sessions share one broker address, one keepalive and one backoff policy.** They are two identities to the broker, not two configurations. A real gateway speaking for nodes on different brokers would need those per session too — the struct is already the right shape for it.
 - **The backoff can outlast the outage.** A broker that returns after 2 s may still wait out a 30 s delay. That is the intended trade — patience over hammering — but it means "broker downtime" and "node downtime" are not the same number. See *Reconnect latency* in [`mqtt-design.md`](mqtt-design.md).

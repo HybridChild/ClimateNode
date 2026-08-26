@@ -450,7 +450,7 @@ echo 'CONFIG_ASSERT=y' >> gateway/prj.conf
 ./scripts/build.sh
 ```
 
-The build re-runs CMake and Kconfig, regenerates `.config` and `autoconf.h`, and then rebuilds essentially the entire tree — **hundreds of steps**, against eleven in Exercise 3. Remove the line and rebuild to restore.
+The build re-runs CMake and Kconfig, regenerates `.config` and `autoconf.h`, and then rebuilds essentially the entire tree — **hundreds of steps**, against twelve in Exercise 3. Remove the line and rebuild to restore.
 
 The reason is §5.3's second route: `autoconf.h` is force-included into *every* translation unit via `-imacros`, so changing one symbol invalidates all of them. Pick your symbol deliberately when trying this — many are already at the value you would set. Adding `CONFIG_THREAD_NAME=y`, for instance, changes nothing at all, because the board's defconfig already turned it on; the build correctly does almost nothing, which proves the same point from the other side.
 

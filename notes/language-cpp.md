@@ -239,7 +239,7 @@ Four exercises, all on the Mac with no board attached. Three of them work by **b
 ./scripts/build.sh -p 2>&1 | grep -E 'CXX|cpp/minimal|node\.pb\.c'
 ```
 
-You get the nine lines quoted in §2 and no more. Count them against the 335 total, then look at *which* files they are: two from `zephyr/lib/cpp/minimal`, four of your own, and one C object — `node.pb.c` — compiled as C inside the same `app` target as the C++ files.
+You get the ten lines quoted in §2 and no more. Count them against the 343 total, then look at *which* files they are: two from `zephyr/lib/cpp/minimal`, five of your own, and one C object — `node.pb.c` — compiled as C inside the same `app` target as the C++ files.
 
 **Proves:** the runtime you depend on is two translation units, your code is the only C++ in the application, and language is chosen per file rather than per project (§10).
 

@@ -77,9 +77,9 @@ scripts/console.sh      # serial console @115200; quit with Ctrl-A then K
                         # add -a gateway to either when the F072RB peer is also plugged in
 ```
 
-Both scripts activate the workspace venv and export `ZEPHYR_BASE` themselves, so no manual `source` is needed. `build.sh` runs `west build` from inside `~/zephyr-workspace` (so west can enumerate modules) with `-s firmware -d gateway/build`.
+Both scripts activate the workspace venv and export `ZEPHYR_BASE` themselves, so no manual `source` is needed. `build.sh` runs `west build` from inside `~/zephyr-workspace` (so west can enumerate modules) with `-s gateway -d gateway/build`.
 
-Footprint of the whole app (sensor + networking + MQTT + protobuf + zbus + shell), as the build's own memory report gives it: **FLASH 219 252 B (10.45 % of 2 MB)**, **RAM 52 000 B (9.92 % of 512 KB)**, plus 16 KB in SRAM3. Read it off the end of a `scripts/build.sh` run rather than trusting this number — it moves with every Kconfig change.
+Footprint of the whole gateway image (sensor + networking + MQTT + protobuf + zbus + shell + the CAN relay), as the build's own memory report gives it: **FLASH 248 352 B (11.84 % of 2 MB)**, **RAM 62 012 B (11.83 % of 512 KB)**, plus 16 KB in SRAM3. Read it off the end of a `scripts/build.sh` run rather than trusting this number — it moves with every Kconfig change.
 
 ## Bring-up checks
 

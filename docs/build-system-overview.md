@@ -94,8 +94,8 @@ All under `gateway/build/zephyr/` unless noted.
 | `zephyr.dts` | `gen_edt.py` (debug dump) | **humans** (debug: "did my overlay merge?") + `dtc` lint | `scd40@62` at line 669, back-refs `overlay:5` |
 | `include/generated/zephyr/devicetree_generated.h` | `gen_defines.py` ← `edt.pickle` | `#include <devicetree.h>` → all `DT_*` macros | `_scd40_62_BUS` at 25907; `_ADDRESS 0x62` at 25912 |
 | `build/Kconfig/Kconfig.dts` ⭐ | `gen_driver_kconfig_dts.py` ← bindings | Kconfig parser (as input) | declares `DT_HAS_SENSIRION_SCD40_ENABLED` |
-| `.config` | Kconfig ← `prj.conf`+defconfig+tree Kconfig+`Kconfig.dts` | **CMake** (which files to compile) | `CONFIG_SCD4X=y` at 1241; `CONFIG_DT_HAS_SENSIRION_SCD40_ENABLED=y` at 20 |
-| `include/generated/zephyr/autoconf.h` | Kconfig ← `.config` | **every `.c`** via `-imacros` | `#define CONFIG_SCD4X 1` at 421 |
+| `.config` | Kconfig ← `prj.conf`+defconfig+tree Kconfig+`Kconfig.dts` | **CMake** (which files to compile) | `CONFIG_SCD4X=y` at 1268; `CONFIG_DT_HAS_SENSIRION_SCD40_ENABLED=y` at 20 |
+| `include/generated/zephyr/autoconf.h` | Kconfig ← `.config` | **every `.c`** via `-imacros` | `#define CONFIG_SCD4X 1` at 433 |
 | `misc/generated/configs.c` | Kconfig | debugger symbol table | `GEN_ABSOLUTE_SYM_KCONFIG(CONFIG_DT_HAS_SENSIRION_SCD40_ENABLED, 1)` |
 | `../node.pb.c` / `../node.pb.h` | nanopb generator ← `proto/node.proto` + `node.options` | `#include <node.pb.h>` in both `.cpp` files | `#define node_Telemetry_size 42` |
 
@@ -112,8 +112,8 @@ The last row is the one generator this *app* adds; everything above it is Zephyr
 | ↓ gen_defines | `devicetree_generated.h:25907,25912` | `_BUS → i2c@40005400`, `_ADDRESS 0x62` |
 | ↓ gen_driver_kconfig | `build/Kconfig/Kconfig.dts` | declares `DT_HAS_SENSIRION_SCD40_ENABLED` (value from `edt.pickle`) |
 | ↓ kconfig | `zephyr/drivers/sensor/sensirion/scd4x/Kconfig` | `config SCD4X … depends on DT_HAS_SENSIRION_SCD40_ENABLED; select I2C,CRC` |
-| ↓ kconfig | `build/zephyr/.config:1036` | `CONFIG_SCD4X=y` |
-| ↓ kconfig | `autoconf.h:328` | `#define CONFIG_SCD4X 1` |
+| ↓ kconfig | `build/zephyr/.config:1268` | `CONFIG_SCD4X=y` |
+| ↓ kconfig | `autoconf.h:433` | `#define CONFIG_SCD4X 1` |
 | ↓ CMake | `scd4x/CMakeLists.txt` | compiles `scd4x.c` **because** `CONFIG_SCD4X` |
 | ↓ driver | `scd4x.c:902-903` | `DT_DRV_COMPAT sensirion_scd40` + `DT_INST_FOREACH_STATUS_OKAY` → 1 instance |
 | ↓ driver | `scd4x.c:894` | `.bus = I2C_DT_SPEC_INST_GET(0)` ← reads the `_BUS`/`_ADDRESS` macros above |
