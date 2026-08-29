@@ -42,11 +42,11 @@ Everything below the socket needs the bench: build → flash → observe, via th
 
 ## Sharp edges
 
-Four things that are silent when violated. Each has a fuller treatment where it is linked.
+Four things that are silent when violated. The mechanism behind each, what enforces it, and the page that treats it fully are in [`docs/invariants.md`](docs/invariants.md), which also carries the contracts these four are the operational tip of — read it before touching the CAN link, the zbus channels, or the schema.
 
-- **`can_send()` with a NULL callback blocks with no bound, and the timeout argument does not change that.** It waits `K_FOREVER` on completion (`drivers/can/can_common.c:69`); the `k_timeout_t` bounds only the wait for a free TX mailbox. The bxCAN driver clears `NART` and sets `ABOM`, so an unacknowledged frame is retried forever and never permanently fails — a lone transmitter blocks for as long as the link is down, taking its whole thread with it. **Pass a callback to `can_send()` in anything that must stay responsive**, as `peer-node/src/main.cpp` does. `docs/can-bringup.md` *Driver behaviour worth knowing*.
-- **ISO-TP flow control needs identifiers of its own.** Zephyr installs one CAN filter per context and real controllers fire only the lowest match, so two contexts must never share an identifier — the loser is starved with no diagnostic. `tests/heartbeat/`'s `test_no_node_listens_to_one_identifier_twice` guards it, deliberately using no controller: an emulated one is all-match and accepts a colliding map. `docs/can-bringup.md` *Flow control needs its own identifiers*.
-- **The zbus pool is sized by every channel, not every message subscriber.** With `CONFIG_ZBUS_MSG_SUBSCRIBER=y`, **every** `zbus_chan_pub()` copies its whole message into a pool buffer before any observer is consulted, listener channels included. `CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE` must therefore cover the largest message on *any* channel; undersizing it corrupts memory with no diagnostic. `static_assert`s in `shared/app_channels.h` and `gateway/src/relay.h` pin it — **adding a channel or growing a message means checking them.** `docs/zbus-design.md` *The pool is sized by every channel*. Neither app sets `CONFIG_ASSERT=y`, which is why zbus's own check is compiled out; worth enabling for a bench build.
+- **`can_send()` with a NULL callback blocks with no bound**, and the timeout argument does not change that. Pass a callback in anything that must stay responsive, as `peer-node/src/main.cpp` does.
+- **ISO-TP flow control needs identifiers of its own.** Two contexts on one node must never share an identifier; the loser is starved with no diagnostic.
+- **The zbus pool is sized by every channel, not every message subscriber.** Adding a channel or growing a message means re-checking the `static_assert`s in `shared/app_channels.h` and `gateway/src/relay.h`.
 - **The SCD-40 republishes on a fast poll.** Read *Accepted limitation* in `docs/sensor-bringup.md` before touching `SAMPLE_PERIOD_MIN_MS` or believing a sub-5 s cadence.
 
 ## Documentation

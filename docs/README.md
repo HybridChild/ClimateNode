@@ -22,7 +22,8 @@ One guide pairs with a **source file** instead of a page here, because there the
 
 [`zbus-design.md`](zbus-design.md) is deliberately only *part* of its topic's reference. The rationale for each channel stays in the header comments in [`app_channels.h`](../shared/app_channels.h) and [`relay.h`](../gateway/src/relay.h), next to the declarations an edit would touch; the page carries what spans both headers and neither can state alone — the inventory, the message sizes, and the pool constraint that is a property of the whole image rather than of any one channel.
 
-## The two without a guide
+## The three without a guide
 
+- [`invariants.md`](invariants.md) — the contracts that span components: the CAN identifier rules, the zbus pool sizing, the relay's payload bound, the schema's single source of truth, the sensor's poll floor. Every one of them is silent when violated. It has no guide half because it has no single topic — each entry links to the reference and guide that own it, and the page exists so they can be re-read together before a change.
 - [`toolchain.md`](toolchain.md) — the two toolchains (Mac firmware, Pi host) and the build/flash/console workflow. Pure setup; there is no concept to teach, so it has no guide half.
 - [`firmware-mqtt-walkthrough.md`](firmware-mqtt-walkthrough.md) — a guided reading of *this repo's* `gateway/src/main.cpp`. It teaches, so by kind it looks like a `../notes/` guide — but it tracks one file's code rather than a portable concept, so it lives here with the references. It is the one page that connects most of these concepts in a single source file; a good place to land once the guides have done their work.
