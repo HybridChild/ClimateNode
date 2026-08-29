@@ -13,7 +13,7 @@ This project builds as a **freestanding Zephyr application** against a **shared 
 ├── bootloader/mcuboot     v2.4.0
 └── tools/                 edtt, net-tools
 ~/zephyr-sdk-1.0.1/        Zephyr SDK, ARM-only (arm-zephyr-eabi), CMake-registered
-EthernetProtobufZephyr/    this repo — pure source (proto/ shared/ gateway/ peer-node/ host/), builds vs. above
+ClimateNode/               this repo — pure source (proto/ shared/ gateway/ peer-node/ host/), builds vs. above
 ```
 
 The workspace is a shared global install, **pinned to Zephyr v4.4.1.** If this project ever needs a different version, give it its own workspace (escape hatch — not needed today; v4.4.1 already ships everything below).

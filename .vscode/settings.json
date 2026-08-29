@@ -68,7 +68,7 @@
   // ${workspaceFolder}. The file is gitignored like the rest of .vscode/, so
   // it stays per-machine -- recreate it (or press Save on the DeviceTree
   // context view) on another checkout.
-  "devicetree.ctxFile": "/Users/esbendn/Engineering/Projects/EthernetProtobufZephyr/.vscode/devicetree.json",
+  "devicetree.ctxFile": "/Users/esbendn/Engineering/Projects/ClimateNode/.vscode/devicetree.json",
 
   // Kconfig needs the same two pointers, for the same reason.
   "kconfig.zephyr.base": "/Users/esbendn/zephyr-workspace/zephyr",
