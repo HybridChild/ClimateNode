@@ -2,126 +2,151 @@
 
 **Two Zephyr sensor nodes that publish Protobuf telemetry over MQTT to a host PC — one on Ethernet, one reached over CAN through the first acting as a gateway.**
 
-**Goal:** rehearse the *core daily interface* of production sensor firmware — Protobuf messages published over **MQTT 3.1.1 / TCP** between a Zephyr firmware node and a host PC — and get fluent in the parts that bite in production (MQTT client lifecycle, schema versioning, nanopb on a constrained target, and zbus as the internal bus feeding the publisher). The stack is fixed up front: **MQTT 3.1.1 over TCP, nanopb on firmware, zbus internally.**
+A practice project rather than a shipping product: two Zephyr C++17 applications and a Python host harness, working end to end on real hardware. One board sits on Ethernet and holds the connection to an MQTT broker. The other has no network of its own and is reached only over a CAN bus, with the first relaying on its behalf. Both read a live sensor over I²C, so the telemetry is measured rather than counted.
 
-This is a **practice project**, not a shipping product. The aim is learning the patterns.
+## System at a glance
 
-To make the telemetry *real* (rather than a hard-coded counter), each node reads a live sensor over I²C — an Adafruit SCD-40 CO₂/temperature/humidity breakout on the gateway, a BME280 on the peer — and publishes those readings over MQTT. That mirrors the shape of a production deployment: sensor-bearing devices marshalling readings into Protobuf, one of them also carrying traffic for a node that has no network of its own.
+```mermaid
+flowchart LR
+    scd["SCD-40<br/>CO₂ · temp · RH"]
+    bme["BME280<br/>temp · RH · pressure"]
 
-## Hardware
-- **Board:** ST Nucleo-H753ZI (STM32H753ZI, Cortex-M7) — an H7-class part of the kind commonly used in production sensor nodes.
-- **Ethernet:** on-board RJ45 + LAN8742 PHY (Zephyr board target `nucleo_h753zi`, net-enabled).
-- **Sensor (data source):** Adafruit SCD-40 True CO₂ / Temperature / Humidity breakout ([product 5187](https://www.adafruit.com/product/5187)).
-  - Sensirion **SCD40** photoacoustic NDIR sensor on **I²C, address `0x62`**, on a STEMMA QT / Qwiic board.
-  - Runs at **3.3 V** (on-board regulator + level shifters; I²C logic works directly with the Nucleo's 3.3 V).
-  - CO₂ **400–2000 ppm**, accuracy **±(50 ppm + 5 % of reading)**, plus on-die temperature and humidity.
-  - **Periodic measurement mode** produces a fresh sample roughly **every 5 s** — a natural, self-clocking telemetry cadence.
-- **Wiring:** SCD-40 → Nucleo **I2C1** via a STEMMA QT-to-jumper cable: `SCL` → **PB8**, `SDA` → **PB9**, plus `3V3` and `GND` (4 wires). PB8/PB9 are AF4 `I2C1_SCL`/`I2C1_SDA`, broken out on the Arduino header as D15/D14. No pull-up resistors needed — the breakout has them.
-- **Peer node:** ST Nucleo-F072RB (STM32F072RB, Cortex-M0) with an Adafruit BME280 — a *second* node with its own MQTT identity, reached over CAN through the H753ZI acting as a gateway. 128 KB flash, **16 KB RAM**, no FPU, and classic CAN 2.0B only (bxCAN, no CAN-FD), which is the whole point: eight payload bytes per frame is what forces real segmentation.
-  - **BME280** on **I²C1, address `0x77`** (`SCL` → **PB8**, `SDA` → **PB9** — the same pins as the gateway's SCD-40, on the other board). Temperature, humidity and **pressure**; no CO₂, which is what makes the schema's `optional` measurements earn their keep.
-  - **CAN** on **PA11 (RX) / PA12 (TX)**, ST morpho CN10-14 / CN10-12, at **500 kbit/s** — the same rate the H753ZI's `fdcan1` on PD0/PD1 is set to. Both rates live in devicetree overlays, because a bitrate describes the wire rather than either app.
-  - **CAN transceivers:** two 3.3 V SN65HVD230 breakouts, one per board. They are not optional and not skippable — the MCU peripheral exposes only digital `TX`/`RX`, and the transceiver supplies both the differential pair and the wired-AND behaviour that arbitration and in-frame acknowledgement depend on. Three wires between them: **CANH, CANL and GND**, with 120 Ω at each end. See [`notes/can-guide.md`](notes/can-guide.md) §2, and the wiring table in [`docs/can-bringup.md`](docs/can-bringup.md) *Bring-up checks* step 6.
-- **Host:** Raspberry Pi 5 (Linux) — native Gigabit Ethernet, wired **direct-cable** to the Nucleo (no switch). Static IPs on both ends in one subnet: Pi `192.168.10.1` / Nucleo `192.168.10.2`, mask `255.255.255.0`, no gateway. On the firmware side this is configured entirely in `gateway/prj.conf` via `CONFIG_NET_CONFIG_SETTINGS` — `net_config` applies it at boot, so **no application code touches interface bring-up**. The Nucleo's LAN8742 PHY has Auto-MDIX, so a normal straight-through cable works. Runs a **Mosquitto MQTT broker** plus the Python test harness (a paho-mqtt client that subscribes to telemetry and publishes commands); can stay permanently wired as a dedicated bench host.
+    subgraph pi["Raspberry Pi 5 — host"]
+        harness["monitor.py / command.py<br/>paho-mqtt + protobuf"]
+        broker["Mosquitto broker<br/>192.168.10.1:1883"]
+        harness <--> broker
+    end
+
+    subgraph gateway["Nucleo-H753ZI — gateway, node 1"]
+        gsensor["sensor.cpp<br/>SCD-40 thread"]
+        gbus(("zbus<br/>six channels"))
+        gmain["main.cpp<br/>two MQTT sessions,<br/>one poll loop"]
+        grelay["relay.cpp<br/>CAN tx + rx threads"]
+        gsensor <--> gbus
+        gbus <--> gmain
+        gbus <--> grelay
+    end
+
+    subgraph peer["Nucleo-F072RB — peer node, node 2"]
+        psensor["sensor.cpp<br/>BME280 thread"]
+        pmain["main.cpp<br/>CAN session"]
+        psensor --> pmain
+    end
+
+    scd -->|"I²C1 · 0x62"| gsensor
+    bme -->|"I²C1 · 0x77"| psensor
+    broker <-->|"MQTT 3.1.1 / TCP<br/>node/1/* · node/2/*"| gmain
+    grelay <-->|"CAN 2.0B · 500 kbit/s<br/>1 Hz heartbeat + ISO-TP"| pmain
+```
+
+Two paths run through it. **Upward**, a reading crosses I²C into its node's sampling thread, is encoded once into Protobuf, and lands on the broker — the gateway's own on `node/1/…`, the peer's on `node/2/…` after a ride over ISO-TP that the gateway forwards without ever decoding it. **Downward**, a command published on either topic comes back as an `Ack` by the same route reversed. Inside the gateway nothing is point to point: every arrow ends on zbus, which is what lets a single `poll()` wait on two sockets and the whole bus at once.
 
 ## What it does
-Two Zephyr applications, both written in **C++ (C++17)** to match how production firmware of this kind is written; see [`notes/language-cpp.md`](notes/language-cpp.md). Everything below describes the gateway on the H753ZI unless it says otherwise; the peer node is the section after it.
 
-The gateway runs **four threads** across **five translation units**, one responsibility each: `sensor.cpp` (acquisition), `protocol.cpp` (the wire format), `commands.cpp` (command semantics), `relay.cpp` (the CAN side, two threads) and `main.cpp` (the MQTT sessions). They meet on the zbus channels declared in [`shared/app_channels.h`](shared/app_channels.h) and [`gateway/src/relay.h`](gateway/src/relay.h). `main.cpp` is walked through line by line in [`docs/firmware-mqtt-walkthrough.md`](docs/firmware-mqtt-walkthrough.md); `protocol.cpp` and `commands.cpp` have no hardware dependency at all, which is what lets [`tests/`](tests/) exercise them on a laptop — and what lets the peer node link the same two files.
+The gateway runs four threads across five translation units that meet only on zbus channels; the peer node adds just its own `main.cpp` and `sensor.cpp` on top of `shared/`. Both are C++17, for the reasons in [`notes/language-cpp.md`](notes/language-cpp.md).
 
-1. Brings up the network interface and connects as an **MQTT client** to the broker on the Pi. Reconnect is the shape of the program, not error handling bolted on: a forever loop of connect → serve until dropped → back off (1 s doubling to 30 s) → retry, so a cable pull or a downed broker is survivable.
-2. Reads the SCD-40 over I²C via Zephyr's **sensor API** (upstream `sensirion,scd40` driver) on its own thread, at its own cadence: `SENSOR_CHAN_CO2`, `SENSOR_CHAN_AMBIENT_TEMP`, `SENSOR_CHAN_HUMIDITY`. A failed read still publishes, carrying `sensor_status = ERROR` rather than silently going quiet. Because sampling is decoupled from transport, a reconnect backoff never stops the sensor.
-3. **Publishes** those readings as **Protobuf `Telemetry`** (default every 5 s) and **subscribes** to the command topic, answering every `Command` with a **Protobuf `Ack`** — encoded/decoded with **nanopb**. `SetInterval` retunes the publish period at runtime (bounded to 1 s–300 s), `TriggerMeasurement` forces one, `GetDeviceInfo` returns firmware/board/client id. MQTT carries each message as one complete payload, so there is no app-level framing / stream reassembly.
-4. Announces liveness on a **retained `status` topic** — `online` on connect, `offline` published by the broker via the Last Will if the node drops without a clean DISCONNECT.
-5. Decouples its threads internally with **zbus** — six channels, and no thread naming another. The sensor thread publishes readings and never mentions MQTT; each listener signals the network thread through an eventfd, so one `poll()` waits on both sockets and the whole bus. A channel validator owns the sample-period bounds, so the wire layer cannot drift from them.
-6. Talks to a **host-side test harness** on the Raspberry Pi (Python, paho-mqtt) that decodes and logs the telemetry stream and can publish commands.
+- **Telemetry.** Each node samples on its own thread and publishes a Protobuf `Telemetry` on a sample period that defaults to 5 s. A failed read still publishes, carrying `sensor_status = ERROR` rather than going quiet.
+- **Commands.** `SetInterval` (bounded 1 s–300 s), `TriggerMeasurement` and `GetDeviceInfo`, each answered with an `Ack`. A zbus channel validator owns the bounds, so the wire layer cannot drift from them.
+- **Reconnect is the shape of the program**, not error handling bolted on: connect → serve until dropped → back off (1 s doubling to 30 s) → retry. Sampling is decoupled from transport, so a backoff never stops the sensor.
+- **Liveness** rides a retained `status` topic — `online` on connect, `offline` from the broker's Last Will. The broker cannot see the peer, so the gateway times its heartbeat out and publishes the peer's status itself.
+- **The CAN half** carries a 1 Hz heartbeat and ISO-TP segmentation in both directions, on a bus with no addresses, no connection and eight payload bytes per frame.
 
-**The second node, over CAN.** A Nucleo-F072RB with a BME280 is a peer node with its own MQTT identity, and the H753ZI is a *gateway* that forwards the peer's already-encoded Protobuf without decoding it. Concepts in [`notes/can-guide.md`](notes/can-guide.md); what is built, and how to re-run it, in [`docs/can-bringup.md`](docs/can-bringup.md). A terminated 500 kbit/s two-node bus carries a 1 Hz heartbeat and ISO-TP in both directions: the peer's BME280 telemetry reaches `node/2/telemetry`, and a command published to `node/2/command` is answered by the peer's own `DeviceInfo` on `node/2/ack`. Liveness cannot come from the broker for a node the broker cannot see, so the gateway runs a heartbeat timeout and publishes the peer's `status` itself.
+**The gateway holds two MQTT connections**, `nucleo-1` and `nucleo-2`, for one narrow reason: MQTT 3.1.1 allows one Last Will per connection and the peer's status topic needs its own, so a gateway that dies marks *both* nodes offline through the broker with no firmware in the path.
 
-The gateway holds **two MQTT connections**, `nucleo-1` and `nucleo-2`, and the reason is narrow: MQTT 3.1.1 allows one Last Will per connection, and the peer's status topic needs its own. A gateway that dies therefore marks *both* nodes offline through the broker, with no firmware in the path. Because the two sensors measure different things, the pair is also what makes `optional` measurements concrete — node 1 reports CO₂ and no pressure, node 2 the reverse, and each absent measurement decodes as absent rather than as a zero, through a gateway that decodes neither payload.
+## The message set
 
-**Verifying it yourself.** Every claim above is exercised by a lab in the documentation rather than reported as a past result — see the *Exercising…* section of each guide in the table below, plus *Bring-up checks* in [`docs/can-bringup.md`](docs/can-bringup.md) and *Testing the Last Will* in [`docs/mqtt-design.md`](docs/mqtt-design.md). Between them they cover telemetry decode, all three commands, out-of-range rejection, duplicate suppression, a malformed payload that must not desynchronise the stream, a broker outage the sensor samples straight through, both Last Wills, the two-node bus, the segmented round trip in both directions, and a peer timed out by unplugging the bus.
+Three messages, defined in **[`proto/node.proto`](proto/node.proto)** — that file is the contract; read it for the fields and the evolution rules.
 
-## The things to actually learn (don't skip these)
-1. **MQTT client on Zephyr** — connect/keepalive, QoS levels, topic design (telemetry vs. command topics), and especially **reconnect handling** when the link drops. Uses Zephyr's `CONFIG_MQTT_LIB`. (MQTT frames and delimits messages itself, so the length-prefix / partial-read problem of raw TCP goes away — each payload arrives whole.)
-2. **zbus as the internal bus** — the sensor thread publishes readings to a **zbus channel**; the MQTT thread observes that channel and marshals to nanopb → MQTT publish. Decouples sensing from transport, the way production firmware does. The interesting parts are choosing an observer kind per channel (latest-wins for state, every-message for commands — the same argument as QoS 0 vs 1), and waiting on a channel and a socket in one call.
-3. **Schema versioning & backward-compat** — field numbers, `optional`, unknown-field handling. This is the firmware↔SW-team contract in miniature. Done as `pressure_pa` plus explicit presence on the measurements; `tests/protocol/` runs the previous schema against the current one in both directions, so old↔new is an assertion rather than a claim.
-4. **nanopb on a constrained target** — `.proto` → generated C, `.options` files, fixed-size vs callback fields, no-malloc/static allocation.
+- **`Telemetry`** (node → host) — the readings, plus a `sequence` for spotting QoS 0 drops, an `uptime_ms`, and a `sensor_status`. The four measurements are proto3 `optional`, so absence is never dressed up as a zero.
+- **`Command`** (host → node) — a `oneof` payload: set the interval, trigger a measurement, request device info. nanopb turns it into a tagged union.
+- **`Ack`** (node → host) — echoes the command's `sequence` and reports an `AckStatus`; `UNSUPPORTED` and `MALFORMED` are what make the versioning exercise concrete.
 
-**Bonus learning from the sensor:** the SCD-40 adds a clean rehearsal of the **Zephyr sensor subsystem + a devicetree I²C overlay** — wiring a real driver instance in a board overlay, reading channels with `sensor_sample_fetch` / `sensor_channel_get`, and turning `struct sensor_value` into wire fields. That's a common shape in production firmware.
+All three carry a `schema_version`, bumped only on a *breaking* change. Topics are `node/<id>/{telemetry,command,ack,status}` — telemetry at QoS 0, command/ack at QoS 1, `status` a retained last will carrying ASCII `online`/`offline`. Rationale in [`docs/mqtt-design.md`](docs/mqtt-design.md).
 
-## Message set
-Three messages, defined in **[`proto/node.proto`](proto/node.proto)** — read that file for the fields, the field-number budget, and the evolution rules; it is the contract, and this summary will drift if it tries to restate it.
+## Hardware
 
-- **`Telemetry`** (node → host, periodic) — the sensor readings, plus a `sequence` so the host can spot QoS 0 drops, an `uptime_ms`, and a `sensor_status` distinguishing a warming-up sensor from a failed read. Fixed-size fields only, no dynamic allocation. The four measurements are proto3 `optional`, so a node reports only what it can actually measure and absence is never dressed up as a zero — the reasoning, and what explicit presence costs, is in [`notes/protobuf-guide.md`](notes/protobuf-guide.md) §5.
-- **`Command`** (host → node) — a `oneof` payload: set the measurement interval, trigger a single-shot measurement, or request device info. The `oneof` is the part worth studying; nanopb turns it into a tagged union with a `which_payload` discriminator.
-- **`Ack`** (node → host) — echoes the command's `sequence` for correlation and reports an `AckStatus`. That enum carries the interesting cases: `UNSUPPORTED` (host newer than the node) and `MALFORMED` (didn't decode at all) are what make the versioning exercise concrete.
+| Role | Board | Sensor on I²C1 (PB8/PB9) | Reaches the broker via |
+|---|---|---|---|
+| **Gateway**, node 1 | Nucleo-H753ZI — Cortex-M7 | SCD-40 — CO₂, temperature, humidity — `0x62` | on-board RJ45 + LAN8742 PHY |
+| **Peer**, node 2 | Nucleo-F072RB — Cortex-M0, **16 KB RAM**, no FPU | BME280 — temperature, humidity, pressure — `0x77` | CAN 2.0B at 500 kbit/s, through the gateway |
+| **Host** | Raspberry Pi 5 | — | is the broker: Mosquitto + the Python harness |
 
-All three carry a `schema_version`, bumped only on a *breaking* change — additive changes don't touch it, because Protobuf already handles those.
+Each CAN end needs a 3.3 V SN65HVD230 transceiver and a 120 Ω termination — not optional, because the MCU peripheral exposes only digital TX/RX. Pin assignments and full wiring tables are in [`docs/can-bringup.md`](docs/can-bringup.md) and [`docs/sensor-bringup.md`](docs/sensor-bringup.md).
 
-Topics are `node/<id>/{telemetry,command,ack,status}` — telemetry at QoS 0, command/ack at QoS 1, and `status` a retained last-will carrying plain ASCII `online`/`offline`. The SCD-40's ~5 s sample rate defines the natural telemetry period; the command path lets the host change or force it. See [`docs/mqtt-design.md`](docs/mqtt-design.md) for the QoS rationale and the session/keepalive/will settings.
+The Pi is wired **direct-cable** to the Nucleo — static `192.168.10.1` ↔ `192.168.10.2`, no switch and no default gateway, and no application code touching interface bring-up: it is `CONFIG_NET_CONFIG_SETTINGS` in `gateway/prj.conf`. See [`docs/network-bringup.md`](docs/network-bringup.md).
 
-## Repository layout
-- `proto/` — the `.proto` schema (shared contract) + nanopb `.options`. **The single source of truth for the wire format**; firmware and host both generate from it. Generated `*.pb.c/.h` are **C** and stay C even though the firmware is C++ (they're included across the C↔C++ boundary; see [`notes/language-cpp.md`](notes/language-cpp.md)).
-- `shared/` — the code **both applications link**, in its own directory precisely so that neither app owns it: `protocol.{h,cpp}` (the wire format), `commands.{h,cpp}` (command semantics), `app_channels.h` (the zbus channels and the reading type) and `can_link.h` (the CAN address map and heartbeat frame, which both ends of the wire must agree on). Not a Zephyr library — each app compiles these files by relative path, because the generated `node.pb.h` they include belongs to the app's own nanopb target. The rule is one definition, no drift: `tests/` builds against these same files, so a suite that passes is a test of what the boards run.
-- `gateway/` — the **H753ZI gateway**: sensor node *and* CAN-to-MQTT relay. A Zephyr application in **C++17** (`prj.conf` with `CONFIG_CPP=y`, `CMakeLists.txt`, `src/*.cpp`, and a **board overlay** defining the I²C bus + `sensirion,scd40` node). Its own four files are `main.cpp`, `sensor.cpp` and `relay.{h,cpp}` — `relay.h` stays here rather than in `shared/` because only the gateway relays. Generates `node.pb.c/.h` at build time so it can't drift from the schema.
-- `peer-node/` — the **F072RB peer node**, a second Zephyr app beside the first. Only two files are its own: `main.cpp` (the CAN session) and `sensor.cpp` (the BME280) — the session and the sensor are exactly what differs between the nodes. Everything else it needs comes from `shared/`.
-- `host/` — host test harness on the Pi: a Python **paho-mqtt** monitor and command client that encode/decode Protobuf, plus `generate.sh` for the Python bindings. [`host/README.md`](host/README.md) is its own guide — setup, both tools' flags, and why it has to run on the Pi.
-- `scripts/` — the build/flash/console wrappers, plus `probe.sh` and its `probes.conf`, which map each app to its ST-LINK so nothing has to guess with two boards attached. Use these rather than raw `west`; they source the workspace venv and pass the right source/build directories.
-- `docs/` — terse project references: decisions, rationale, and verified facts (e.g. `mqtt-design.md`).
-- `notes/` — from-first-principles teaching guides for the concepts behind those decisions (e.g. `communication-guide.md`), each ending in a lab you can run against the bench.
+Classic CAN's eight payload bytes per frame and the peer node's RAM budget are the two constraints that make the exercise real: the first forces genuine segmentation, the second means every Kconfig option in `peer-node/prj.conf` has to justify itself in a comment.
 
-## Getting started
+## What it is built to teach
 
-**Firmware** — the app is *freestanding*: it builds against a shared global west workspace at `~/zephyr-workspace` (**Zephyr v4.4.1**). Use the wrappers rather than raw `west`; they source the workspace venv and pass the source/build directories correctly. See [`docs/toolchain.md`](docs/toolchain.md).
+With that system in view, here is what the exercise is for. Four topics carry it:
 
-```sh
-./scripts/build.sh        # incremental; -p forces a pristine build (required after devicetree/Kconfig edits)
-./scripts/flash.sh        # forces the openocd runner; the board's default runner isn't installed
-./scripts/console.sh      # serial console @115200 (quit with Ctrl-A then K)
-```
+- **MQTT client lifecycle** — connect, keepalive, a QoS per topic, and the reconnect loop above. MQTT frames and delimits its own messages, so there is no app-level framing to write — and the CAN half, which gives none of that, is what shows what MQTT was doing.
+- **zbus as the internal bus** — sensing, relaying and publishing decoupled through channels rather than calls. Each channel picks an observer kind: latest-wins where only the newest value matters, every-message where none may be dropped — the same trade-off as QoS 0 versus QoS 1, made a second time inside the firmware.
+- **Schema versioning** — field numbers, proto3 `optional`, and what a decoder does with a field it has never heard of. The two sensors measuring different things is what makes `optional` concrete: node 1 reports CO₂ and no pressure, node 2 the reverse, through a gateway that decodes neither. `tests/protocol/` runs the previous schema against the current one in both directions, so old↔new is an assertion rather than a claim.
+- **nanopb on a constrained target** — `.options` files, fixed-size versus callback fields, and static allocation only, on a peer node with 16 KB of RAM to hold all of it.
 
-There are two apps, and every wrapper takes `-a <app>` (or `APP=`), defaulting to `gateway`. The board follows from the app, so `-b` is never needed:
+The sensors bring a fifth along for free: the Zephyr sensor subsystem and a devicetree I²C overlay, which is a common shape in production firmware.
+
+None of these is claimed and left there: each is exercised by a lab at the end of the guide that teaches it — numbered exercises with commands, expected output and a **Proves:** line. [`notes/README.md`](notes/README.md) indexes them.
+
+## Running it
+
+**Most of this repo can be read, and its logic exercised, with no hardware at all.** The test suite builds for an emulator and needs nothing plugged in:
 
 ```sh
-./scripts/build.sh   -a peer-node -p     # the F072RB peer node
-./scripts/flash.sh   -a peer-node
-./scripts/console.sh -a peer-node
-./scripts/probe.sh                       # which ST-LINK and which /dev/cu.* is which app
+./scripts/test.sh           # 51 Ztest cases on qemu_cortex_m3, ~31 s
 ```
 
-With both boards plugged in, `-a` is how anything that has to pick one knows which you mean. `console.sh` prints the probe table and refuses rather than opening a board at random; `flash.sh` passes the right ST-LINK serial and stops rather than guessing, because losing that coin flip writes the wrong image to the wrong part and reports success.
+The five suites cover the wire format, command dispatch and duplicate suppression, the hand-packed CAN heartbeat frame, the relay's liveness state machine, and ISO-TP through an emulated controller — built against the same `shared/` files the boards run.
 
-**Host** — runs on the Pi, which also hosts the Mosquitto broker. The venv is deliberately separate from the Zephyr workspace venv (see `host/requirements.txt` for why):
+Building firmware needs the toolchain. The apps are *freestanding*: they build against a shared west workspace at `~/zephyr-workspace` (**Zephyr v4.4.1**), set up in [`docs/toolchain.md`](docs/toolchain.md).
+
+```sh
+./scripts/build.sh          # incremental; -p forces pristine (required after devicetree/Kconfig edits)
+./scripts/flash.sh          # forces the openocd runner
+./scripts/console.sh        # serial console @115200 (quit with Ctrl-A then K)
+```
+
+Every wrapper takes `-a <app>` and defaults to `gateway`; the board follows from the app. With both boards attached, `-a` is how anything that must pick one knows which you mean — `flash.sh` stops rather than guessing.
+
+The host side runs **on the Pi**, which is the only machine that can reach the broker, in a venv deliberately separate from the Zephyr workspace's:
 
 ```sh
 python3 -m venv host/.venv
 host/.venv/bin/pip install -r host/requirements.txt
-host/generate.sh                                    # regenerate node_pb2.py after any proto/ change
+./host/generate.sh                                  # regenerate the bindings after any proto/ change
 
 host/.venv/bin/python host/monitor.py               # decode and log the telemetry stream
-host/.venv/bin/python host/command.py info          # send GetDeviceInfo, await the Ack
-host/.venv/bin/python host/command.py trigger       # force a single measurement
-host/.venv/bin/python host/command.py interval 2000 # retune the publish period (ms)
+host/.venv/bin/python host/command.py info          # also: trigger | interval 2000
 ```
 
-`./scripts/test.sh` runs 51 host-side unit tests across five suites in about 31 seconds with no hardware attached, on `qemu_cortex_m3` — the wire format, command handling, the CAN link contract, the gateway's liveness machine, and the CAN transport itself through an emulated controller that genuinely segments and reassembles. Everything below the socket still needs the bench: verification there is build → flash → observe, via the console, Zephyr's `net` shell commands, or the host harness, and the labs at the end of each guide say what to run and what the result should look like. There is no lint tooling.
+`monitor.py` subscribes to `node/#` and prints every topic from both nodes in one window:
 
-## Documentation
-Split by *kind*, not by topic: **`notes/`** holds from-first-principles teaching guides — general concepts, largely portable beyond this repo. **`docs/`** holds terse project references — decisions, verified facts, and what was actually built here. Most topics have one of each.
+```
+14:02:11  node/1/status        [retained] online
+14:02:16  node/1/telemetry     seq=1042  co2=  812 ppm  temp=22.41 C  rh=41.3 %  p=    -- Pa  up=  5210.4s  SENSOR_STATUS_OK  (schema v1)
+```
 
-Two indexes, and which one you want depends on what you are doing. **[`notes/README.md`](notes/README.md)** is the map for *reading*: a suggested order through the guides, what each assumes you already know, and which depend on which. **[`docs/README.md`](docs/README.md)** is the map for *looking something up*: every guide↔reference pairing, and the few topics that deviate from the pattern — the schema that carries its own decisions inline, the two guides with no reference half, and the one teaching document that lives with the references because it tracks this repo's code.
+The `--` in the pressure column is the `optional` argument made visible: the gateway has no pressure sensor, so the field is absent rather than zero. [`host/README.md`](host/README.md) is the harness's own guide.
 
-## References
+## Where to read next
 
-**Board (Adafruit SCD-40 breakout, product 5187):**
-- [Product page](https://www.adafruit.com/product/5187) — specs, pricing, overview.
-- [Downloads page](https://learn.adafruit.com/adafruit-scd-40-and-scd-41/downloads) — schematic + Fab print, pinouts, and wiring (labeled SCD-41; the SCD-40 board is identical).
+Documentation is split by *kind*, not by topic. **[`notes/`](notes/README.md)** holds from-first-principles teaching guides — general concepts, largely portable beyond this repo, each ending in a lab you can run against the bench. **[`docs/`](docs/README.md)** holds terse project references — decisions, rationale, and verified facts. Most topics have one of each, cross-linked both ways.
 
-**Sensor (Sensirion SCD4x) — the reference for firmware/driver work:** the chip's I²C command codes, the raw-word → CO₂/T/RH conversion formulas, and the CRC-8 params (poly `0x31`, init `0xFF`, no reflection) are what the Zephyr driver handles under the hood. They are noted inline where they matter in [`sensor-api-guide.md`](notes/sensor-api-guide.md) and [`docs/sensor-bringup.md`](docs/sensor-bringup.md); the full datasheet is published by Sensirion.
+Which index you want depends on what you are doing: `notes/README.md` is the map for *reading* (a suggested order, and what each guide assumes), `docs/README.md` the map for *looking something up* (every guide↔reference pairing). If you are about to *change* something, start instead at [`docs/invariants.md`](docs/invariants.md) — the contracts that span components, every one of which is silent when violated.
 
-**Zephyr:**
-- [MQTT client library](https://docs.zephyrproject.org/latest/connectivity/networking/api/mqtt.html) — `CONFIG_MQTT_LIB`; connect / publish / subscribe / keepalive API. The core of the transport rehearsal.
-- [zbus](https://docs.zephyrproject.org/latest/services/zbus/index.html) — in-process message bus (channels / observers) for the internal sensor → publisher path.
-- [`sensirion,scd40` devicetree binding](https://docs.zephyrproject.org/latest/build/dts/api/bindings/sensor/sensirion,scd40.html) — I²C node properties for the overlay.
-- [`sensirion,scd41` devicetree binding](https://docs.zephyrproject.org/latest/build/dts/api/bindings/sensor/sensirion,scd41.html) — sibling variant, for reference.
-- [nobodyguy/sensirion_zephyr_drivers](https://github.com/nobodyguy/sensirion_zephyr_drivers) — community SCD4x/SCD30 driver module. Not used; the in-tree driver ships with Zephyr v4.4.1. Kept as a road not taken.
+The source itself is laid out along the same split:
+
+- **`proto/`** — the schema and nanopb `.options`. The single source of truth for the wire format; firmware and host both generate from it.
+- **`shared/`** — what both applications link: the wire format, command semantics, the zbus channels, and the CAN address map both ends must agree on. `tests/` builds against these same files.
+- **`gateway/`** / **`peer-node/`** — the two Zephyr apps, each with its own `prj.conf`, `CMakeLists.txt` and board overlay.
+- **`host/`** — the paho-mqtt monitor and command client, which run on the Pi.
+- **`scripts/`** — the build/flash/console wrappers plus the ST-LINK probe map.
+- **`tests/`** — the five Ztest suites, built for `qemu_cortex_m3`.
+
+### Datasheets and upstream docs
+
+- **Adafruit SCD-40 breakout** (the gateway's sensor) — [product page](https://www.adafruit.com/product/5187) and [downloads](https://learn.adafruit.com/adafruit-scd-40-and-scd-41/downloads) (schematic, pinout, wiring; labeled SCD-41, the board is identical).
+- **Adafruit BME280 breakout** (the peer node's sensor) — [product page](https://www.adafruit.com/product/2652), the STEMMA QT version. Its `0x77` is a board default, not the chip's only address.
+- **Zephyr** — [MQTT client library](https://docs.zephyrproject.org/latest/services/connectivity/networking/api/mqtt.html), [zbus](https://docs.zephyrproject.org/latest/services/zbus/index.html), and the devicetree binding for each sensor: [`sensirion,scd40`](https://docs.zephyrproject.org/latest/build/dts/api/bindings/sensor/sensirion,scd40.html) and [`bosch,bme280`](https://docs.zephyrproject.org/latest/build/dts/api/bindings/sensor/bosch,bme280-i2c.html).

@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**`README.md` is the complete spec** — the what, why, hardware, message set, layout, and references. Read it before any implementation work. This file does not restate the spec; it covers how to *operate* in the repo.
+**`README.md` is the overview** — the what, why, the system diagram, the hardware table, the message set and the layout, each in brief. Read it first for orientation, then follow it down: the detail it delegates — wiring and bring-up, the QoS and schema rationale, the toolchain — lives in `docs/`, and [`docs/README.md`](docs/README.md) maps where. The `.proto` schema remains the single source of truth for the wire format, whatever any prose says. This file restates neither; it covers how to *operate* in the repo.
 
 ## What this is
 
