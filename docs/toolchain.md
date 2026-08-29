@@ -42,7 +42,7 @@ Use the wrappers; they source the workspace venv, export `ZEPHYR_BASE`, and pass
 ./scripts/console.sh -a peer-node
 ```
 
-The board follows from the app rather than being something to remember — `gateway` → `nucleo_h753zi`, `peer-node` → `nucleo_f072rb` — so `-b` is never needed. `BOARD=` still wins for a one-off. `./scripts/cleanup.sh` takes the same flag and removes every app's build dir without it.
+The board follows from the app rather than being something to remember — `gateway` → `nucleo_h753zi`, `peer-node` → `nucleo_f072rb` — so `-b` is never needed. `BOARD=` still wins for a one-off. `./scripts/cleanup.sh` takes the same flag and removes every app's build dir without it; `--all` widens that to everything generated in the repo — twister's output, the merged compile database and the clangd caches, `host/`'s generated protobuf code — and `-n` prints what would go without removing it. `host/.venv` survives either way, since refilling it needs the network.
 
 `build.sh` also takes **`--debug`**, which merges `<app>/debug.conf` over `prj.conf` via `-DEXTRA_CONF_FILE`. Only `peer-node` has one today, and it exists because that node's shipped image has no shell — a stock Zephyr shell needs 95 % of its 16 KB of RAM, so an interactive console is a bench variant rather than a default. Kconfig fragments merge in order, so `debug.conf` adds rather than replaces. Toggling it changes Kconfig, so pair it with `-p`:
 

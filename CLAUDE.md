@@ -27,7 +27,7 @@ Use the wrapper scripts, not raw `west` — they source the workspace venv and p
 ./scripts/build.sh -a peer-node --debug -p   # + a trimmed shell on the peer (bench only)
 ./scripts/probe.sh                   # which ST-LINK and which /dev/cu.* belongs to which app
 ./scripts/test.sh                    # 51 Ztest cases on qemu_cortex_m3, ~31 s, no board needed
-./scripts/cleanup.sh                 # remove build dirs; -a for one app
+./scripts/cleanup.sh                 # remove build dirs; -a for one app, --all for every generated file
 ```
 
 The apps are **freestanding**: they build against a shared global west workspace at `~/zephyr-workspace` (**Zephyr v4.4.1**). Details in `docs/toolchain.md`.
