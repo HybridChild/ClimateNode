@@ -47,14 +47,14 @@ Note the two sources from outside the app directory. `target_sources` takes any 
 | Role | Examples | Rule |
 |---|---|---|
 | **Source inputs — your app** | overlay, `prj.conf`, `CMakeLists.txt`, `main.cpp` (in *this* repo) | you author these |
-| **Source inputs — the tree** (read-only) | board `.dts`, SoC `.dtsi`, defconfig, bindings, in-tree driver `.c`/`Kconfig` | live in `~/zephyr-workspace/zephyr`; **override** via overlay/`prj.conf`, don't edit |
+| **Source inputs — the Zephyr tree** (read-only) | board `.dts`, SoC `.dtsi`, defconfig, bindings, in-tree driver `.c`/`Kconfig` | live in `~/zephyr-workspace/zephyr`; **override** via overlay/`prj.conf`, don't edit |
 | **Generators** (run at CMake configure) | C preprocessor (`cpp`), the three DT Python scripts, Kconfig | run automatically |
 | **Generated artifacts** | `zephyr.dts`, `devicetree_generated.h`, `Kconfig.dts`, `.config`, `autoconf.h` | live in `build/` only — **never edit** |
 | **Consumers** | driver/app `DT_*` macros, the C compiler's `#ifdef CONFIG_*`, CMake's file-list logic | read the artifacts |
 
 ## The master pipeline
 
-`dtc` is **not** the parser — Zephyr parses with its own Python `edtlib` and only runs `dtc` as an optional linter. `edt.pickle` is the parsed-tree hub: read by `gen_defines.py` (→ C macros) and by Kconfig (→ `DT_HAS_*` values). `Kconfig.dts` is generated from the **bindings**, not the tree.
+`dtc` is **not** the parser — Zephyr parses with its own Python `edtlib` and only runs `dtc` as an optional linter. `edt.pickle` is the parsed-devicetree hub: read by `gen_defines.py` (→ C macros) and by Kconfig (→ `DT_HAS_*` values). `Kconfig.dts` is generated from the **bindings**, not from your devicetree.
 
 ```
  SOURCE INPUTS                    DTS STAGE  (Python; dtc only lints)                   CONSUMED BY
@@ -74,7 +74,7 @@ Note the two sources from outside the app directory. `target_sources` takes any 
 
 ### The ⭐ bridge (exact mechanism)
 
-- **Declaration** — `gen_driver_kconfig_dts.py` scans *all* bindings (not your tree) and writes `Kconfig.dts`, declaring one symbol per compatible:
+- **Declaration** — `gen_driver_kconfig_dts.py` scans *all* bindings (not your devicetree) and writes `Kconfig.dts`, declaring one symbol per compatible:
   ```
   config DT_HAS_SENSIRION_SCD40_ENABLED
       def_bool $(dt_compat_enabled,$(DT_COMPAT_SENSIRION_SCD40))

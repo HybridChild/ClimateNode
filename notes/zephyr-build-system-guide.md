@@ -92,7 +92,7 @@ You never write a devicetree from scratch. It is assembled in layers, each addin
 
 1. **The SoC include** (`.dtsi`) ships with Zephyr and declares every peripheral the chip *has* — on the STM32H753, that is every I²C, SPI, UART, the Ethernet MAC, and so on — most of them `disabled` by default.
 2. **The board file** (`.dts`) is written by whoever ported the board. It takes the SoC's peripherals and turns `"okay"` the ones this board actually wires out, assigning the physical pins. On the Nucleo-H753ZI, that includes enabling `&i2c1` on pins PB8/PB9 and the Ethernet MAC with its PHY.
-3. **Your overlay** is where *you* customise, without touching the tree. This is a crucial point about how you are meant to work: **the SoC and board files live in the read-only Zephyr workspace and you do not edit them.** Instead you supply a small overlay that is merged on top.
+3. **Your overlay** is where *you* customise, without touching the Zephyr source tree. This is a crucial point about how you are meant to work: **the SoC and board files live in the read-only Zephyr workspace and you do not edit them.** Instead you supply a small overlay that is merged on top.
 
 In this project, the sensor is not part of the board — it is a breakout we wired on. So the overlay grafts a new child node onto the existing I²C controller:
 
@@ -157,7 +157,7 @@ Symbols have types (boolean, integer, string), **defaults**, and — importantly
 
 The final configuration is layered, much like the devicetree, with later layers overriding earlier ones:
 
-- The **Kconfig files in the tree** define every symbol, its default, and its dependencies.
+- The **Kconfig files in the Zephyr source tree** define every symbol, its default, and its dependencies.
 - The **board's `defconfig`** sets baseline choices appropriate to the board.
 - Your **`prj.conf`** — in your application — sets the choices for *this* build. This is the file you edit to turn features on:
 
@@ -183,15 +183,15 @@ We now have the two halves. The most elegant part of the whole system is how the
 
 The coupling is a clean division of labour between *declaring* a configuration symbol and *deciding its value*:
 
-- **Declaration comes from the bindings, and is board-independent.** A script (`gen_driver_kconfig_dts.py`) scans *every binding in the tree* and emits, for each possible `compatible`, a Kconfig symbol named `DT_HAS_<COMPATIBLE>_ENABLED`. This produces a generated Kconfig file that declares thousands of such symbols — for every kind of hardware Zephyr knows about, whether or not you have it.
-- **The value comes from your actual tree.** Each of those symbols is defined as:
+- **Declaration comes from the bindings, and is board-independent.** A script (`gen_driver_kconfig_dts.py`) scans *every binding in the Zephyr source tree* — `dts/bindings/`, one YAML file per kind of hardware — and emits, for each `compatible` it finds there, a Kconfig symbol named `DT_HAS_<COMPATIBLE>_ENABLED`. This produces a generated Kconfig file that declares thousands of such symbols — for every kind of hardware Zephyr knows about, whether or not you have it.
+- **The value comes from your devicetree.** Each of those symbols is defined as:
 
   ```
   config DT_HAS_SENSIRION_SCD40_ENABLED
       def_bool $(dt_compat_enabled,sensirion,scd40)
   ```
 
-  where `dt_compat_enabled` is a Kconfig helper function that, during configuration, reads **`edt.pickle`** and returns true only if some `"okay"` node in *your* tree has that compatible.
+  where `dt_compat_enabled` is a Kconfig helper function that, during configuration, reads **`edt.pickle`** and returns true only if some `"okay"` node in *your* devicetree has that compatible.
 
 So `edt.pickle` — the parsed devicetree — is consulted twice: once by `gen_defines.py` to make the C macros, and once here, by Kconfig, to decide these `DT_HAS_*` values. The bindings say which symbols *can* exist; your hardware says which are *true*.
 
@@ -354,7 +354,7 @@ Same discipline as steps 2–3 above: the input is versioned, the output is not,
 
 A few practical habits follow directly from the model:
 
-- **Customise with overlays and `prj.conf`, never by editing the tree.** The board and SoC files are shared, read-only infrastructure. Your hardware additions go in an overlay; your feature choices go in `prj.conf`. This is why the system is built the way it is.
+- **Customise with overlays and `prj.conf`, never by editing the Zephyr source tree.** The board and SoC files are shared, read-only infrastructure. Your hardware additions go in an overlay; your feature choices go in `prj.conf`. This is why the system is built the way it is.
 - **When a device isn't working, read the generated `zephyr.dts` first.** It is the fully merged tree. If your node isn't there, or isn't `"okay"`, your overlay didn't take — a build/config problem, before any driver code is even involved.
 - **When a feature isn't compiled, read `.config`.** If `CONFIG_YOURTHING` isn't `y`, the code was never built. Check its `depends on` — often an unmet devicetree or Kconfig dependency is silently keeping it off.
 - **Reach for a pristine build (`-p`) after devicetree or Kconfig changes** if results look stale — those changes ripple through generated files, and a clean regenerate removes doubt.
@@ -452,7 +452,7 @@ echo 'CONFIG_ASSERT=y' >> gateway/prj.conf
 ./scripts/build.sh
 ```
 
-The build re-runs CMake and Kconfig, regenerates `.config` and `autoconf.h`, and then rebuilds essentially the entire tree — **hundreds of steps**, against twelve in Exercise 3. Remove the line and rebuild to restore.
+The build re-runs CMake and Kconfig, regenerates `.config` and `autoconf.h`, and then rebuilds essentially everything — **hundreds of steps**, against twelve in Exercise 3. Remove the line and rebuild to restore.
 
 The reason is §5.3's second route: `autoconf.h` is force-included into *every* translation unit via `-imacros`, so changing one symbol invalidates all of them. Pick your symbol deliberately when trying this — many are already at the value you would set. Adding `CONFIG_THREAD_NAME=y`, for instance, changes nothing at all, because the board's defconfig already turned it on; the build correctly does almost nothing, which proves the same point from the other side.
 
