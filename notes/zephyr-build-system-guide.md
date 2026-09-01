@@ -250,15 +250,29 @@ Two things generalise from this:
 
 ## 9. One repo, two applications
 
-Everything so far has assumed one application. Plenty of real projects are not: an application plus a bootloader, a main MCU plus a companion, a shipped image plus a bench variant. This repo is the two-MCU shape — a Cortex-M7 gateway and a Cortex-M0 peer node, in `gateway/` and `peer-node/`, sharing four headers and two translation units out of a third directory, `shared/`.
+Everything so far has assumed one application. Plenty of real projects are not: an application plus a bootloader, a main MCU plus a companion, a shipped image plus a bench variant. This repo is the two-MCU shape — a Cortex-M7 gateway in `gateway/` and a Cortex-M0 peer node in `peer-node/`.
 
-Zephyr offers four different mechanisms for that, and the interesting part is that the plainest one wins here for a reason you can point at.
+**The concrete problem is one file needed in three builds.** `shared/protocol.cpp` is where this firmware's internal types become the protobuf wire format and back. Both boards need it, and they need *the same one*: two copies of an encoder is two wire formats that agree only by luck. A third consumer, `tests/`, needs it as well — a test compiled against a copy proves nothing about what the boards run. Four headers and two translation units are in that position, which is why there is a third directory, `shared/`, at all. So the question is: how does one source file end up in three separate builds, for two different instruction sets, without ever being copied?
 
-### 9.1 What the `app` target actually is
+Zephyr offers four mechanisms that could answer that, and this repo uses the plainest of them — `target_sources` with a path that walks out of the application directory. The rest of §9 is why that is the right answer here rather than a lazy one. Seeing why needs one CMake concept that §1–§8 got along without, so that comes first.
 
-Step 5 of §7 said `include(kernel)` is what creates the `app` target. It is worth being precise about what it creates: **an ordinary CMake library target.** Not a Zephyr abstraction, not a directory, not a manifest — a target, of the same kind you would make yourself with `add_library()`.
+### 9.1 The concept you need first: a *target*
 
-That is why `target_sources(app PRIVATE …)` is plain CMake with no Zephyr magic in it, and why it will accept **any path**, including one that leaves the application directory entirely:
+Take CMake away for a moment. Building a C program by hand is three lists: **which source files**, **which flags** to compile them with, and **which directories to search for headers** (the `-I` flags). Hand those to the compiler, get object files; hand the object files to the linker, get a binary.
+
+CMake calls one such bundle a **target**: a name, with those three lists hanging off it. That is genuinely all a target is. Every command that fills one in has the same shape, with the target's name sitting in the middle:
+
+```cmake
+target_sources(app PRIVATE src/main.cpp)           # add to app's source list
+target_include_directories(app PRIVATE ../shared)  # add to app's -I list
+target_compile_options(app PRIVATE -Wall)          # add to app's flag list
+```
+
+**Here is the sentence to carry through the rest of §9:** those lists belong to the *target*, not to the *directory the source files happen to live in*. Two files sitting side by side in one folder compile with completely different flags if they were added to different targets. Two files in directories far apart compile identically if they were added to the same target. Where a file sits on disk decides nothing; which target it was handed to decides everything.
+
+Zephyr creates one target for you. §7's step 3 said the kernel build module defines `app`, and now we can be precise about what it defines: **an ordinary CMake library target**, of exactly the kind `add_library()` would produce. Not a Zephyr abstraction, not a directory, not a manifest. That is why your `CMakeLists.txt` never creates an executable — it contributes sources into Zephyr's existing bundle, which Zephyr then links against the kernel.
+
+**And because `app` is an ordinary target, `target_sources(app …)` is ordinary CMake with no Zephyr magic in it — so it accepts any path**, including one that leaves the application directory entirely:
 
 ```cmake
 set(SHARED ${CMAKE_CURRENT_SOURCE_DIR}/../shared)
@@ -268,16 +282,22 @@ target_sources(app PRIVATE src/main.cpp src/sensor.cpp src/relay.cpp
 target_include_directories(app PRIVATE ${SHARED})
 ```
 
-The object files are the giveaway that nothing clever is happening. CMake names an object after its source path, and for a source from outside the project it mirrors the whole absolute path underneath the target's directory:
+That is the entire sharing mechanism. `peer-node/CMakeLists.txt` says the same two things about the same directory, and so does each `CMakeLists.txt` under `tests/`. There is no library, no install step, and `shared/` itself contains no build rules at all — it is a directory of source files that three other build systems reach into.
+
+The object files are the proof that nothing clever is happening. CMake names an object after its source path, and for a source from outside the project it mirrors the whole absolute path underneath the target's own directory:
 
 ```
 gateway/build/CMakeFiles/app.dir/src/main.cpp.obj
 gateway/build/CMakeFiles/app.dir/Users/.../shared/protocol.cpp.obj
 ```
 
-Read that second line as what it is: `protocol.cpp` was compiled **into this application's own target**, not linked in from a library built somewhere else. Build the other app and it happens again, separately, in that app's build tree. One source file, two object files, and no shared binary anywhere — which is the only arrangement that *could* work here, since the two objects are for different instruction sets.
+Read that second line as what it is: `protocol.cpp` was compiled **into this application's own target**, not linked in from a library built somewhere else. Build the peer node and the same thing happens again, separately, in *its* build tree. One source file, two object files, and no shared binary anywhere.
 
-### 9.2 Four mechanisms, and what each one buys
+Nor could there be one. The two objects are for different instruction sets — a Cortex-M0 cannot execute Cortex-M7 code — so no prebuilt library exists that both images could link against. Sharing at the level of *source* is not a compromise here; it is the only level at which these two applications can share anything at all. Exercise 5 in §12 pulls the two compile commands out of the build and shows the same file being handed `-mcpu=cortex-m7` in one and `-mcpu=cortex-m0` in the other.
+
+### 9.2 The other three mechanisms
+
+For completeness, here are all four, with the one you have just seen at the top. Read the table knowing they are not four answers to one question: the first two are genuine alternatives for sharing source inside one repo, the third is that same question asked *across* repos, and the fourth is a different axis entirely.
 
 | Mechanism | What it is | Buys you | Costs |
 |---|---|---|---|
@@ -286,27 +306,44 @@ Read that second line as what it is: `protocol.cpp` was compiled **into this app
 | **A Zephyr module** | a directory with `zephyr/module.yml`, fetched by west | shares across *repos*, versioned on its own, contributes its own `Kconfig` and DT bindings | a second repo and a manifest entry to maintain |
 | **sysbuild** | builds *several images* in one invocation, with `SB_CONFIG_*` above them | app + MCUboot, or two cores, configured together | a whole extra configuration layer |
 
-The last one is a different axis and worth separating out, because the name suggests otherwise: **sysbuild is not about sharing source, it is about building more than one image at once.** This repo builds one app at a time on purpose — the two boards are flashed independently, and `scripts/build.sh -a <app>` is the whole of its multi-app story.
+The last row is worth separating out, because its name suggests otherwise: **sysbuild is not about sharing source, it is about building more than one image at once.** This repo builds one app at a time on purpose — the two boards are flashed independently, and `scripts/build.sh -a <app>` is the whole of its multi-app story.
 
-Note also that you have already met mechanism three. **nanopb is a Zephyr module** (§8) — that is exactly what `${ZEPHYR_BASE}/modules/nanopb` is. So the module system is not exotic; it is what the thing you are calling into is built as.
+You have already met the third row, too. **nanopb is a Zephyr module** (§8) — that is exactly what `${ZEPHYR_BASE}/modules/nanopb` is. So the module system is not exotic machinery reserved for Zephyr's own code; it is what the thing you are calling into is built as.
 
-### 9.3 Why the plainest mechanism wins here
+That leaves the second row as the only real rival, and §9.3 is why it loses.
 
-A `zephyr_library` looks like the tidier choice, and it is the wrong one, for a concrete reason: **a generated header is a property of a target, not of a directory.**
+### 9.3 Why not a `zephyr_library`
 
-`zephyr_nanopb_sources(app …)` attaches both the generated `node.pb.c` *and* its include directory to `app`. `shared/protocol.h` opens with `#include <node.pb.h>`. Move `protocol.cpp` into a `zephyr_library` and that library is a different target — it does not inherit `app`'s include directories, so the generated header is simply not found. You can fix it, by generating per-library or exporting the include directory across targets, but you would be buying plumbing with no benefit attached: both apps want the same flags for these files, and neither needs a Kconfig switch to turn them off.
+A `zephyr_library` looks like the tidier choice — a proper named library for the shared code, linked into each image, the way you would organise a desktop project. It is the wrong choice here, and the reason follows directly from §9.1's sentence about lists belonging to targets. Take it in four steps.
+
+**Step 1 — what the generator attached, and to which target.** §8's line was `zephyr_nanopb_sources(app ${CMAKE_CURRENT_SOURCE_DIR}/../proto/node.proto)`. It did two things. It added the generated `node.pb.c` to `app`'s *source* list — and, the part that matters now, it added the build directory holding `node.pb.h` to `app`'s *`-I`* list.
+
+**Step 2 — the shared code needs that header.** `shared/protocol.h` opens with `#include <node.pb.h>`, and has to: translating between internal types and the wire format means naming the generated structs.
+
+**Step 3 — why that resolves today.** `protocol.cpp` is in `app`'s source list, so it is compiled with `app`'s `-I` list, and step 1 put the generated header's directory on exactly that list. The include finds its file.
+
+**Step 4 — why it would stop resolving.** Move `protocol.cpp` into a `zephyr_library` and it now lives in a *different target*, with its own three lists. Step 1 never touched those lists — it named `app`. So the compiler is handed `protocol.cpp` with no `-I` flag leading to the generated header, and the build dies on the first line of `protocol.h` with `node.pb.h: No such file or directory`. It is the same shape of failure Exercise 6 in §12 produces on purpose: a header that exists perfectly well on disk, and no `-I` flag that reaches it.
+
+The conclusion is one line worth keeping: **a generated header is a property of a target, not of a directory.** Putting a source file in a folder near code that can see a header buys it nothing. Only being in the same target does.
+
+Step 4 is of course fixable — generate the schema a second time for the library, or export `app`'s include directory across to it. The question is what you would be buying with that plumbing. A `zephyr_library` earns its keep when the shared code wants compile flags of its own, or a Kconfig symbol that switches it off for one application. Neither is true here: both apps want these two files compiled exactly the same way, and neither could build without them. It would be plumbing with nothing on the other end.
 
 The corollary is that **each app runs the generator for itself.** Two build trees, two `node.pb.c`, one `.proto`. That is not duplication worth removing — it is §8's discipline applied twice, and it is what makes it impossible for one app to be built against a stale copy of the schema.
 
 ### 9.4 The one thing the build system will not check for you
 
-CMake is perfectly happy to let application A reach into application B's directory for a file. It compiles, and nothing warns you. What it costs is not mechanical but architectural: the dependency graph now says *A depends on B*, when the truth is that both depend on a contract neither one owns.
+Because `target_sources` takes any path at all, it will just as happily take `../gateway/src/relay.cpp` from inside `peer-node/CMakeLists.txt`. That compiles, and nothing warns you. What it costs is not mechanical but architectural: the dependency graph now says *the peer node depends on the gateway*, when the truth is that both depend on a contract neither one owns.
 
 The rule that avoids it is simple enough to apply without thinking: **a file's home is decided by how many applications link it.** Two means `shared/`. One means that app's own `src/`. And nothing in `shared/` may include anything from an application.
 
-That last clause is the only one with any teeth, and it has more than you would expect. Look at the include paths an app actually compiles with — `shared/` is on them, and **the app's own `src/` is not on them at all.** Its own sources reach their neighbours only through the C preprocessor's rule that a quoted `#include` is searched for first in the directory of the file doing the including. Which means a header in `shared/` cannot reach `gateway/src/relay.h` even when the *gateway* is what is being built: the search starts in `shared/`, where the including file lives, and `gateway/src` is on no `-I` flag anywhere. §12's last exercise does this on purpose and reads the error.
+That last clause is the one with teeth, because you are not the one enforcing it — the C preprocessor is. Two facts combine to do it:
 
-So the layout is not merely a convention that a reviewer has to defend. In the direction that matters, it is enforced by include paths — and the third consumer, `tests/`, is the payoff: a suite that compiles `shared/protocol.cpp` is testing the same file both boards run, not a copy of it.
+- **What is actually on an app's `-I` list.** `shared/` is on it: `target_include_directories(app PRIVATE ${SHARED})` put it there. The app's **own `src/` is not on it**, and never was — no line anywhere adds it.
+- **What the quotes in an `#include` mean.** `#include "foo.h"` searches *first* in the directory of the file doing the including, and only then falls back to the `-I` list. `#include <foo.h>` skips that first search and goes straight to the `-I` list.
+
+Put the two together and both directions fall out. `gateway/src/relay.cpp` finds `relay.h` purely by the first half of the second bullet — the two sit in the same directory — with no `-I` flag involved at all. But `shared/protocol.h` writing `#include "relay.h"` gets that first search run in `shared/`, because that is where the *including* file lives; `relay.h` is not there, so it falls back to the `-I` list, and `gateway/src` is on no `-I` flag anywhere. It fails — **even when the gateway is the application being built**, which is the part that surprises people. Exercise 6 in §12 does this on purpose and reads the error.
+
+The inverse holds, and it is the point of the whole arrangement: both apps *can* reach into `shared/`, because that is the one directory deliberately placed on both `-I` lists. So the layout is not merely a convention a reviewer has to defend. In the direction that matters it is enforced by include paths — and the third consumer, `tests/`, is the payoff: a suite that compiles `shared/protocol.cpp` is testing the same file both boards run, not a copy of it.
 
 ---
 
@@ -346,7 +383,7 @@ The sensor path is Zephyr's own machinery. Run the §8 generator alongside it an
 
 5. **Your code includes the generated header** — `#include <node.pb.h>` resolves because the rule added the build directory to the include path.
 
-Same discipline as steps 2–3 above: the input is versioned, the output is not, and the only way to change the output is to change the input and rebuild. §11 has you prove that by touching the file and watching what ninja does.
+Same discipline as steps 2–3 above: the input is versioned, the output is not, and the only way to change the output is to change the input and rebuild. §12 has you prove that by touching the file and watching what ninja does.
 
 ---
 
