@@ -38,7 +38,7 @@ The apps are **freestanding**: they build against a shared global west workspace
 
 `./scripts/test.sh` covers `tests/protocol/` (the wire format), `tests/commands/` (dispatch, validator rejection, duplicate suppression), `tests/heartbeat/` (the hand-packed CAN frame and address map), `tests/relay/` (the liveness state machine) and `tests/isotp_loopback/` (the CAN transport through an emulated controller). Run them before and after touching `protocol.cpp`, `commands.cpp`, `can_link.h` or `relay.h`. There is no lint tooling.
 
-Everything below the socket needs the bench: build → flash → observe, via the console, `net` shell commands, or the Pi. The procedures are the **lab at the end of each guide** — `communication-guide.md` §9, `can-guide.md` §10, `zbus-guide.md` §10, `protobuf-guide.md` §12, `sensor-api-guide.md` §11, `zephyr-build-system-guide.md` §12, `language-cpp.md` §12 — plus *Testing the Last Will* in `mqtt-design.md` and *Bring-up checks* in both `sensor-bringup.md` and `can-bringup.md`.
+Everything below the socket needs the bench: build → flash → observe, via the console, `net` shell commands, or the Pi. The procedures are the **lab at the end of each guide** — `communication-guide.md` §9, `network-stack-guide.md` §8, `can-guide.md` §10, `zbus-guide.md` §10, `protobuf-guide.md` §12, `sensor-api-guide.md` §11, `shell-guide.md` §9, `zephyr-build-system-guide.md` §12, `language-cpp.md` §12 — plus *Testing the Last Will* in `mqtt-design.md` and *Bring-up checks* in both `sensor-bringup.md` and `can-bringup.md`.
 
 ## Sharp edges
 

@@ -114,7 +114,7 @@ fds[0].events = ZSOCK_POLLIN;
 int rc = zsock_poll(fds, 1, timeout_ms);
 ```
 
-You borrow the descriptor purely so `zsock_poll()` can tell you *"there are bytes waiting."* You never read those bytes — `mqtt_input()` does that. (This is `wait_for_input()`, used while waiting for CONNACK. The serve loop waits on the same descriptor plus one more — §6.) The division of responsibility is worth stating plainly:
+You borrow the descriptor purely so `zsock_poll()` can tell you *"there are bytes waiting."* You never read those bytes — `mqtt_input()` does that. (The loop in §6 does exactly this for every session that has a socket: one still awaiting CONNACK contributes only its socket, one that is serving adds its eventfds beside it.) The division of responsibility is worth stating plainly:
 
 > **You decide when to wait and for how long. The library performs the actual I/O.**
 

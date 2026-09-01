@@ -584,7 +584,7 @@ Note what a `true` return does **not** promise: that the bytes were meant as a `
 
 ### `encode_ack()`
 
-Builds an `Ack` into a `node_Ack_size` buffer: sequence, status, an optional bounded `detail` string and an optional `DeviceInfo`. The publishing half is `send_ack()` in `main.cpp`, and it is best-effort by design — a failure there is logged, not propagated, because the command may already have taken effect and there is nothing useful to undo.
+Builds an `Ack` into a `node_Ack_size` buffer: sequence, status, an optional bounded `detail` string and an optional `DeviceInfo`. The publishing half is `publish_ack()` in `main.cpp`, and it is best-effort by design — a failure there is logged, not propagated, because the command may already have taken effect and there is nothing useful to undo.
 
 That division is the file boundary in miniature: `protocol.cpp` turns a result into bytes and cannot fail for any reason but "it did not fit"; `main.cpp` decides what to do when the network refuses them.
 
