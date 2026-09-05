@@ -46,7 +46,7 @@ The two mechanisms cover different failures and neither substitutes for the othe
 
 **Command / Ack = QoS 1.** A dropped "set interval" has no self-healing path — there is no next one coming. Consequence: QoS 1 is *at least* once, so **duplicates are possible** (the `DUP` flag on redelivery after a lost `PUBACK`). Commands must therefore be **idempotent or carry a `sequence` the node dedupes on** — this is what forces the `sequence` field in the README's message set, and `Ack` echoes it back.
 
-**QoS 2 unused.** Its exactly-once four-packet handshake buys nothing that a `sequence` + dedupe doesn't already give us, at higher cost and complexity.
+**QoS 2 unused.** Its exactly-once four-packet handshake buys nothing that a `sequence` + dedupe doesn't already give us, at higher cost and complexity — and being hop-by-hop (below), it would not reach the CAN leg that `sequence` does.
 
 MQTT QoS is **not** TCP reliability. TCP guarantees bytes reached the broker's *TCP stack*; QoS 1 guarantees the broker *application* took ownership. QoS 0's real exposure is the reconnect gap, not wire corruption.
 
@@ -62,7 +62,7 @@ The distinction only becomes observable once the hop that acknowledges and the n
 
 - **Clean session** — the node keeps no server-side state. Follows directly from the QoS 0 telemetry decision: there is no queue we want replayed.
 - **Keepalive 60 s.** The node publishes every ~5 s so `PINGREQ` will rarely fire; the value sets how fast the broker declares us dead (1.5× keepalive) and fires the will. Needed because TCP notices a dead peer far too slowly and an idle connection is silent.
-- **Last Will**: topic `node/<id>/status`, payload `offline`, **retained**, QoS 1, registered at `CONNECT`. On connect the node publishes `online` (retained) to the same topic. Net effect: `status` is always correct for any subscriber, including after a crash or cable pull, with no firmware handling the failure path.
+- **Last Will**: topic `node/<id>/status`, payload `offline`, **retained**, QoS 1, registered at `CONNECT`. On connect the node publishes `online` (retained) to the same topic. Net effect: `status` is correct for any subscriber, including after a crash or cable pull, with no firmware handling the failure path — bounded by detection, not by firmware: an unclean death leaves the retained `online` standing until the will fires 1.5× keepalive later.
 - **Reconnect**: on drop, retry the TCP connect + MQTT `CONNECT` with backoff. This is the README's headline learning goal — treat it as real work, not error handling.
 
 ### Reconnect latency vs. backoff

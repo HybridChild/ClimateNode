@@ -379,7 +379,7 @@ if (pub->message.topic.qos == MQTT_QOS_1_AT_LEAST_ONCE) {
 }
 ```
 
-If a message arrives at QoS 1, the receiver **must** send a `PUBACK`, or the broker redelivers it — with the `DUP` flag set — indefinitely. This is "at least once" seen from the receiving end, and it is precisely why the design requires commands to carry a `sequence` field the node can deduplicate on. See the QoS rationale in [`mqtt-design.md`](mqtt-design.md).
+If a message arrives at QoS 1, the receiver **must** send a `PUBACK`, or the broker redelivers it — with the `DUP` flag set — indefinitely. This is "at least once" seen from the receiving end — the node acting as the receiver on the *second* hop, which [`communication-guide.md`](../notes/communication-guide.md) §5 builds up from scratch — and it is precisely why the design requires commands to carry a `sequence` field the node can deduplicate on. See also the QoS rationale in [`mqtt-design.md`](mqtt-design.md).
 
 ## 8. Publishing and message ids
 
