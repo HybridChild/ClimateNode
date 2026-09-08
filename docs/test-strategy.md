@@ -15,7 +15,7 @@ No board, no broker, no sensor. The script sources the workspace venv and export
 ## What is covered
 
 | Suite | Code under test | Cases |
-|---|---|---|
+| --- | --- | --- |
 | `tests/protocol/` | `shared/protocol.cpp` — the wire format | 16 |
 | `tests/commands/` | `shared/commands.cpp` — command semantics | 9 |
 | `tests/heartbeat/` | `shared/can_link.h` — the CAN link contract | 9 |

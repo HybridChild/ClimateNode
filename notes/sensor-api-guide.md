@@ -56,7 +56,7 @@ Before the sensor API makes sense, one layer below it has to.
 Every driver-backed thing in Zephyr — a UART, an I²C controller, a sensor — is represented at runtime by a `const struct device *`. It bundles three things:
 
 | Member | What it holds | Mutable? |
-|---|---|---|
+| --- | --- | --- |
 | `->config` | Compile-time settings from devicetree (I²C address, bus, mode) | `const`, lives in flash |
 | `->data` | Runtime state (last sample, cached values) | RAM |
 | `->api` | Pointer to the driver's function table | `const`, lives in flash |
@@ -265,7 +265,7 @@ Your board (STM32H753, Cortex-M7) has an FPU in silicon — FPv5-D16, single *an
 
 **Both fields carry the sign.** From the header comment (`sensor.h:42`):
 
-```
+```text
  0.5  →  val1 =  0, val2 =  500000
 −0.5  →  val1 =  0, val2 = −500000
 −1.0  →  val1 = −1, val2 =  0
@@ -283,7 +283,7 @@ float  f = sensor_value_to_float(&temp);    /* sensor.h:1407 */
 
 `read_scd40()` uses these, and it is worth being precise about *which* boundary that is, because there are two and they are easy to conflate:
 
-```
+```text
 SCD-40
   │   I²C
   ▼
@@ -321,7 +321,7 @@ A channel is a named physical quantity **with a fixed unit fixed by the API, not
 `attr_set`/`attr_get` cover configuration: sample rate, thresholds, calibration. Generic ones exist (`SENSOR_ATTR_SAMPLING_FREQUENCY`, `SENSOR_ATTR_FULL_SCALE`), and drivers may define their own. The SCD-40 defines a full set (`scd4x.c:682`):
 
 | Attribute | Effect |
-|---|---|
+| --- | --- |
 | `SENSOR_ATTR_SCD4X_TEMPERATURE_OFFSET` | Compensates the sensor's own self-heating |
 | `SENSOR_ATTR_SCD4X_SENSOR_ALTITUDE` | Altitude for pressure compensation |
 | `SENSOR_ATTR_SCD4X_AMBIENT_PRESSURE` | Direct pressure compensation (overrides altitude) |
@@ -358,7 +358,7 @@ The general machinery — what the `uart:~$` prompt is, how a command like `sens
 `CONFIG_SENSOR_SHELL=y` registers one root command (`sensor_shell.c:1147`) with these subcommands:
 
 | Command | Purpose |
-|---|---|
+| --- | --- |
 | `sensor get <dev> [chan...]` | Read channels; **all** channels if none named |
 | `sensor attr_set <dev> <chan> <attr> <value>` | Write an attribute |
 | `sensor attr_get <dev> [<chan> <attr>...]` | Read attributes |
@@ -368,13 +368,13 @@ The general machinery — what the `uart:~$` prompt is, how a command like `sens
 
 On this bench, over `./scripts/console.sh`:
 
-```
+```console
 uart:~$ sensor get scd40@62 co2 ambient_temp humidity
 ```
 
 Each channel prints one line in this shape (`sensor_shell.c:487`, format `PRIsensor_q31_data` from `sensor_data_types.h:143`):
 
-```
+```text
 channel type=<n>(<name>) index=0 shift=<s> num_samples=1 value=<timestamp>ns (<reading>)
 ```
 
@@ -386,7 +386,7 @@ Channel names are the enum names lowercased with `SENSOR_CHAN_` stripped: `SENSO
 
 Since `attr_set` is implemented, you can also tune the chip live:
 
-```
+```console
 uart:~$ sensor attr_set scd40@62 co2 scd4x_sensor_altitude 50
 ```
 
@@ -400,7 +400,7 @@ The classic API (`sample_fetch`/`channel_get`) and the RTIO API (`submit`/`get_d
 
 Now the chain:
 
-```
+```text
 CONFIG_SENSOR_SHELL=y
     ↓  select SENSOR_ASYNC_API          (drivers/sensor/Kconfig:37)
     ↓  select CBPRINTF_FP_SUPPORT       (drivers/sensor/Kconfig:36)
@@ -424,7 +424,7 @@ It also explains the shell's verbose output format (`shift`, `num_samples`, that
 
 The shell gives you a **ground truth independent of your application logic**. When telemetry looks wrong on the Pi, one console command settles where the fault is:
 
-```
+```console
 uart:~$ sensor get scd40@62 co2 ambient_temp humidity
 ```
 
@@ -440,7 +440,7 @@ With no channel names, `cmd_get_sensor` loops over **every channel type in the e
 
 `cmd_get_sensor` takes a mutex with `K_NO_WAIT` (`sensor_shell.c:554`):
 
-```
+```text
 Another sensor reading in progress
 ```
 
@@ -502,7 +502,7 @@ Note that the status set here is the **internal** `enum sensor_reading_status`, 
 
 What actually happens when the sensor thread takes a reading, from the driver call all the way out to the wire:
 
-```
+```text
 sensor.cpp  read_scd40()
   │
   ├─ sensor_sample_fetch(scd40)
@@ -569,7 +569,7 @@ sensor info                                      # needs CONFIG_SENSOR_INFO
 ```
 
 | Remember | Because |
-|---|---|
+| --- | --- |
 | Fetch once, get many | One bus read; all channels share one instant |
 | `channel_get` never touches the bus | It only converts what `sample_fetch` latched |
 | Both `sensor_value` fields carry the sign | −1.5 is `{−1, −500000}`, not `{−2, 500000}` |
@@ -589,7 +589,7 @@ Three things worth doing at least once on real hardware. All of them need the co
 
 *Demonstrates §7.4: the shell is ground truth independent of your application.*
 
-```
+```console
 uart:~$ sensor get scd40@62 co2 ambient_temp humidity
 ```
 
@@ -598,7 +598,7 @@ Expect a plausible triple — CO₂ near **400–450 ppm** in a ventilated room,
 Now compare against what the Pi is seeing:
 
 | Shell | Telemetry on the Pi | Where the fault is |
-|---|---|---|
+| --- | --- | --- |
 | plausible | plausible | nothing wrong |
 | plausible | absent or wrong | at or **above** the zbus channel — encode, publish, or host decode |
 | error / nonsense | anything | at or **below** the driver — wiring, power, I²C, init |
@@ -617,7 +617,7 @@ host/.venv/bin/python host/command.py interval 1000
 
 Watch the telemetry lines. `sequence` advances every second, `uptime_ms` advances — and `co2`/`temp`/`rh` repeat in runs of roughly four or five identical values before changing:
 
-```
+```text
 seq=104   co2=  812 ppm  temp=22.41 C  rh=41.3 %  ...  SENSOR_STATUS_OK
 seq=105   co2=  812 ppm  temp=22.41 C  rh=41.3 %  ...  SENSOR_STATUS_OK
 seq=106   co2=  812 ppm  temp=22.41 C  rh=41.3 %  ...  SENSOR_STATUS_OK

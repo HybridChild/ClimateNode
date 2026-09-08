@@ -8,7 +8,7 @@ Builds against the shared global Zephyr workspace — see [`toolchain.md`](toolc
 
 ## The CAN path
 
-```
+```text
 gateway/boards/nucleo_h753zi.overlay    gateway: the bitrate the board dts leaves unset
 gateway/prj.conf                        gateway: CONFIG_CAN, CONFIG_ISOTP, the CAN shell
 shared/can_link.h                       SHARED: address map, heartbeat frame, message type
@@ -25,7 +25,7 @@ peer-node/src/main.cpp                  peer: the CAN session
 
 The gateway is a **transport hop**, not an aggregator. It moves the peer's already-encoded Protobuf between CAN and MQTT and never decodes it:
 
-```
+```text
 peer node                     gateway                              broker
 ─────────                     ───────                              ──────
 Telemetry ── ISO-TP 0x7E8 ──▶ RX thread ──▶ chan_relay_telemetry ──▶ node/2/telemetry  QoS 0
@@ -55,7 +55,7 @@ Kconfig this cost, all in `gateway/prj.conf` and all previously defaults nobody 
 Five 11-bit identifiers per peer, `id` being the node id and `n = id - 2`:
 
 | Identifier | Direction | Carries |
-|---|---|---|
+| --- | --- | --- |
 | `0x700 + id` | peer → gateway | heartbeat, one raw frame at 1 Hz |
 | `0x7E0 + n` | gateway → peer | commands, ISO-TP data |
 | `0x7E4 + n` | peer → gateway | flow control answering the above |
@@ -116,7 +116,7 @@ The rate lives in the overlay rather than `prj.conf` because it describes **the 
 
 **3. Kconfig — `gateway/prj.conf`.** The CAN share of it:
 
-```
+```conf
 CONFIG_CAN=y            # the CAN subsystem and controller API
 CONFIG_CAN_SHELL=y      # `can` console commands — see Bring-up checks
 ```
@@ -150,7 +150,7 @@ The shell is a **build variant**, not a permanent absence. `peer-node/debug.conf
 The measurements that put it there rather than in `prj.conf`, all pristine builds, RAM out of 16 KB:
 
 | Configuration | RAM | Flash |
-|---|---|---|
+| --- | --- | --- |
 | no shell (`prj.conf` alone) | 10 696 B — 65 % | 67 384 B |
 | shell core, stock settings | 15 632 B — 95 % | 97 008 B |
 | + `CONFIG_CAN_SHELL`, stock | 16 092 B — 98 % | 106 268 B |
@@ -211,7 +211,7 @@ While you are in the peer's generated header, `grep DT_CHOSEN_zephyr_canbus` the
 
 **2. The controller is present and sanely clocked.**
 
-```
+```console
 uart:~$ can show can@4000a000
 ```
 
@@ -219,7 +219,7 @@ Expect `core clock: 80000000 Hz`, `max bitrate: 1000000 bps`, `max std filters: 
 
 **3. A frame goes out and comes back.**
 
-```
+```console
 uart:~$ can mode can@4000a000 loopback
 uart:~$ can start can@4000a000
 uart:~$ can filter add can@4000a000 0x702
@@ -228,7 +228,7 @@ uart:~$ can send can@4000a000 0x702 01 02 03 04 05 06 07 08
 
 Expect `filter ID: 0` from the third command, then the fourth to report the frame enqueued and sent, followed by the frame arriving back:
 
-```
+```text
 can@4000a000       702   [8]  01 02 03 04 05 06 07 08
 ```
 
@@ -240,7 +240,7 @@ Note the subcommand is `can filter add`, not `can add`; a bare `can add` prints 
 
 **5. The peer node boots and finds its sensor.** Run this with the peer **alone** — the other board unpowered or the CANH/CANL pair unplugged — because that is what makes the link errors below predictable rather than confusing. Flash it and open its console, then **press the black RESET button (B2)**, because `screen` cannot be attached before the board starts and the interesting lines are all at boot.
 
-```
+```text
 *** Booting Zephyr OS build v4.4.1 ***
 [00:00:00.009,000] <inf> node: node 2 on CAN: heartbeat 0x702, isotp in 0x7e0 (fc out 0x7e4), out 0x7e8 (fc in 0x7ec)
 [00:00:00.009,000] <inf> node_sensor: BME280 online
@@ -264,7 +264,7 @@ Line by line, because each one is a check:
 **What the CAN errors mean with no peer attached**, which is what step 5's console shows and what any single-board run will show:
 
 | Code | Name | Meaning |
-|---|---|---|
+| --- | --- | --- |
 | `-5` | `-EIO` | a transmit failed; error counters climbing, still error-active |
 | `-114` | `-ENETUNREACH` | `CAN_ESR_BOFF` is set — the controller is **bus-off** (`can_stm32_bxcan.c:794`) |
 | `-2` | `ISOTP_N_TIMEOUT_BS` | the first frame went out; no flow control came back inside `CONFIG_ISOTP_BS_TIMEOUT` (1000 ms) |
@@ -274,7 +274,7 @@ All three are the predicted behaviour of a node alone on a bus, not defects: not
 **6. Two nodes on a real bus, and the heartbeat crosses it.** The first check that needs the wire built. Two SN65HVD230 breakouts, one per board:
 
 | Transceiver pin | Gateway (H753ZI) | Peer (F072RB) |
-|---|---|---|
+| --- | --- | --- |
 | `3V3` / `VCC` | 3.3 V | 3.3 V |
 | `GND` | GND | GND |
 | `D` / `CTX` (driver in) | **PD1** (CAN TX) | **PA12** (CAN TX) |
@@ -293,7 +293,7 @@ Then flash both, open both consoles, and press **RESET (B2)** on the peer:
 
 On the gateway, from `relay.cpp`:
 
-```
+```text
 [00:00:01.652,000] <inf> relay: relay up: peer 2, heartbeat 0x702, isotp in 0x7e8 (fc out 0x7ec), out 0x7e0 (fc in 0x7e4)
 [00:00:01.902,000] <inf> relay: peer node 2 is online
 ```
@@ -317,7 +317,7 @@ Worth knowing what stale looks like, because the message does not point at the c
 
 With current bindings, both nodes on one screen:
 
-```
+```text
 node/2/telemetry  seq=0  co2=   -- ppm  temp=23.66 C  rh=54.2 %  p=101108 Pa  up=  0.0s  SENSOR_STATUS_OK
 node/1/telemetry  seq=0  co2=   -- ppm  temp=   -- C  rh=  -- %  p=    -- Pa  up=  2.3s  SENSOR_STATUS_WARMING_UP
 node/1/telemetry  seq=1  co2= 1030 ppm  temp=28.39 C  rh=44.2 %  p=    -- Pa  up=  7.3s  SENSOR_STATUS_OK
@@ -333,7 +333,7 @@ host/.venv/bin/python host/command.py --node 1 info   # control: no CAN involved
 host/.venv/bin/python host/command.py --node 2 info   # the actual test
 ```
 
-```
+```text
 -> node/2/command  seq=227368785 info (9 bytes)
 <- node/2/ack  seq=227368785 ACK_STATUS_OK
    firmware: 0.5.0
@@ -342,7 +342,7 @@ host/.venv/bin/python host/command.py --node 2 info   # the actual test
 ```
 
 | Reply | Meaning |
-|---|---|
+| --- | --- |
 | `ACK_STATUS_OK` with `board: nucleo_f072rb` | **Genuine round trip.** That string is `CONFIG_BOARD` compiled into the F072RB image; it exists nowhere in the gateway, so it can only have crossed the bus. |
 | `ACK_STATUS_FAILED`, `no response over CAN` | The command reached the peer's identifier but nothing came back — suspect the `0x7E4` flow control. |
 | `ACK_STATUS_FAILED`, `no route to node over CAN` | `isotp_send()` failed outright; the transfer never left the gateway. |
@@ -353,7 +353,7 @@ host/.venv/bin/python host/command.py --node 2 info   # the actual test
 
 With everything running, unplug CANH/CANL between the transceivers and watch the Pi:
 
-```
+```text
 18:23:19  node/2/telemetry  seq=10  ... up=  50.1s
 18:23:30  node/2/status     offline
    ... node/1 continues undisturbed throughout ...

@@ -66,7 +66,7 @@ All three carry a `schema_version`, bumped only on a *breaking* change. Topics a
 ## Hardware
 
 | Role | Board | Sensor on I²C1 (PB8/PB9) | Reaches the broker via |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | **Gateway**, node 1 | Nucleo-H753ZI — Cortex-M7 | SCD-40 — CO₂, temperature, humidity — `0x62` | on-board RJ45 + LAN8742 PHY |
 | **Peer**, node 2 | Nucleo-F072RB — Cortex-M0, **16 KB RAM**, no FPU | BME280 — temperature, humidity, pressure — `0x77` | CAN 2.0B at 500 kbit/s, through the gateway |
 | **Host** | Raspberry Pi 5 | — | is the broker: Mosquitto + the Python harness |
@@ -123,7 +123,7 @@ host/.venv/bin/python host/command.py info          # also: trigger | interval 2
 
 `monitor.py` subscribes to `node/#` and prints every topic from both nodes in one window:
 
-```
+```text
 14:02:11  node/1/status        [retained] online
 14:02:16  node/1/telemetry     seq=1042  co2=  812 ppm  temp=22.41 C  rh=41.3 %  p=    -- Pa  up=  5210.4s  SENSOR_STATUS_OK  (schema v1)
 ```

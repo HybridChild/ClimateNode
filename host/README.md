@@ -45,7 +45,7 @@ host/.venv/bin/python host/monitor.py          # Ctrl-C to quit
 
 Subscribes to `node/#` at QoS 1 and pretty-prints each payload, so every node and every topic land in one window:
 
-```
+```text
 14:02:11  node/1/status        [retained] online
 14:02:16  node/1/telemetry     seq=1042  co2=  812 ppm  temp=22.41 C  rh=41.3 %  p=    -- Pa  up=  5210.4s  SENSOR_STATUS_OK  (schema v1)
 ```
@@ -72,7 +72,7 @@ host/.venv/bin/python host/command.py interval 2000   # retune the telemetry per
 It publishes at QoS 1 and correlates the reply by `sequence` — subscribing to the ack topic *before* publishing, because a fast node can otherwise answer before anyone is listening. The sequence number is also what lets the node discard a duplicate when QoS 1 redelivers.
 
 | Flag | Effect |
-|---|---|
+| --- | --- |
 | `--node <id>` | which node to address (default `1`); `--node 2` is the peer node, whose traffic the gateway relays |
 | `--sequence <n>` | force a sequence number — **reuse one to test duplicate suppression** |
 | `--timeout <s>` | how long to await the `Ack` (default 5) |
@@ -86,7 +86,7 @@ Two useful things it can do that the happy path does not show: `--sequence` twic
 
 `command.py` prints its own `Ack` and exits, which is enough to know a command was accepted and not enough to see what it *did*. Open a second SSH session and leave `monitor.py` running in it; the effect of a command shows up there:
 
-```
+```sh
 ssh pi@pi5.local        # terminal A: host/.venv/bin/python host/monitor.py
 ssh pi@pi5.local        # terminal B: host/.venv/bin/python host/command.py ...
 ```
@@ -96,7 +96,7 @@ ssh pi@pi5.local        # terminal B: host/.venv/bin/python host/command.py ...
 ## What is in here
 
 | File | |
-|---|---|
+| --- | --- |
 | `monitor.py` | subscribe to `node/#`, decode and print |
 | `command.py` | publish one `Command`, await the matching `Ack` |
 | `generate.sh` | `proto/node.proto` → `node_pb2.py` |

@@ -64,7 +64,7 @@ The pair is a transmission line, and an unterminated line reflects. CAN wants **
 
 A classic CAN data frame, in transmission order:
 
-```
+```text
  SOF   IDENTIFIER    RTR  control    DATA         CRC      ACK    EOF
   │        │          │      │        │            │        │      │
   1 bit   11 bits    1 bit  6 bits   0–8 bytes   15+1 bits  2 bits 7 bits
@@ -124,7 +124,7 @@ Five error types are detected: **bit error** (monitored level differs from the t
 Each node keeps two counters, a **transmit error counter (TEC)** and a **receive error counter (REC)**. Errors increment them by 8 (roughly); successful transmission and reception decrement them by 1. That asymmetry means a node has to be persistently wrong, not occasionally unlucky, to escalate. The counters drive three states:
 
 | State | Condition | Behaviour |
-|---|---|---|
+| --- | --- | --- |
 | **Error-active** | TEC and REC < 128 | Normal. Signals errors with dominant error frames. |
 | **Error-passive** | either ≥ 128 | Still communicates, but signals errors *recessively* — it can no longer disturb the bus for everyone else. |
 | **Bus-off** | TEC ≥ 256 | Disconnected from the bus. Transmits nothing, receives nothing. |
@@ -157,7 +157,7 @@ The price is everything Protobuf was giving you. There is no presence, so "absen
 **Option 3: ISO-TP.** ISO 15765-2, the transport layer defined for exactly this and the one **UDS** — automotive diagnostics — runs on. It carries up to 4095 bytes over classic CAN by segmenting, and it is worth knowing its four frame types because they are visible on the wire:
 
 | PCI type | Name | Role |
-|---|---|---|
+| --- | --- | --- |
 | `0` | Single Frame (SF) | Payload ≤ 7 bytes, sent in one frame with a length nibble |
 | `1` | First Frame (FF) | Starts a longer transfer, carrying the total length |
 | `2` | Consecutive Frame (CF) | The remaining data, with a 4-bit rolling sequence number |
@@ -178,7 +178,7 @@ One last comparison, because it sharpens what MQTT was doing for you. TCP gives 
 
 The H753ZI is a **gateway**: MQTT and Ethernet on one side, CAN on the other. The F072RB is a **peer node** with its own node identity and its own BME280, not a sensor slave. It encodes its own `Telemetry` and the gateway relays those bytes without decoding them.
 
-```
+```text
         F072RB  (peer node)                      H753ZI  (gateway)                Pi
         ───────────────────                      ─────────────────                ──
    BME280 ──▶ sensor thread
@@ -209,7 +209,7 @@ They live in [`shared/can_link.h`](../shared/can_link.h), the one file both boar
 Two payload styles on one bus, chosen by §8's rule:
 
 | | Heartbeat | Telemetry, commands, acks |
-|---|---|---|
+| --- | --- | --- |
 | Encoding | hand-packed 8 bytes | Protobuf, from `proto/node.proto` |
 | Transport | one raw CAN frame | ISO-TP, segmented |
 | Rate | 1 Hz, fixed | on the sample period, or on demand |
@@ -221,7 +221,7 @@ And the property the whole arrangement exists to demonstrate: **the gateway does
 The mirror-image comparison against the MQTT side is where the two halves of this project meet:
 
 | | MQTT side | CAN side |
-|---|---|---|
+| --- | --- | --- |
 | What names a message | the topic | the frame ID |
 | Who decides what arrives | broker subscription | hardware acceptance filter |
 | Framing | free — payloads arrive whole | 8 bytes, so ISO-TP or hand-packing |
@@ -247,7 +247,7 @@ The same trick goes one step further and needs no *board* either. Zephyr ships a
 
 *Demonstrates §3 (the frame), §5 (why loopback is the right first test) and §7 (filters).*
 
-```
+```console
 uart:~$ can show can@4000a000
 uart:~$ can mode can@4000a000 loopback
 uart:~$ can start can@4000a000
@@ -257,7 +257,7 @@ uart:~$ can send can@4000a000 0x702 01 02 03 04 05 06 07 08
 
 `can show` should report `core clock: 80000000 Hz`, `capabilities: normal loopback listen-only`, and `state: stopped`. After the `send`:
 
-```
+```text
 can@4000a000       702   [8]  01 02 03 04 05 06 07 08
 ```
 
@@ -271,7 +271,7 @@ The subcommand is `can filter add`, not `can add` — a bare `can add` prints th
 
 With loopback still running from Exercise 1, add the same filter twice more, then send:
 
-```
+```console
 uart:~$ can filter add can@4000a000 0x702
 uart:~$ can filter add can@4000a000 0x702
 uart:~$ can send can@4000a000 0x702 AA BB CC DD

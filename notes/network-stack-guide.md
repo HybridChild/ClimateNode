@@ -24,7 +24,7 @@ This is a teaching document, not project documentation. [`communication-guide.md
 
 Here is everything the application does to get on the network:
 
-```
+```text
 (nothing)
 ```
 
@@ -46,7 +46,7 @@ Before the software abstraction, the hardware — because §1's answer hinges on
 
 **Ethernet is two halves.** The IEEE-802.3 standard splits a wired link into a *digital* half and an *analog* half, and real silicon splits along the same line — usually into two separate chips:
 
-```
+```text
    STM32H753 (the MCU die)                       LAN8742 (a separate chip)
  ┌───────────────────────────┐                 ┌──────────────────────┐        ┌───────┐
  │ CPU ─ AHB bus ─ MAC       │══ RMII (data) ══│  PHY                 │─ pair ─│ RJ45  │═ cable ═▶
@@ -73,7 +73,7 @@ The one-sentence version to carry into the rest of the guide: **the MAC is the o
 
 A `net_if` (network interface) is Zephyr's in-memory handle for "a way to send and receive packets." It is the pivot of the entire stack, and it is deliberately **ignorant of hardware**. Above it, the socket and IP code deal only in `net_if`s and addresses; below it, a driver deals in frames and registers. The `net_if` is the seam that lets those two never know about each other.
 
-```
+```text
       your code          zsock_socket / zsock_connect / mqtt_connect
          │                        (names addresses, never interfaces)
    ──────┼──────────────────────────────────────────────────────────
@@ -106,7 +106,7 @@ So "no app code" is not magic; it is the payoff of pushing every hardware choice
 The [communication guide's](communication-guide.md) stack (Ethernet → IP → TCP → MQTT) is the *protocol* view. Zephyr's *implementation* has the same shape but names its layers differently, and — the point of this section — each layer is turned on by a different mechanism:
 
 | Zephyr layer | What it does | Turned on by | In this repo |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | **socket API** | the `zsock_*` calls the app (and `mqtt_lib`) makes | `CONFIG_NET_SOCKETS` | `prj.conf` |
 | **TCP / IPv4** | reliable stream; addressing & routing | `CONFIG_NET_TCP`, `CONFIG_NET_IPV4` | `prj.conf` |
 | **L2 (link layer)** | frames ⇄ driver: Ethernet headers, ARP | `CONFIG_NET_L2_ETHERNET` | `prj.conf` |
@@ -193,7 +193,7 @@ Nothing from the `net_if` up moves. IPv4, TCP, sockets, `mqtt_lib`, every line o
 This is the surprising one: **USB networking still uses the Ethernet L2.** The USB CDC-ECM and CDC-NCM classes present the host↔device link *as an Ethernet interface* — both call `ethernet_init(iface)` internally (`subsys/usb/device_next/class/usbd_cdc_ecm.c:612`, `usbd_cdc_ncm.c:1159`). To the IP layer it is indistinguishable from a real NIC. So:
 
 | Layer | Change |
-|---|---|
+| --- | --- |
 | App / MQTT / sockets / IP | **none** |
 | L2 | **none** — still `CONFIG_NET_L2_ETHERNET` |
 | Driver | swap the STM32 MAC for the USB device stack + a CDC-ECM/NCM class |
@@ -203,7 +203,7 @@ This is the surprising one: **USB networking still uses the Ethernet L2.** The U
 
 The one real catch is bring-up. A USB network interface does not exist until the *host* enumerates the device, so it cannot be ready at `APPLICATION`-level init the way the MAC is. Zephyr encodes this precisely: `CONFIG_NET_CONFIG_AUTO_INIT` is
 
-```
+```kconfig
 default y if !(USB_DEVICE_NETWORK || USBD_CDC_ECM_CLASS || USBD_CDC_NCM_CLASS)
 ```
 
@@ -214,7 +214,7 @@ default y if !(USB_DEVICE_NETWORK || USBD_CDC_ECM_CLASS || USBD_CDC_NCM_CLASS)
 Wi-Fi has its **own L2** (`CONFIG_NET_L2_WIFI_MGMT`) and, on most parts, an *offloaded* driver — the TCP/IP or at least the MAC runs on a companion chip (`offloaded_netdev` in `subsys/net/l2/`). Structurally:
 
 | Layer | Change |
-|---|---|
+| --- | --- |
 | App / MQTT / sockets | **none** (the route lookup finds the Wi-Fi `net_if`) |
 | L2 | Ethernet L2 → Wi-Fi L2 |
 | Driver | a Wi-Fi driver for the specific module (e.g. an ESP32 co-processor) |
@@ -244,7 +244,7 @@ The board's `net` shell (enabled by `CONFIG_NET_SHELL=y`) exposes the exact obje
 
 ### Exercise 1 — the `net_if` and its stack
 
-```
+```console
 uart:~$ net iface
 ```
 
@@ -254,13 +254,13 @@ Read the output against §3's diagram: the interface is `Ethernet`, which names 
 
 ### Exercise 2 — the route lookup, made visible
 
-```
+```console
 uart:~$ net route
 ```
 
 There is **no default route** (§5: no gateway string), yet §6 claims `connect(192.168.10.1)` finds a path. That path is the interface's own on-link `/24`, not a route entry — which is exactly why an off-link address would fail. Confirm the on-link half works:
 
-```
+```console
 uart:~$ net ping 192.168.10.1
 ```
 
@@ -270,7 +270,7 @@ uart:~$ net ping 192.168.10.1
 
 With the console open, pull the Ethernet cable, then:
 
-```
+```console
 uart:~$ net iface
 ```
 

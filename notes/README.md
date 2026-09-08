@@ -27,7 +27,7 @@ Read them along the path one reading travels — from the sensor that produces i
 
 The order above is a single thread through this lattice. Arrows mean "assumes"; the two independent roots are `zephyr-build-system-guide` (the Zephyr/sensor side) and `communication-guide` (the networking side), and they converge at `zbus-guide`, where the two threads meet.
 
-```
+```text
                        ┌─▶ sensor-api-guide ──────────────────────────┐
 zephyr-build-system ───┤     the SCD-40                               │
   devicetree, Kconfig  ├─▶ language-cpp   (orthogonal)                ├─▶ zbus-guide ─▶ testing-guide
@@ -54,7 +54,7 @@ zephyr-build-system ───┤     the SCD-40                               �
 The rows are in the reading order above (#1–#10), so the column you scan for "can I start here?" is **Assumes you know**. It digests each guide's own `Prerequisites:` line, which is fuller — it also says what you can safely skip.
 
 | # | Guide | Answers | Assumes you know | Reference half |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | 1 | [`zephyr-build-system-guide.md`](zephyr-build-system-guide.md) | Why is a Zephyr build a configuration system rather than a compiler? | C, and what a compiler and linker do | [`build-system-overview.md`](../docs/build-system-overview.md) |
 | 2 | [`language-cpp.md`](language-cpp.md) | What actually changes when a Zephyr app is C++? | C++ basics; the freestanding/boundary consequences are the subject | *(none — the source files are the reference)* |
 | 3 | [`sensor-api-guide.md`](sensor-api-guide.md) | How does `sensor_sample_fetch()` become I²C traffic, and why two integers instead of a float? | devicetree basics (the build-system guide), roughly what I²C is | [`sensor-bringup.md`](../docs/sensor-bringup.md) |

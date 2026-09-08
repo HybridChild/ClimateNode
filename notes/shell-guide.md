@@ -202,12 +202,12 @@ The practical payoff at the prompt: you rarely type a device or channel name in 
 Nothing above required writing a command; the value on this bench comes from the shells other subsystems already register once you enable them. Five are worth knowing:
 
 | Root | Enabled by | What it answers | Registered at |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `kernel` | comes with `CONFIG_SHELL` | threads, uptime, stacks, reboot | `subsys/shell/modules/kernel_service/kernel_shell.c:10` |
 | `device` | comes with `CONFIG_SHELL` | what devices exist and their init status | `subsys/shell/modules/device_service.c:269` |
-| `net`    | `CONFIG_NET_SHELL=y` | interface state, IP/MAC, `net ping` | `subsys/net/lib/shell/net_shell.c:235` |
+| `net` | `CONFIG_NET_SHELL=y` | interface state, IP/MAC, `net ping` | `subsys/net/lib/shell/net_shell.c:235` |
 | `sensor` | `CONFIG_SENSOR_SHELL=y` | read channels/attributes straight from a driver | `drivers/sensor/sensor_shell.c:1147` |
-| `can`    | `CONFIG_CAN_SHELL=y` | controller state and error counters, send a frame, add a receive filter | `drivers/can/can_shell.c:1242` |
+| `can` | `CONFIG_CAN_SHELL=y` | controller state and error counters, send a frame, add a receive filter | `drivers/can/can_shell.c:1242` |
 
 Three of these earn their place in this project specifically:
 
@@ -238,7 +238,7 @@ One cost is indirect and worth repeating from the sensor guide: `CONFIG_SENSOR_S
 
 ## 8. Cheat sheet
 
-```
+```text
 # --- what the pieces are ---
 backend                 the wire (UART over ST-LINK) the shell reads/writes
 shell thread            reads bytes, echoes, handles Tab/history, dispatches on Enter
@@ -274,13 +274,13 @@ These run over [`./scripts/console.sh`](../scripts/console.sh) (115200 baud; qui
 
 At the prompt, ask the kernel to describe itself:
 
-```
+```console
 uart:~$ kernel threads
 ```
 
 You should see a list that includes a `shell_uart` thread alongside `main` and the sensor thread. Then:
 
-```
+```console
 uart:~$ kernel uptime
 Uptime: 42134 ms
 ```
@@ -291,13 +291,13 @@ Uptime: 42134 ms
 
 Type the following but press **Tab** where marked instead of typing the rest:
 
-```
+```console
 uart:~$ sensor get s<Tab>
 ```
 
 The node name completes to `scd40@62`. Now break it — type a label that does not exist and press Tab:
 
-```
+```console
 uart:~$ sensor get xyz<Tab>
 ```
 
@@ -307,13 +307,13 @@ Nothing completes.
 
 ### Exercise 3 — a command answers the network question logging cannot
 
-```
+```console
 uart:~$ net iface
 ```
 
 Read off the interface state (`oper state: UP` when the cable is in) and the IPv4 address — it should be `192.168.10.2`, the static address from `prj.conf`. Then ping the Pi *from the board*:
 
-```
+```console
 uart:~$ net ping 192.168.10.1
 ```
 
@@ -321,7 +321,7 @@ uart:~$ net ping 192.168.10.1
 
 ### Exercise 4 — one root command, two sources
 
-```
+```console
 uart:~$ help
 ```
 

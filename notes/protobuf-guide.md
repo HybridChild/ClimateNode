@@ -26,7 +26,7 @@ For how those bytes get carried, see [`communication-guide.md`](communication-gu
 
 The cheapest thing a node can publish is text:
 
-```
+```text
 seq=1 co2=812 temp=22.41 rh=41.3
 ```
 
@@ -50,7 +50,7 @@ A useful way to hold the last point: text and JSON let *anything* change and hop
 
 A Protobuf message is a flat sequence of **fields**, each preceded by a tag:
 
-```
+```text
 [tag][value][tag][value][tag][value]...
 ```
 
@@ -66,7 +66,7 @@ Integers — including the tags — are encoded as **varints**: seven bits at a 
 
 Decoding `ac 06` by hand:
 
-```
+```text
 ac = 1010 1100   continuation bit set, payload 010 1100 = 44
 06 = 0000 0110   continuation bit clear, payload 000 0110 = 6   (last byte)
 
@@ -76,7 +76,7 @@ value = 44 | (6 << 7) = 44 + 768 = 812
 Small numbers are small, which is the whole point:
 
 | Value | Encoding | Bytes |
-|---|---|---|
+| --- | --- | --- |
 | 1 | `01` | 1 |
 | 42 | `2a` | 1 |
 | 812 | `ac 06` | 2 |
@@ -94,14 +94,14 @@ Two gotchas that explain choices in `node.proto`:
 
 Each field's tag is a single varint packing two things:
 
-```
+```text
 tag = (field_number << 3) | wire_type
 ```
 
 The low three bits are the **wire type**, which tells a decoder *how to read the next bytes* even if it has never heard of the field number:
 
 | Wire type | Meaning | Used by |
-|---|---|---|
+| --- | --- | --- |
 | 0 | varint | `uint32`, `int32`, `bool`, enums |
 | 1 | 64-bit fixed | `double`, `fixed64` |
 | 2 | length-delimited | `string`, `bytes`, nested messages, packed repeated |
@@ -115,7 +115,7 @@ The low three bits are the **wire type**, which tells a decoder *how to read the
 
 Reading the tags in the packet below:
 
-```
+```text
 0x08 >> 3 = 1   0x08 & 7 = 0     field 1, varint
 0x62 >> 3 = 12  0x62 & 7 = 2     field 12, length-delimited
 ```
@@ -125,7 +125,7 @@ Reading the tags in the packet below:
 The tag alone is enough to skip a field, because each wire type is self-describing about its own length:
 
 | Wire type | Value layout | Length known from |
-|---|---|---|
+| --- | --- | --- |
 | 0 varint | `[varint]` | the continuation bits |
 | 1 64-bit | `[8 bytes]` | fixed by the type |
 | 2 length-delimited | `[length varint][that many bytes]` | the explicit length prefix |
@@ -153,21 +153,21 @@ Three rules that follow from "just fields, back to back", and that matter when d
 
 When the bench ran `command.py info`, the tool reported `info (10 bytes)`. Those bytes are:
 
-```
+```text
 08 01 10 89 e8 f4 b7 02 62 00
 ```
 
 Taken apart:
 
 | Bytes | Tag | Field | Wire type | Meaning |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `08 01` | `0x08` | 1 | 0 (varint) | `schema_version = 1` |
 | `10 89 e8 f4 b7 02` | `0x10` | 2 | 0 (varint) | `sequence = 654128137` |
 | `62 00` | `0x62` | 12 | 2 (length-delimited) | `get_device_info`, length 0 |
 
 The same command with `--sequence 42` was **6 bytes**:
 
-```
+```text
 08 01 10 2a 5a 00
 ```
 
@@ -181,7 +181,7 @@ You can take apart any captured payload the same way:
 printf '\x08\x01\x10\x2a\x5a\x00' | protoc --decode_raw
 ```
 
-```
+```text
 1: 1
 2: 42
 11: ""
@@ -199,7 +199,7 @@ It does not. **A serialised message carries no type identity at all** — no nam
 
 The six-byte command above therefore decodes cleanly as any of them:
 
-```
+```console
 $ printf '\x08\x01\x10\x2a\x5a\x00' | protoc --decode=node.Command --proto_path=proto proto/node.proto
 schema_version: 1
 sequence: 42
@@ -223,7 +223,7 @@ pb_decode(&stream, node_Command_fields, &cmd);   /* "read these bytes as a Comma
 Nothing in the payload can contradict that argument. So every Protobuf system needs a type discriminator somewhere, and there are three usual places to put it:
 
 | Where the type lives | Cost | Used by |
-|---|---|---|
+| --- | --- | --- |
 | Out-of-band context | zero bytes | **this project** — the MQTT topic; also gRPC's method name, or a dedicated socket/port |
 | An envelope message with a `oneof` over every type | tag + length per message | most single-channel protocols |
 | `google.protobuf.Any` | a type-URL *string* per message | dynamic/plugin systems |
@@ -268,7 +268,7 @@ nanopb generates the same shape it already gave `Ack.device_info` — a `has_` f
 That last clause is the cost, and it is worth being precise about it, because "proto3 does not transmit defaults" quietly becomes false in the way people usually remember it. The rule was never "zeros are free"; it was "*unset* fields are free", and without explicit presence those two were the same sentence. With it they come apart:
 
 | Sender's intent | Without `optional` | With `optional` |
-|---|---|---|
+| --- | --- | --- |
 | never measured | omitted | omitted |
 | measured, value is 0 | omitted — indistinguishable from the above | **written**: tag + value |
 | measured, value is nonzero | written | written |
@@ -285,12 +285,12 @@ The firmware carries the same distinction internally, one layer earlier: `struct
 
 The console logs `published telemetry seq=26404 (26 bytes)`. Reconstructing that message field by field puts §2's tags and this section's absent-defaults rule side by side:
 
-```
+```text
 08 01 10 a4 ce 01 18 9b b9 88 41 20 ac 06 2d ae 47 b3 41 35 33 33 25 42 38 01
 ```
 
 | Field | # | Wire type | Bytes | Encoding |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `schema_version = 1` | 1 | varint | 2 | `08 01` |
 | `sequence = 26404` | 2 | varint | 4 | `10 a4 ce 01` |
 | `uptime_ms = 136453275` | 3 | varint | 5 | `18 9b b9 88 41` |
@@ -391,7 +391,7 @@ Note where each layer sits: Protobuf handles skew in *structure* automatically, 
 
 The bench's malformed test published the ASCII string `garbage`:
 
-```
+```text
 67 61 72 62 61 67 65
 ```
 
@@ -403,7 +403,7 @@ The first byte decides it: `0x67 >> 3 = 12`, `0x67 & 7 = 7` — and wire type 7 
 printf 'hi' | protoc --decode=node.Command --proto_path=proto proto/node.proto
 ```
 
-```
+```text
 13: 105
 ```
 
@@ -414,7 +414,7 @@ This node survives that by construction rather than by detection: `which_payload
 The general lesson: **`MALFORMED` catches corrupt framing, not wrong content.** Protobuf has no magic number and no checksum, so:
 
 | What went wrong | Caught by | How |
-|---|---|---|
+| --- | --- | --- |
 | Corrupt or truncated bytes | the decoder | invalid wire type, or a length running past the buffer |
 | A different message type, structurally legal | nothing | the type is never on the wire (§4); it decodes to defaults and unknown fields |
 | Right message, incompatible schema version | `schema_version` | only if the receiver checks it |
@@ -432,7 +432,7 @@ Standard Protobuf libraries allocate freely — strings grow, repeated fields ar
 
 nanopb cannot know how long a `string` may get, so by default it emits a pointer field plus callbacks or `malloc`. Giving it a bound in [`proto/node.options`](../proto/node.options) changes that:
 
-```
+```text
 node.Ack.detail  max_size:48
 ```
 
@@ -458,7 +458,7 @@ nanopb computes the maximum encoded size of each message and emits it as a macro
 
 These are not magic. Each is the sum of every field's worst case, and working one out makes the whole encoding concrete:
 
-```
+```text
 node_Telemetry_size = 42
   schema_version   1 (tag) + 5 (uint32 varint, worst case)   =  6
   sequence         1 + 5                                     =  6
@@ -474,7 +474,7 @@ node_Telemetry_size = 42
 
 Note what the `optional` markers did **not** do to this number: nothing. The worst case already assumed every field was written, so adding presence changed only the *typical* size, never the bound. The whole +6 is `pressure_pa`. That is worth knowing before sizing a buffer around presence — an optional field costs its full worst case in RAM whether or not this particular node ever sets it.
 
-```
+```text
 node_Command_size = 20
   schema_version   1 (tag) + 5 (uint32 varint, worst case)   =  6
   sequence         1 + 5                                     =  6
@@ -489,7 +489,7 @@ That is §6's union claim in arithmetic: the two empty arms contribute nothing, 
 
 `Ack` is the same exercise one level deeper:
 
-```
+```text
 node_DeviceInfo_size = 75
   firmware_version  1 + 1 + 15 (max_size 16, minus NUL)  = 17
   board             1 + 1 + 31                           = 33
@@ -595,7 +595,7 @@ That division is the file boundary in miniature: `protocol.cpp` turns a result i
 The same `.proto` feeds two completely independent generators:
 
 | | Firmware | Host |
-|---|---|---|
+| --- | --- | --- |
 | Generator | nanopb, via `zephyr_nanopb_sources()` in `gateway/CMakeLists.txt` | `grpc_tools.protoc`, via `host/generate.sh` |
 | Output | `node.pb.c` / `node.pb.h` (C) | `node_pb2.py` |
 | Runs | Every build, into the build directory | On demand, gitignored |
@@ -607,7 +607,7 @@ Neither output is checked in. Both are regenerated from the same file, which is 
 
 Python's generated modules embed the compiler version and validate it at import:
 
-```
+```text
 gencode 7.35.1  runtime 5.29.6
 Runtime version cannot be older than the linked gencode version.
 ```
@@ -677,7 +677,7 @@ That prints `schema_version: 1` and `co2_ppm: 0`. Now delete `optional` from `co
 Start the harness on the Pi (`host/.venv/bin/python host/monitor.py`) and work through:
 
 | Command | Expect | Proves |
-|---|---|---|
+| --- | --- | --- |
 | *(just watch)* | a decoded `Telemetry` every ~5 s | nanopb encode ↔ Python decode agree on field numbers, wire types and enum values |
 | `command.py info` | `ACK_STATUS_OK` + `firmware`, `board`, `clientid` | `max_size`-bounded strings survive the round trip (§9) |
 | `command.py trigger` | `ACK_STATUS_OK`, immediate telemetry | the empty-message `oneof` arm — two bytes on the wire — dispatches (§6) |

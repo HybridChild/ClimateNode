@@ -36,7 +36,7 @@ Note the two sources from outside the app directory. `target_sources` takes any 
 
 `list(APPEND zephyr_cmake_modules …)` builds an ordered list, each `include()`d in turn:
 
-```
+```text
 … boards → (dts) → (kconfig) → arch → soc → [foreach ends] → include(kernel)
 ```
 
@@ -45,7 +45,7 @@ Note the two sources from outside the app directory. `target_sources` takes any 
 ## The four kinds of files
 
 | Role | Examples | Rule |
-|---|---|---|
+| --- | --- | --- |
 | **Source inputs — your app** | overlay, `prj.conf`, `CMakeLists.txt`, `main.cpp` (in *this* repo) | you author these |
 | **Source inputs — the Zephyr tree** (read-only) | board `.dts`, SoC `.dtsi`, defconfig, bindings, in-tree driver `.c`/`Kconfig` | live in `~/zephyr-workspace/zephyr`; **override** via overlay/`prj.conf`, don't edit |
 | **Generators** (run at CMake configure) | C preprocessor (`cpp`), the three DT Python scripts, Kconfig | run automatically |
@@ -56,7 +56,7 @@ Note the two sources from outside the app directory. `target_sources` takes any 
 
 `dtc` is **not** the parser — Zephyr parses with its own Python `edtlib` and only runs `dtc` as an optional linter. `edt.pickle` is the parsed-devicetree hub: read by `gen_defines.py` (→ C macros) and by Kconfig (→ `DT_HAS_*` values). `Kconfig.dts` is generated from the **bindings**, not from your devicetree.
 
-```
+```text
  SOURCE INPUTS                    DTS STAGE  (Python; dtc only lints)                   CONSUMED BY
  board .dts ┐
  SoC .dtsi  ├─► cpp ─► zephyr.dts.pre ─┐
@@ -75,7 +75,7 @@ Note the two sources from outside the app directory. `target_sources` takes any 
 ### The ⭐ bridge (exact mechanism)
 
 - **Declaration** — `gen_driver_kconfig_dts.py` scans *all* bindings (not your devicetree) and writes `Kconfig.dts`, declaring one symbol per compatible:
-  ```
+  ```kconfig
   config DT_HAS_SENSIRION_SCD40_ENABLED
       def_bool $(dt_compat_enabled,$(DT_COMPAT_SENSIRION_SCD40))
   ```
@@ -88,7 +88,7 @@ Bindings decide which symbols *exist*; `edt.pickle` decides which are `y`.
 All under `gateway/build/zephyr/` unless noted.
 
 | Artifact | Made by ← from | Consumed by | Verified evidence |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `zephyr.dts.pre` | `cpp` ← board `.dts` + SoC `.dtsi` + overlay | `gen_edt.py` (intermediate) | 202 KB |
 | `edt.pickle` | `gen_edt.py` ← `.dts.pre` + bindings | `gen_defines.py`, Kconfig's `dt_compat_enabled` | 1.7 MB — **the DT hub** |
 | `zephyr.dts` | `gen_edt.py` (debug dump) | **humans** (debug: "did my overlay merge?") + `dtc` lint | `scd40@62` at line 669, back-refs `overlay:5` |
@@ -106,7 +106,7 @@ The last row is the one generator this *app* adds; everything above it is Zephyr
 ## Worked example: `&i2c1` → SCD40, end to end
 
 | Stage | File : line | Content |
-|---|---|---|
+| --- | --- | --- |
 | input | `gateway/boards/nucleo_h753zi.overlay:4-17` | `scd40@62 { compatible="sensirion,scd40"; reg=<0x62>; status="okay"; zephyr,deferred-init }` |
 | ↓ gen_edt | `build/zephyr/zephyr.dts:669` | node merged under `/soc/i2c@40005400`; recorded in `edt.pickle` |
 | ↓ gen_defines | `devicetree_generated.h:25907,25912` | `_BUS → i2c@40005400`, `_ADDRESS 0x62` |

@@ -5,7 +5,7 @@ Decisions and verified setup for the Nucleo ↔ Pi MQTT link. Terse by intent �
 ## Transport
 
 | | |
-|---|---|
+| --- | --- |
 | Protocol | **MQTT 3.1.1** over TCP (fixed up front — see the README) |
 | Broker | **Mosquitto 2.0.11** on the Pi, `192.168.10.1:1883` |
 | Client | Nucleo at `192.168.10.2`, Zephyr `CONFIG_MQTT_LIB` |
@@ -16,7 +16,7 @@ Decisions and verified setup for the Nucleo ↔ Pi MQTT link. Terse by intent �
 `node/<id>/<kind>` — general → specific, so a harness can select one node (`node/1/telemetry`), one kind across nodes (`node/+/telemetry`), or one node entirely (`node/1/#`) without firmware changes.
 
 | Topic | Direction | QoS | Retain | Payload |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `node/<id>/telemetry` | node → host | **0** | no | `Telemetry` protobuf |
 | `node/<id>/command` | host → node | **1** | no | `Command` protobuf |
 | `node/<id>/ack` | node → host | **1** | no | `Ack` protobuf |
@@ -31,7 +31,7 @@ Decisions and verified setup for the Nucleo ↔ Pi MQTT link. Terse by intent �
 **Why two connections rather than one.** Everything above works on a single connection except one thing, and that one thing is the entire justification: **MQTT 3.1.1 permits exactly one Last Will per connection.** A will is registered in the CONNECT packet, so a connection can cover one status topic and no more.
 
 | Failure | How `node/2/status` becomes `offline` |
-|---|---|
+| --- | --- |
 | peer node dies, gateway alive | the relay's heartbeat timeout notices and publishes — firmware, either design |
 | **gateway dies, peer alive** | **the `nucleo-2` session's will fires.** With one connection nothing published it and the topic stayed retained-`online`, stale |
 | both die | both wills fire, one per status topic |
@@ -75,7 +75,7 @@ That is the intended trade — patience over hammering a dead endpoint — but i
 
 Mosquitto 2.0 binds to loopback and denies anonymous **by default**, so an untouched install is unreachable from the Nucleo (connection *refused*). Drop-in at `/etc/mosquitto/conf.d/bench.conf` (read via `include_dir` from the shipped `mosquitto.conf`, which stays untouched):
 
-```
+```conf
 listener 1883 192.168.10.1
 allow_anonymous true
 ```
@@ -113,7 +113,7 @@ Check it holds: `sudo reboot`, then once the Pi is back, `systemctl is-active mo
 Worth separating before testing either, because they look identical on the topic and share nothing else:
 
 | | Published by | Fires when | Latency |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Relay liveness timeout | the **gateway's firmware**, via `chan_relay_status` | the peer stops beating | `kHeartbeatTimeoutMs`, 3.5 s |
 | **Last Will** | the **broker**, unprompted | the gateway's MQTT connection dies uncleanly | 1.5 × `kKeepaliveSec` |
 
@@ -126,7 +126,7 @@ The Last Will exists for the case the first mechanism structurally cannot cover:
 The will fires when the broker stops hearing from the node for 1.5× keepalive. Observing that requires the node to look dead **while the Pi's own networking stays intact** — because `192.168.10.1` is both where Mosquitto listens *and* where a local `mosquitto_sub` connects. Anything that drops carrier takes the observer down with the node, so nothing can watch.
 
 | Method | Works? | Why |
-|---|---|---|
+| --- | --- | --- |
 | Pull the Ethernet cable | ❌ | Carrier loss makes NetworkManager deactivate `eth0`, removing `192.168.10.1`. The broker's listener and the local subscriber both die with it. Verified: `ip -br addr show eth0` → `DOWN`. |
 | Hold the board's reset button | ❌ | The LAN8742's nRST is tied to the board NRST, so reset kills the **PHY** too — link drops, same as above. (The PHY runs fine without firmware *configuring* it, but not while held in reset.) |
 | **Drop the node's packets at the Pi** | ✅ | Operates at the IP layer; physical link and `eth0` address are untouched, so the observer stays connected. |
@@ -147,7 +147,7 @@ This exercises both directions of the failure at once: the broker detects a dead
 
 **Both wills, and what the stagger between them proves.** Run with `mosquitto_sub -h 192.168.10.1 -t 'node/#' -v` and leave CAN connected, so the peer stays alive and only the gateway's *connection* dies:
 
-```
+```text
 18:59:18  node/1/telemetry  seq=348  ...        <- last packet of the nucleo-1 session
 18:59:22  node/2/telemetry  seq=165  ...        <- last packet of the nucleo-2 session
           # nft rule applied here

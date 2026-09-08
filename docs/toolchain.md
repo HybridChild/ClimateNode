@@ -4,7 +4,7 @@ This project builds as a **freestanding Zephyr application** against a **shared 
 
 ## Firmware toolchain (Mac)
 
-```
+```text
 ~/zephyr-workspace/        <- shared global west workspace (topdir, not a git repo)
 ├── .venv/                 python venv holding `west` (v1.5.0)
 ├── .west/config           manifest = zephyr, base = zephyr
@@ -52,7 +52,7 @@ The board follows from the app rather than being something to remember — `gate
 
 **Two boards attached at once is the normal case**, and it breaks the two scripts that have to pick one. `./scripts/probe.sh` is what they ask:
 
-```
+```console
 $ ./scripts/probe.sh
 APP           PROBE           SERIAL                    PORT
 gateway       STLINK_V3       0052003D3335510235383531  /dev/cu.usbmodem202144403

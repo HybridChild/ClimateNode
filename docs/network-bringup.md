@@ -10,7 +10,7 @@ Builds against the shared global Zephyr workspace — see [`toolchain.md`](toolc
 
 Unlike the sensor, **no `.cpp` in this repo appears here.** The whole pipe is devicetree + Kconfig + one Zephyr subsystem that runs before `main()`:
 
-```
+```text
 dts/arm/st/h7/stm32h7.dtsi          the MAC + MDIO nodes (in Zephyr, status="disabled")
 boards/st/nucleo_h753zi.dts         enables them + the LAN8742 PHY + RMII pins (in Zephyr)
 gateway/prj.conf                    CONFIG_NET_* — which layers compile in, and the address
@@ -68,7 +68,7 @@ Three things worth reading off this:
 
 **2. Kconfig — which layers compile in.** The networking block of `gateway/prj.conf`:
 
-```
+```conf
 CONFIG_NETWORKING=y
 CONFIG_NET_L2_ETHERNET=y      # the Ethernet link layer (frames ⇄ the MAC driver)
 CONFIG_NET_IPV4=y             # IP addressing
@@ -89,7 +89,7 @@ Note what's **absent**, exactly as with the sensor driver: we never set the MAC 
 **3. The boot sequence — where the interface actually comes up.** Three Zephyr mechanisms fire in order, none of them app code:
 
 | When | What | Effect |
-|---|---|---|
+| --- | --- | --- |
 | `POST_KERNEL` (driver init) | `ETH_NET_DEVICE_DT_INST_DEFINE(0, eth_initialize, …)` (`eth_stm32_hal_common.c:406`) | MAC driver inits and **registers a `net_if`** bound to the Ethernet L2 |
 | PHY link-up (async, interrupt/poll) | driver calls `net_eth_carrier_on(iface)` (`eth_stm32_hal_common.c:245`) | interface goes *data-up* — it can carry frames only once the cable has carrier |
 | `APPLICATION`, prio 95 | `SYS_INIT(init_app, APPLICATION, …)` in `net_config` (`init.c:565`) | applies the static IPv4 address (below) |
@@ -122,7 +122,7 @@ Verified on hardware. The link needs no sensor and no broker — it comes up on 
 
 **1. The interface exists and has the address.** At the console:
 
-```
+```console
 uart:~$ net iface
 ```
 
@@ -132,7 +132,7 @@ Expect one Ethernet interface, `Ethernet <up>` (with the cable in), `IPv4 addres
 
 **2. The node can reach the Pi.** ICMP outbound from the board:
 
-```
+```console
 uart:~$ net ping 192.168.10.1
 ```
 

@@ -9,7 +9,7 @@ Part of this reference is inline, deliberately: the header comments in [`../shar
 Six on the gateway, defined across two translation units. The first four carry data *toward* the network, the last two carry commands *away* from it, and the observer kinds sort themselves the same way:
 
 | Channel | Defined in | Message | Observer | Why that kind |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `chan_telemetry` | `sensor.cpp` | `sensor_reading`, 44 B | listener | state; a superseded reading is one the host is better off not getting |
 | `chan_relay_telemetry` | `relay.cpp` | `relay_up`, 164 B | listener | same, for a reading this node did not take |
 | `chan_relay_ack` | `relay.cpp` | `relay_up`, 164 B | listener | an event, but at most one is ever outstanding — see below |

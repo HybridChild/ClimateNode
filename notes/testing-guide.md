@@ -58,7 +58,7 @@ The problem there is not `encode_telemetry()`'s signature. It is that five thing
 The gateway is five translation units instead, each with one responsibility:
 
 | File | Owns | Depends on |
-|---|---|---|
+| --- | --- | --- |
 | `sensor.cpp` | acquisition: the SCD-40, the sample period, the bounds | the device, zbus |
 | `protocol.cpp` | the wire format: internal types ↔ protobuf | nanopb |
 | `commands.cpp` | command semantics: dispatch, dedupe, node identity | zbus, protocol |
@@ -93,7 +93,7 @@ ZTEST(protocol, test_telemetry_round_trip)
 **Assertions are macros that record a failure and return.**
 
 | Macro | Checks |
-|---|---|
+| --- | --- |
 | `zassert_true(cond, msg, ...)` / `zassert_false` | a condition |
 | `zassert_equal(a, b, ...)` / `zassert_not_equal` | scalar equality |
 | `zassert_ok(rc, ...)` | an integer return is 0 — the Zephyr idiom for success |
@@ -114,7 +114,7 @@ There is also `zassume_*`, which *skips* rather than fails — for preconditions
 This is the decision that surprises people, because Zephyr offers four answers and they differ enormously in speed and fidelity.
 
 | Platform | How it runs | Speed | Fidelity |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | **Real board** (`nucleo_h753zi`) | flashed, output over serial | seconds per cycle | total — the actual chip |
 | **QEMU** (`qemu_cortex_m3`) | emulated ARM, real Zephyr kernel, cross-compiled | ~1 s | high: real kernel, real toolchain, no real peripherals |
 | **`native_sim`** | Zephyr compiled as a native host binary | milliseconds | medium: host compiler, host libc, POSIX underneath |
@@ -281,7 +281,7 @@ None of this makes the technical guidance different. It raises the stakes on §7
 
 ## 9. The whole picture, and its edges
 
-```
+```text
    ┌──────────────────────────────────────────────────────────────┐
    │  no hardware — scripts/test.sh, ~31 s                         │
    │                                                              │
@@ -325,7 +325,7 @@ The suite runs on the Mac with nothing attached.
 ./scripts/test.sh
 ```
 
-```
+```text
 INFO    - 5 of 5 executed test configurations passed (100.00%), 0 built (not run), 0 failed
 INFO    - 51 of 51 executed test cases passed (100.00%)
 ```
@@ -342,7 +342,7 @@ A suite you have never seen fail is a suite you have no reason to trust. Break o
 zassert_equal(sc.interval_ms, 999, "a rejected publish must leave the channel unchanged");
 ```
 
-```
+```text
     Assertion failed at CMAKE_SOURCE_DIR/src/main.cpp:179:
     commands_test_out_of_range_interval_is_rejected_atomically: (sc.interval_ms not equal to 999)
 a rejected publish must leave the channel unchanged
@@ -382,7 +382,7 @@ and in `test_a_receiver_bound_elsewhere_hears_nothing`, bind the "wrong" context
 int rc = isotp_bind(&wrong_ctx, can_dev, &id_to_gateway, &id_to_peer, &fc_opts, K_MSEC(200));
 ```
 
-```
+```text
  FAIL - test_a_receiver_bound_elsewhere_hears_nothing
  FAIL - test_the_heartbeat_filter_ignores_the_isotp_identifiers
 ```

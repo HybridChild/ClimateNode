@@ -9,7 +9,7 @@ If you want the **concept** rather than the decision, you are in the wrong folde
 Each row is a reference here and the guide it points back to. The guide teaches the concept; the reference records what we built.
 
 | Reference (here) | Records | Teaching guide (`../notes/`) |
-|---|---|---|
+| --- | --- | --- |
 | [`build-system-overview.md`](build-system-overview.md) | Which build input produces which generated file, consumed by what — checked against a real `gateway/build/` | [`zephyr-build-system-guide.md`](../notes/zephyr-build-system-guide.md) |
 | [`sensor-bringup.md`](sensor-bringup.md) | How the SCD-40 is wired, described, initialised and read on this bench; the deferred-init and poll-cadence decisions | [`sensor-api-guide.md`](../notes/sensor-api-guide.md) |
 | [`mqtt-design.md`](mqtt-design.md) | The topic hierarchy, per-topic QoS, and retained-will status — the Nucleo ↔ Pi link, starting at the socket | [`communication-guide.md`](../notes/communication-guide.md) |

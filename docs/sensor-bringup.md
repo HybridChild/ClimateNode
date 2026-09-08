@@ -10,7 +10,7 @@ Builds against the shared global Zephyr workspace — see [`toolchain.md`](toolc
 
 Four files, each doing one thing:
 
-```
+```text
 gateway/boards/nucleo_h753zi.overlay    the SCD-40 device on I2C1, marked deferred-init
 gateway/prj.conf                        CONFIG_SENSOR + CONFIG_I2C + the sensor shell
 gateway/src/sensor.cpp                  owns the device: init, the sampling thread, both channels
@@ -41,7 +41,7 @@ shared/app_channels.h                   the struct the readings travel in
 
 **2. Kconfig — `gateway/prj.conf`.** The sensor's share of it:
 
-```
+```conf
 CONFIG_SENSOR=y            # the sensor subsystem (sample_fetch / channel_get API)
 CONFIG_I2C=y               # I2C bus driver
 CONFIG_SENSOR_SHELL=y      # `sensor get scd40@62` from the console — see Bring-up checks
@@ -87,7 +87,7 @@ Wiring first: SCD-40 STEMMA QT → Nucleo — SCL→**PB8** (D15), SDA→**PB9**
 
 **1. The device initialised.** Within ~2.5 s of reset the log should carry:
 
-```
+```text
 <inf> node_sensor: SCD-40 online
 ```
 
@@ -95,7 +95,7 @@ Wiring first: SCD-40 STEMMA QT → Nucleo — SCL→**PB8** (D15), SDA→**PB9**
 
 **2. The driver returns plausible numbers.** Wait ~5 s after the message above, then:
 
-```
+```console
 uart:~$ sensor get scd40@62 co2 ambient_temp humidity
 ```
 

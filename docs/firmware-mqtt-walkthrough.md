@@ -5,7 +5,7 @@ A guided reading of `gateway/src/main.cpp`, written to teach the patterns rather
 `main.cpp` owns the **MQTT sessions** and nothing else. The application is five translation units, each with one job:
 
 | File | Owns |
-|---|---|
+| --- | --- |
 | `sensor.cpp` | acquisition: the SCD-40, the sample period, the bounds |
 | `protocol.cpp` | the wire format: internal types ↔ protobuf |
 | `commands.cpp` | command semantics: dispatch, duplicate suppression, node identity |
@@ -22,7 +22,7 @@ So when this file decodes a command it calls `decode_command()` (protocol) and t
 
 **Four threads.** Each owns one clock and one job:
 
-```
+```text
 sensor.cpp   K_THREAD_DEFINE(sensor_tid, …)
   └─ forever: read the SCD-40, publish to chan_telemetry,
               wait out the sample period (or wake early for a command)
@@ -140,7 +140,7 @@ static struct mqtt_utf8 will_message;
 `mqtt_connect()` does not copy them. `client_setup()` stores *pointers* — `s->client.will_topic = &s->will_topic` — and the library reads through them when it serialises CONNECT. So a function-local `static` is shared storage: both clients would point at the same bytes, whichever connected last would decide the will topic for both, and one status topic would get two wills while the other got none. Nothing reports that, because a will is only observable when a node actually dies. Per-session storage is what makes each will independent, and it is the reason this is a struct rather than four parallel arrays.
 
 | Field | What it becomes |
-|---|---|
+| --- | --- |
 | `client_id` | Identifies this session to the broker |
 | `keepalive` | A 16-bit seconds field in the CONNECT packet |
 | `clean_session` | A flag bit: discard any prior server-side state for this client id |
@@ -319,7 +319,7 @@ The deadlines that genuinely do belong here — one per session — are minimise
 `zsock_poll()` understands file descriptors and nothing else. A zbus channel is not one, so on its own it cannot be waited for alongside a socket. The options are then:
 
 | Approach | Cost |
-|---|---|
+| --- | --- |
 | Poll the bus on a short timeout | Wakes the thread constantly to usually find nothing; adds latency equal to the tick |
 | Publish MQTT directly from the zbus callback | Runs on the sensor thread, so two threads touch a non-thread-safe `mqtt_client` |
 | **Signal an eventfd from the callback** | One extra descriptor; the loop stays fully blocking |
@@ -502,7 +502,7 @@ Note also that `chan_sensor_cmd` uses a **message subscriber**, not a listener: 
 `relay.cpp` joins this file through four more channels, and the reason they are worth reading after the two above is that they are *the same pattern with the arguments re-derived* — not a new mechanism:
 
 | Channel | Observer | Because |
-|---|---|---|
+| --- | --- | --- |
 | `chan_relay_telemetry` | listener → eventfd | state, latest-wins — the `chan_telemetry` argument |
 | `chan_relay_ack` | listener → eventfd | at most one is ever outstanding, so latest-wins cannot collapse anything |
 | `chan_relay_status` | listener → eventfd | liveness is state, and latest-wins is what a retained topic means |

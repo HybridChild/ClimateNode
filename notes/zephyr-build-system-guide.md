@@ -50,7 +50,7 @@ There is a second idea, just as important: **Zephyr resolves everything it possi
 
 Three programs cooperate to produce firmware, and they sit in a strict hierarchy. Confusing their roles is the most common source of "wait, what actually does the building?"
 
-```
+```text
 west   — orchestrates: manages the source tree and launches the build   (Python)
 cmake  — configures:   answers the two questions, plans the build
 ninja  — executes:     runs the planned compile and link commands
@@ -128,7 +128,7 @@ Here is where people are often misled by the name. There is a classic tool calle
 
 The real pipeline is three Python scripts, and the artifact at its centre is a parsed model of the tree saved as `edt.pickle`:
 
-```
+```text
 board .dts ┐
 SoC  .dtsi ├─► cpp ─► (merged source) ─► gen_edt.py ─► edt.pickle ─► gen_defines.py ─► devicetree_generated.h
 overlay    ┘                                 ▲
@@ -186,7 +186,7 @@ The coupling is a clean division of labour between *declaring* a configuration s
 - **Declaration comes from the bindings, and is board-independent.** A script (`gen_driver_kconfig_dts.py`) scans *every binding in the Zephyr source tree* — `dts/bindings/`, one YAML file per kind of hardware — and emits, for each `compatible` it finds there, a Kconfig symbol named `DT_HAS_<COMPATIBLE>_ENABLED`. This produces a generated Kconfig file that declares thousands of such symbols — for every kind of hardware Zephyr knows about, whether or not you have it.
 - **The value comes from your devicetree.** Each of those symbols is defined as:
 
-  ```
+  ```kconfig
   config DT_HAS_SENSIRION_SCD40_ENABLED
       def_bool $(dt_compat_enabled,sensirion,scd40)
   ```
@@ -197,7 +197,7 @@ So `edt.pickle` — the parsed devicetree — is consulted twice: once by `gen_d
 
 The payoff is the driver's own Kconfig entry:
 
-```
+```kconfig
 config SCD4X
     default y
     depends on DT_HAS_SENSIRION_SCD40_ENABLED || DT_HAS_SENSIRION_SCD41_ENABLED
@@ -286,7 +286,7 @@ That is the entire sharing mechanism. `peer-node/CMakeLists.txt` says the same t
 
 The object files are the proof that nothing clever is happening. CMake names an object after its source path, and for a source from outside the project it mirrors the whole absolute path underneath the target's own directory:
 
-```
+```text
 gateway/build/CMakeFiles/app.dir/src/main.cpp.obj
 gateway/build/CMakeFiles/app.dir/Users/.../shared/protocol.cpp.obj
 ```
@@ -300,7 +300,7 @@ Nor could there be one. The two objects are for different instruction sets — a
 For completeness, here are all four, with the one you have just seen at the top. Read the table knowing they are not four answers to one question: the first two are genuine alternatives for sharing source inside one repo, the third is that same question asked *across* repos, and the fourth is a different axis entirely.
 
 | Mechanism | What it is | Buys you | Costs |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | **`target_sources` with an outside path** | plain CMake, as above | nothing to set up; the file is simply part of each app | no isolation — same flags, no Kconfig of its own |
 | **`zephyr_library()`** | a separate CMake library, linked into the image | its own compile options, and a Kconfig symbol that can switch it per app | a *different target*, so include paths and generated headers must be plumbed to it by hand |
 | **A Zephyr module** | a directory with `zephyr/module.yml`, fetched by west | shares across *repos*, versioned on its own, contributes its own `Kconfig` and DT bindings | a second repo and a manifest entry to maintain |
@@ -375,7 +375,7 @@ The sensor path is Zephyr's own machinery. Run the §8 generator alongside it an
 3. **Ninja runs the generator** when it notices `node.proto` is newer than its outputs, exactly as it would re-run a compiler. The outputs land in `gateway/build/`.
 4. **The generated `.c` compiles like any other source** — as **C**, even though the two app sources beside it are C++, because that is the language it was written in:
 
-   ```
+   ```text
    [16/335] Building C object CMakeFiles/app.dir/node.pb.c.obj
    [26/335] Building CXX object CMakeFiles/app.dir/src/protocol.cpp.obj
    [30/335] Building CXX object CMakeFiles/app.dir/src/sensor.cpp.obj
@@ -415,7 +415,7 @@ Everything above is claims about a pipeline you cannot see. All six exercises be
 grep -A6 'scd40@62' gateway/build/zephyr/zephyr.dts
 ```
 
-```
+```dts
 /* node '/soc/i2c@40005400/scd40@62' defined in .../gateway/boards/nucleo_h753zi.overlay:4 */
 scd40: scd40@62 {
         compatible = "sensirion,scd40"; /* in .../nucleo_h753zi.overlay:5 */
@@ -440,7 +440,7 @@ grep -rn 'CONFIG_SCD4X' gateway/prj.conf           # no matches: you never asked
 grep -n 'SENSIRION_SCD40\|CONFIG_SCD4X\|CONFIG_CRC=\|CONFIG_I2C=' gateway/build/zephyr/.config
 ```
 
-```
+```conf
 CONFIG_DT_HAS_SENSIRION_SCD40_ENABLED=y
 CONFIG_I2C=y
 CONFIG_SCD4X=y
@@ -462,7 +462,7 @@ touch proto/node.proto
 ./scripts/build.sh
 ```
 
-```
+```text
 [1/12] Running C++ protocol buffer compiler using nanopb plugin on .../proto/node.proto
 [2/12] Building C object CMakeFiles/app.dir/node.pb.c.obj
 [3/12] Building CXX object CMakeFiles/app.dir/.../shared/protocol.cpp.obj
@@ -514,7 +514,7 @@ print('$app:', *[t for t in e['command'].split() if t.startswith('-mcpu')])
 done
 ```
 
-```
+```text
 gateway: -mcpu=cortex-m7
 peer-node: -mcpu=cortex-m0
 ```
@@ -525,7 +525,7 @@ One file, two entirely different processors. Now look at where each object lande
 find gateway/build/CMakeFiles/app.dir -name 'protocol.cpp.obj'
 ```
 
-```
+```text
 gateway/build/CMakeFiles/app.dir/Users/.../shared/protocol.cpp.obj
 ```
 
@@ -547,7 +547,7 @@ Now build the app that *owns* `relay.h`:
 ./scripts/build.sh
 ```
 
-```
+```text
 In file included from .../shared/protocol.cpp:3:
 .../shared/protocol.h:29:10: fatal error: relay.h: No such file or directory
 ```
@@ -563,7 +563,7 @@ print(*[t for t in e['command'].split() if t.startswith('-I') and 'Ethernet' in 
 "
 ```
 
-```
+```text
 -I.../gateway/build
 -I.../gateway/../shared
 -I.../gateway/build/zephyr/include/generated/zephyr

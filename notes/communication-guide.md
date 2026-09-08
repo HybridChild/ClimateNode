@@ -38,7 +38,7 @@ This guide takes that lower half as a given and builds upward. If you want the *
 §1 told the chain as a story; here it is as a table to come back to. The right-hand column is the one that does the work — what each layer *refuses* to do is precisely why the next one up has to exist.
 
 | Layer | Gives you | Does **not** give you (⇒ why the next layer exists) |
-|---|---|---|
+| --- | --- | --- |
 | **Ethernet** (MAC + PHY) | A frame delivered to a MAC address on this cable | Any notion of "which machine" beyond this one link |
 | **IP** | Addressing: `192.168.10.1` ↔ `.2` | Reliability, ordering, or the concept of a conversation |
 | **TCP** | A reliable, ordered **byte stream** to a port | **Message boundaries**, and any fan-out to multiple readers |
@@ -55,7 +55,7 @@ Two rows deserve emphasis, because they are the ones people skip:
 
 Each layer wraps the one above it — this is **encapsulation**:
 
-```
+```text
                      ┌──────────────────────────────────────┐
 Protobuf  Telemetry: │ co2=812  temp=22.5  rh=41.2  seq=7 … │   26 bytes
                      └──────────────────────────────────────┘
@@ -81,7 +81,7 @@ The Pi unwraps it in exactly the reverse order and hands your 26 bytes to the **
 
 The `hdr+topic` box above is MQTT's **fixed header** followed by its **variable header**. Most of its fields belong to concepts that arrive later — QoS (§5) and retain (§7), picked back up there. One field, though, is the whole reason the table above says MQTT is where framing gets solved:
 
-```
+```text
 Fixed header
    byte 1      packet type (= PUBLISH) + four flag bits         → §5, §7
    1–4 bytes   Remaining Length — how many bytes follow         ← the framing answer
@@ -118,7 +118,7 @@ That is all bookkeeping about *who is currently connected*, it lives in the firm
 
 MQTT replaces the direct client/server relationship with **publish/subscribe through a broker**: a middleman that every participant connects to.
 
-```
+```text
       Nucleo                    Raspberry Pi                   other clients
    ┌──────────┐              ┌───────────────┐              ┌──────────────┐
    │ publisher├──connect────▶│  Mosquitto    │◀───connect───┤ paho harness │
@@ -143,14 +143,14 @@ Two words used above name different *kinds* of thing, and keeping them apart pre
 
 The same split exists on the web:
 
-```
+```text
 HTTP   : MQTT           the protocol / contract
 nginx  : Mosquitto      a server / broker implementation
 curl   : mosquitto_pub  a client implementation
 ```
 
 | Role | Speaks MQTT as… | Programs here |
-|---|---|---|
+| --- | --- | --- |
 | **Broker** | server | Mosquitto |
 | **Client** | client | `mosquitto_pub` / `mosquitto_sub`, the paho-mqtt harness, Zephyr's `CONFIG_MQTT_LIB` (the Nucleo) |
 
@@ -167,7 +167,7 @@ So frame the work ahead accordingly: when you write the firmware you are not "pr
 Crucially, that is **not** the same as *receiving data*. A program can read incoming bytes all day on a connection **it opened itself** without ever listening. Keeping these two apart resolves most confusion about who is a server here:
 
 | | **Listening** — open to new inbound TCP connections | **Receives data** |
-|---|---|---|
+| --- | --- | --- |
 | **Mosquitto** (broker) | ✅ yes — on `192.168.10.1:1883` | ✅ |
 | **Nucleo** | ❌ never | ✅ commands |
 | `mosquitto_sub` | ❌ never | ✅ `SUBACK`, published messages |
@@ -186,7 +186,7 @@ The arrows in the diagram in §3.2 show only **one** of two directions that matt
 - **Data-flow direction** — *which way messages travel* once a connection is open. A different question, and for one of the two roles it runs **opposite** to the arrow:
 
 | Role | Connection (who dials) | Data (which way messages go) | |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Publisher | pub → broker | pub → broker | same direction |
 | Subscriber | sub → broker | broker → sub | **opposite!** |
 
@@ -219,7 +219,7 @@ A **topic** is a concept that exists **purely at the MQTT layer** — it is defi
 
 That makes it a *second, independent* addressing system stacked on top of the first. IP addresses say *which machine*; topics say *which stream of information*. A subscriber never says "give me messages from 192.168.10.2" — it says "give me `node/1/telemetry`", and neither side cares what IP that came from.
 
-```
+```text
 node/1/telemetry
 └─┬┘ │  └───┬───┘
   │  │      └── what kind of information
@@ -232,7 +232,7 @@ node/1/telemetry
 Subscribers (never publishers) may use two wildcards:
 
 | Wildcard | Meaning | `node/1/telemetry` | `node/2/telemetry` | `node/1/sensor/telemetry` |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `node/1/telemetry` | exact | ✅ | ❌ | ❌ |
 | `node/+/telemetry` | `+` = exactly **one** level | ✅ | ✅ | ❌ |
 | `node/+/+/telemetry` | two `+` = **one** level each | ❌ | ❌ | ✅ |
@@ -262,7 +262,7 @@ QoS is the most misunderstood part of MQTT, because there are two wrong guesses 
 ### The three levels
 
 | QoS | Name | Packet flow | Guarantee |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | **0** | at most once | `PUBLISH` → *(nothing)* | fire and forget |
 | **1** | at least once | `PUBLISH` → `PUBACK` | arrives, but **maybe more than once** |
 | **2** | exactly once | `PUBLISH` → `PUBREC` → `PUBREL` → `PUBCOMP` | arrives exactly once |
@@ -275,7 +275,7 @@ Read the `Packet flow` column carefully: **every row describes one client talkin
 
 A publisher never sends to a subscriber. It sends to the broker, and the broker sends to each subscriber. Those are **two independent transactions**, negotiated separately, each with its own QoS, its own acknowledgements and its own packet identifiers:
 
-```
+```text
 publisher ──PUBLISH (QoS 1, id 7)──▶  broker  ──PUBLISH (QoS 1, id 43)──▶ subscriber
           ◀──── PUBACK (id 7) ──────          ◀──── PUBACK (id 43) ──────
                     hop 1                                hop 2
@@ -286,7 +286,7 @@ So subscribers do acknowledge — **to the broker, never to the publisher.** The
 **The subscriber, not the publisher, decides what hop 2 promises.** Its level is `min(published QoS, granted QoS)`, the granted half being what §4's `SUBACK` returned for the filter that matched:
 
 | Published at | Subscribed at | Hop 2 runs at | Subscriber acks? |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 1 | 1 | **1** | yes — `PUBACK` to the broker |
 | 1 | 0 | **0** | no — downgraded to the weaker of the two |
 | 0 | 1 | **0** | no — a guarantee the sender never made cannot be upgraded |
@@ -324,7 +324,7 @@ The only trace is at the host: `Telemetry.sequence` jumps, say from 41 straight 
 It helps to line up three separate things you might want to be true after publishing, because only two of them are ever promised to you:
 
 | What you might want to be true | What promises it |
-|---|---|
+| --- | --- |
 | the bytes arrived at the broker's machine | TCP |
 | the broker *program* has the message and has taken responsibility for it | the `PUBACK` — this is what QoS 1 buys |
 | a subscriber has the message | **nothing does** |
@@ -335,7 +335,7 @@ The middle row is what a `PUBACK` means. The bottom row is what people assume it
 
 §2 deferred four fields of the `PUBLISH` header. Three of them are this section's — and this is also where the terse notation comes from, because the `-d` traces print those fields as `PUBLISH (d0, q1, r0, m1, ...)`, the same QoS and identifier the diagram above spells out in full:
 
-```
+```text
 d0  DUP flag    — 1 if this is a REDELIVERY of a message already sent
 q1  QoS level   — the three levels above
 r0  RETAIN flag — 1 asks the broker to KEEP this as the topic's last
@@ -357,7 +357,7 @@ This is what "at least once" literally means, and it has a direct design consequ
 
 MQTT has its own answer to that duplicate — QoS 2 — and the machinery is worth understanding before deciding, as this project does, not to use it.
 
-```
+```text
 sender                                    broker
   │  PUBLISH  (d0, q2, m7)  ─────────────▶│  records identifier 7
   │◀──────────────────────  PUBREC  (m7)  │  "got it, and I am holding 7"
@@ -383,7 +383,7 @@ So the cheaper answer is also the stronger one. `Command.sequence` is an applica
 
 Everything so far has quietly assumed a working MQTT session. Dialling the TCP connection (§3.5) is only half of getting one: the MQTT session riding on top has its own opening handshake, and it is exactly two packets.
 
-```
+```text
 client                                      broker
   │  CONNECT ────────────────────────────▶ │  checks protocol version,
   │    client id, clean-session flag,      │  client id, credentials
@@ -434,7 +434,7 @@ That is why `gateway/src/main.cpp` announces and subscribes inside its CONNACK h
 
 The other half of the problem is *when* to try again. Reconnecting instantly hammers a broker that may be down for minutes, so the delay grows: 1 s, then 2, 4, 8, capped at 30 s (`kBackoffMinMs` and `kBackoffMaxMs` in `main.cpp`). It drops back to 1 s only after a session that actually reached `CONNACK`, because a connection that died before that is no evidence the broker is healthy.
 
-```
+```text
    IDLE ──delay elapsed──▶ CONNECTING ──CONNACK──▶ SERVING
      ▲                          │                      │
      │      refused, or         │                      │  keepalive expires,
@@ -494,7 +494,7 @@ Now `node/1/status` answers for anyone who subscribes, whenever they subscribe �
 
 §1–§7 built MQTT from the outside in. This section puts it back where it lives: **one layer of a chain that starts in a sensor's registers and ends at a decoded line on the Pi.** No new MQTT is introduced. What is new is the two seams either side of it — §2's table drew them as neat stacked rows, and they are the parts you actually have to design.
 
-```
+```text
 ┌─ NUCLEO ─────────────────────────────────┐      ┌─ RASPBERRY PI ──────────────┐
 │                                          │      │                             │
 │  SCD-40 ──I²C──▶ sensor thread           │      │                             │
@@ -544,7 +544,7 @@ Step 2 looks like an indirection for nothing — the listener already had the re
 Now the seams. Every boundary in that diagram is the same trick: two things that must cooperate are forbidden from knowing about each other, and something in the middle carries the contract instead.
 
 | Boundary | What each side is spared | Where the contract lives |
-|---|---|---|
+| --- | --- | --- |
 | sensor thread ↔ MQTT thread | `sensor.cpp` names no socket; `main.cpp` names no I²C | `shared/app_channels.h` — the channel and its struct |
 | node ↔ host | the node keeps no roster of consumers (§3.6); the host needs no address for the node | the topic tree (§4) |
 | encoder ↔ decoder | MQTT carries opaque bytes and never inspects them | `proto/node.proto` |
@@ -584,7 +584,7 @@ ss -tlnp | grep 1883                    # which IP:port is it LISTENING on?
 
 `ss -tlnp` is not MQTT at all — it's a Linux tool listing **l**istening **t**CP sockets, **n**umerically, with the owning **p**rocess. It answers the one question that matters before any client can connect: *is anything open to connections at the address the Nucleo will dial?* On a fresh install you get:
 
-```
+```text
 LISTEN 0  100  127.0.0.1:1883  0.0.0.0:*
 LISTEN 0  100      [::1]:1883     [::]:*
 ```
@@ -605,7 +605,7 @@ ss -tlnp | grep 1883
 
 Expected — note the loopback entries are **gone**:
 
-```
+```text
 LISTEN 0  100  192.168.10.1:1883  0.0.0.0:*
              └──────┬──────┘└─┬─┘
                     │         └── port
@@ -739,7 +739,7 @@ mosquitto_pub -h 192.168.10.1 -t 'node/1/telemetry' -m 'qos one'  -q 1 -d
 ```
 
 QoS 0:
-```
+```text
 Client (null) sending CONNECT              ← open the MQTT session
 Client (null) received CONNACK (0)         ← broker accepts; 0 = success
 Client (null) sending PUBLISH (d0,q0,r0,m1,'node/1/telemetry',...(8 bytes))
@@ -747,7 +747,7 @@ Client (null) sending DISCONNECT           ← clean teardown (so no will fires)
 ```
 
 QoS 1 — identical except for one extra packet:
-```
+```text
 Client (null) sending PUBLISH (d0,q1,r0,m1,'node/1/telemetry',...(7 bytes))
 Client (null) received PUBACK (Mid: 1)     ← the entire difference
 Client (null) sending DISCONNECT
@@ -799,7 +799,7 @@ mosquitto_sub -h 192.168.10.1 -t 'node/#' -v
 
 You will see three things at once, and each is a concept from earlier made concrete:
 
-```
+```text
 node/1/status online                          ← retained (§7), delivered instantly on subscribe
 node/1/telemetry <binary>                     ← QoS 0, every ~5 s
 node/1/telemetry <binary>
@@ -813,7 +813,7 @@ But the telemetry payload is unreadable, and that is the point: **MQTT gives you
 host/.venv/bin/python host/monitor.py
 ```
 
-```
+```text
 14:02:11  node/1/status        [retained] online
 14:02:16  node/1/telemetry     seq=1042  co2=  812 ppm  temp=22.41 C  rh=41.3 %  p=    -- Pa  up=  5210.4s  SENSOR_STATUS_OK  (schema v1)
 ```
@@ -825,7 +825,7 @@ Same bytes, same broker, same topics — the only thing added is Protobuf, decod
 ### 9.3 Quick reference
 
 | Command | What it does |
-|---|---|
+| --- | --- |
 | `ss -tlnp \| grep 1883` | which **IP:port** the broker is open on (§3.4) |
 | `systemctl status mosquitto --no-pager` | is the broker service running |
 | `sudo systemctl restart mosquitto` | apply a config change |

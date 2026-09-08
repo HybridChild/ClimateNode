@@ -49,7 +49,7 @@ target_sources(app PRIVATE src/main.cpp src/sensor.cpp src/relay.cpp)
 
 In the build log you will see the payoff. These are the C++-relevant lines out of a 343-step pristine build of this app:
 
-```
+```text
 [18/343] Building C   object CMakeFiles/app.dir/node.pb.c.obj
 [19/343] Building CXX object zephyr/CMakeFiles/zephyr.dir/lib/cpp/minimal/cpp_vtable.cpp.obj
 [20/343] Building CXX object zephyr/CMakeFiles/zephyr.dir/lib/cpp/minimal/cpp_new.cpp.obj
@@ -255,7 +255,7 @@ Add the idiomatic C++ spelling to the top of `gateway/src/sensor.cpp`:
 #include <cstdio>
 ```
 
-```
+```text
 gateway/src/sensor.cpp:1:10: fatal error: cstdio: No such file or directory
 ```
 
@@ -269,7 +269,7 @@ Change it to `#include <stdio.h>` and the build succeeds. **Revert both** — `s
 
 In `gateway/src/main.cpp`, move the `ZBUS_LISTENER_DEFINE(telemetry_listener, on_telemetry);` line from below `}  // namespace` to just above it, so it falls inside the anonymous namespace. Compilation still succeeds; the **link** does not:
 
-```
+```text
 ld.bfd: app/libapp.a(sensor.cpp.obj):(._zbus_channel_observation.static.chan_telemetry00_+0x4):
         undefined reference to `telemetry_listener'
 ```
@@ -292,7 +292,7 @@ $NM gateway/build/zephyr/zephyr.elf | grep _GLOBAL__N_1 | head -4
 
 The first command prints plain, undecorated names:
 
-```
+```text
 080292f8 R chan_telemetry
 08029320 R telemetry_listener
 0800295c T main
@@ -300,14 +300,14 @@ The first command prints plain, undecorated names:
 
 The second prints the same program's C++ functions, decorated:
 
-```
+```text
 080023d4 t _ZN12_GLOBAL__N_112on_telemetryEPK12zbus_channel
 08002888 t _ZN12_GLOBAL__N_116mqtt_evt_handlerEP11mqtt_clientPK8mqtt_evt
 ```
 
 Pipe those through `arm-zephyr-eabi-c++filt` to read them:
 
-```
+```text
 (anonymous namespace)::on_telemetry(zbus_channel const*)
 (anonymous namespace)::mqtt_evt_handler(mqtt_client*, mqtt_evt const*)
 ```

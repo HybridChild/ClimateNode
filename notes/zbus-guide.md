@@ -56,7 +56,7 @@ struct reading latest;      /* guarded by latest_mutex */
 This works and is genuinely fine for small systems. What it does not give you:
 
 | Missing | Why it matters |
-|---|---|
+| --- | --- |
 | **Notification** | The reader must poll the variable, or you bolt a semaphore alongside it and keep the two in sync by hand |
 | **A second consumer** | Every new reader needs its own signalling, added to the writer |
 | **Validation** | Nothing stops a caller storing nonsense; the rules end up duplicated at each writer |
@@ -83,7 +83,7 @@ Note **exactly one message**. A channel is not a queue. Publishing overwrites. T
 The six arguments, since only two of them are self-evident:
 
 | # | Argument | What it is |
-|---|---|---|
+| --- | --- | --- |
 | 1 | name | The symbol. `ZBUS_CHAN_DECLARE` names this same one from another translation unit, which is why the definition must sit at global scope rather than inside an anonymous namespace — see [`language-cpp.md`](language-cpp.md) §6. |
 | 2 | type | The message type. The channel stores exactly one instance, statically; publishing *copies* into it, so there is no queue and no allocation. |
 | 3 | validator | `bool (*)(const void *msg, size_t msg_size)`, called inside `zbus_chan_pub()` before the message is stored. `NULL` for none. §6. |
@@ -100,7 +100,7 @@ Argument 6 is worth one more sentence, because it invites a wrong reading: it is
 **Observer** — something registered to be told when a channel changes. zbus offers three kinds, and choosing between them is the real design decision:
 
 | Kind | How it is notified | Gets the message? |
-|---|---|---|
+| --- | --- | --- |
 | **Listener** | Callback, run synchronously inside `zbus_chan_pub()` | No — reads the channel itself |
 | **Subscriber** | A `k_msgq` receives a *channel pointer* | No — reads the channel itself |
 | **Message subscriber** | A queue receives a *copy of the message* | Yes, its own private copy |
@@ -192,7 +192,7 @@ This gateway is the case where the answer is yes, and the evidence is what a CAN
 
 Everything above is general. Here is the whole of the gateway's bus: six channels, defined across two translation units, with three threads publishing to them. (The peer node runs a cut-down version of the same idea off the same `shared/app_channels.h`: `chan_telemetry` from its sensor thread to its CAN session, and `chan_sensor_cmd` for the commands the gateway relays to it.)
 
-```
+```text
    sensor.cpp                  main.cpp                    relay.cpp
    ──────────                  ────────                    ─────────
    sensor_thread()             the MQTT sessions           rx_thread()
@@ -226,7 +226,7 @@ Everything above is general. Here is the whole of the gateway's bus: six channel
 ```
 
 | Channel | Direction | Observer | Why that kind |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `chan_telemetry` | sensor → MQTT | **listener** | state; a superseded reading is one the host is better off not getting |
 | `chan_relay_telemetry` | CAN → MQTT | **listener** | same argument, for a reading this node did not take |
 | `chan_relay_ack` | CAN → MQTT | **listener** | an event — but at most one is ever outstanding (below) |
@@ -280,7 +280,7 @@ sudo systemctl start mosquitto
 
 During the outage the console keeps logging sensor activity while the MQTT side backs off (`reconnecting in 1000 ms`, doubling to 30000). On reconnect, one line reports the damage:
 
-```
+```text
 <wrn> node: 12 readings coalesced into one publish
 ```
 
@@ -298,7 +298,7 @@ and `monitor.py` shows `sequence` jumping by that count plus one — e.g. `seq=5
 host/.venv/bin/python host/command.py interval 100
 ```
 
-```
+```text
 <- node/1/ack  seq=...  ACK_STATUS_INVALID_ARGUMENT
    detail: interval 100 outside [1000,300000]
 ```
