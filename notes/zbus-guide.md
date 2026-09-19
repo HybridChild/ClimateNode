@@ -53,20 +53,20 @@ struct reading latest;      /* guarded by latest_mutex */
 
 (A **mutex** is a lock exactly one thread can hold at a time. It exists because a struct this size is not written atomically: without one, a reader can catch `latest` half-updated — a new CO₂ value beside a stale timestamp — and nothing in the language warns you.)
 
-This works and is genuinely fine for small systems. What it does not give you:
+The global-plus-mutex works and is genuinely fine for small systems. What it does not give you:
 
 | Missing | Why it matters |
 | --- | --- |
 | **Notification** | The reader must poll the variable, or you bolt a semaphore alongside it and keep the two in sync by hand |
 | **A second consumer** | Every new reader needs its own signalling, added to the writer |
-| **Validation** | Nothing stops a caller storing nonsense; the rules end up duplicated at each writer |
+| **Validation** | Nothing stops a writer storing nonsense; the rules end up duplicated at each write site |
 | **Discoverability** | The coupling is invisible — nothing declares that these two threads share anything |
 
-A message bus is that pattern, generalised and named: **shared storage + notification + a registry of who cares**, declared in one place.
+A message bus is that shared global, generalised and named: **shared storage + notification + a registry of who cares**, declared in one place instead of assembled by hand at each writer.
 
 ## 3. zbus vocabulary
 
-Three nouns.
+Three terms.
 
 **Channel** — a named piece of storage holding exactly one message of a fixed type, plus a lock and a list of observers. Defined statically:
 
@@ -87,13 +87,11 @@ The six arguments, since only two of them are self-evident:
 | 1 | name | The symbol. `ZBUS_CHAN_DECLARE` names this same one from another translation unit, which is why the definition must sit at global scope rather than inside an anonymous namespace — see [`language-cpp.md`](language-cpp.md) §6. |
 | 2 | type | The message type. The channel stores exactly one instance, statically; publishing *copies* into it, so there is no queue and no allocation. |
 | 3 | validator | `bool (*)(const void *msg, size_t msg_size)`, called inside `zbus_chan_pub()` before the message is stored. `NULL` for none. §6. |
-| 4 | user data | A `void *` carried on the channel that zbus never reads. For observers shared between channels that need to tell which one they were invoked for. |
-| 5 | observers | Who is notified, in the order listed — **that order is the notification priority**. |
+| 4 | user data | A `void *` carried on the channel that zbus never reads. Per-channel context for a handler registered on more than one channel: the callback is already given the channel pointer, so `zbus_chan_user_data()` turns that into whatever this particular channel needs it to know — no switch, no side table. |
+| 5 | observers | Who is notified, in the order listed — **the list order is the order they run in**. |
 | 6 | init value | The channel's contents before anything is published. `ZBUS_MSG_INIT`'s own arguments are ordinary positional initialisers for the message struct, not a zbus concept. |
 
-Argument 6 is worth one more sentence, because it invites a wrong reading: it is only ever the channel's *initial contents*. Defining a channel notifies nobody, so no observer ever receives this value. Where it names something a thread also has its own copy of — a default sample period, say — matching the two is a courtesy to whoever reads one without the other, not a mechanism.
-
-`ZBUS_MSG_SUBSCRIBER_DEFINE(name)` takes only the symbol; it expands to a `k_fifo`, the observer struct, and an enabled flag, defaulting to enabled (`ZBUS_MSG_SUBSCRIBER_DEFINE_WITH_ENABLE` takes that explicitly). The private copies it receives come from a fixed `net_buf` pool sized in `prj.conf` by `CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_POOL_SIZE` and `_STATIC_DATA_SIZE`, never the heap — the same no-allocator policy as nanopb, and a pool whose sizing has a sharp edge covered in §9.
+Argument 6 is worth one more sentence, because it invites a wrong reading: it is only ever the channel's *initial contents*. Defining a channel notifies nobody, so no observer ever receives this value — a thread that wants it has to read the channel for itself with `zbus_chan_read()`.
 
 **Publishing** — `zbus_chan_pub(&chan, &msg, timeout)` takes the channel lock, copies the message in, runs every observer, and releases. It is a *copy*, so the publisher's local variable can go out of scope immediately.
 
@@ -103,7 +101,19 @@ Argument 6 is worth one more sentence, because it invites a wrong reading: it is
 | --- | --- | --- |
 | **Listener** | Callback, run synchronously inside `zbus_chan_pub()` | No — reads the channel itself |
 | **Subscriber** | A `k_msgq` receives a *channel pointer* | No — reads the channel itself |
-| **Message subscriber** | A queue receives a *copy of the message* | Yes, its own private copy |
+| **Message subscriber** | A `k_fifo` receives a *copy of the message* | Yes, its own private copy |
+
+Each kind is declared with its own macro, and what they expand to is worth seeing, because they are not symmetric:
+
+| Kind | Macro | What it defines |
+| --- | --- | --- |
+| Listener | `ZBUS_LISTENER_DEFINE(name, cb)` | The observer record, pointing at your callback. No queue — a listener is handed nothing. |
+| Subscriber | `ZBUS_SUBSCRIBER_DEFINE(name, queue_size)` | A `k_msgq` — Zephyr's fixed-size queue — with room for `queue_size` channel pointers. |
+| Message subscriber | `ZBUS_MSG_SUBSCRIBER_DEFINE(name)` | A `k_fifo` — a linked list, which is why there is no size argument. |
+
+That missing size argument is the one to notice. The copies a message subscriber receives do not live in the fifo; each is a buffer borrowed from a `net_buf` pool shared by every message subscriber in the application, sized in `prj.conf` — `CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_POOL_SIZE` counts the buffers, `..._STATIC_DATA_SIZE` sets how many bytes each holds. Never the heap: the same no-allocator policy as nanopb. So it is the pool, not the observer, that bounds how much can be outstanding — and because one pool serves everyone, sizing it has a sharp edge that §9 takes apart.
+
+Every observer also carries an **enabled flag**, which these macros set to true. `zbus_obs_set_enable()` flips it at runtime: a disabled observer stays registered but is skipped when a channel it watches is published. The `..._DEFINE_WITH_ENABLE` variants take that initial value explicitly, for an observer that should start off.
 
 ## 4. Choosing an observer type
 
@@ -144,9 +154,9 @@ bool sensor_cmd_valid(const void *msg, size_t msg_size)
 }
 ```
 
-If it returns false, `zbus_chan_pub()` returns `-ENOMSG` and **nothing is stored and no observer runs**. That last part is what makes it useful rather than decorative: a rejected publish is atomic. The caller knows with certainty that the system did not change.
+If it returns false, `zbus_chan_pub()` returns `-ENOMSG` and **nothing is stored and no observer runs**. That last part is what makes it useful rather than decorative: a rejected publish is atomic. The publisher knows with certainty that the system did not change.
 
-The design value is about *where the rule lives*. Without a validator, every publisher range-checks the interval, and those copies drift apart the moment there are two of them — one from MQTT, one from a shell command, one from a config file. With a validator, the module that owns the data owns the rule, and publishers just report what the bus told them.
+The design value is about *where the rule lives*. Without a validator, every publisher range-checks the interval, and those copies drift apart the moment there are two of them — one from MQTT, one from a shell command, one from a config file. With a validator, the channel owns the rule, and no publisher carries a copy of it.
 
 ## 7. Waiting on a bus and something else at the same time
 
@@ -154,16 +164,16 @@ A consumer thread that only watches the bus is easy: block in `zbus_sub_wait_msg
 
 The hard case is a thread that must watch the bus **and** something unrelated — a socket, a UART, a timer. This project has exactly that: the MQTT thread must wake for broker traffic *and* for fresh readings. There is no combined primitive.
 
-Three ways out, in increasing order of quality:
+Three ways out — one that works, one that looks obvious and is wrong, and the one this project uses:
 
-**Poll the bus on a short timeout.** Block on the socket for, say, 100 ms; on timeout, check the bus non-blockingly; repeat. Works, costs a wakeup ten times a second to usually find nothing, and adds up to 100 ms of latency. Acceptable, unambitious.
+**Poll the bus on a short timeout.** Block on the socket for, say, 100 ms; on timeout, check the bus non-blockingly; repeat. Works, costs a wakeup ten times a second to usually find nothing, and adds as much as 100 ms of latency. Acceptable, unambitious.
 
 **Do the work in the callback.** Let the listener publish the MQTT message directly. This is wrong for a subtle reason: the callback runs on the *sensor* thread, so now two threads call into an `mqtt_client` that is not thread-safe. You would need a mutex around the whole MQTT client, and the sensor thread would block on network I/O.
 
 **Signal a file descriptor.** `poll()` understands descriptors, so give it one: the listener writes to an **eventfd**, which is a counter with a descriptor attached. Add it to the poll set next to the socket and the thread blocks on both with one call, waking only when something genuinely happened.
 
 ```c
-/* in the listener, on the producer's thread */
+/* in the listener callback, on the producer's thread */
 zvfs_eventfd_write(evt_fd, 1);
 
 /* in the consumer's event loop */
@@ -184,7 +194,7 @@ Honest accounting, because "add a bus" is not free:
 - **Indirection** — "who handles this?" is answered by a `ZBUS_OBSERVERS()` list rather than by a function call you can follow. Enable `CONFIG_ZBUS_CHANNEL_NAME` and `CONFIG_ZBUS_OBSERVER_NAME` so at least the logs name things.
 - **New failure modes** — publish timeouts, queue-full conditions, and callbacks that block the producer.
 
-For a firmware of two threads and two channels, that is arguably more machinery than a mutex and a semaphore would need. The payoff is at the *next* consumer: adding one is a line in an observers list, with no edit to the producer at all. Whether the trade is worth it depends on whether you expect a third participant.
+For firmware of two threads and two channels, that is arguably more machinery than a mutex and a semaphore would need. The payoff is at the *next* consumer: adding one is a line in an observers list, with no edit to the producer at all. Whether the trade is worth it depends on whether you expect a third participant.
 
 This gateway is the case where the answer is yes, and the evidence is what a CAN relay costs it. The relay is two more threads, four more channels, a second MQTT identity and a whole second node's traffic through the same firmware — and none of it reaches `sensor.cpp`. The thread that reads the SCD-40 publishes one reading to one channel and knows nothing about a peer node, a CAN bus or a second broker connection, because the only thing it is coupled to is the channel. The honest half of the accounting is that the *consumer* side carries the whole cost: `main.cpp` holds four listeners and the publish paths behind them. But that is the direction the design makes cheap, which is the trade taken deliberately. §9 is the result.
 
@@ -200,7 +210,7 @@ Everything above is general. Here is the whole of the gateway's bus: six channel
                                six descriptors             tx_thread()
                                                            writes it
 
- upward — what the network must publish. All LISTENERS, one eventfd each.
+ upward — what the gateway publishes on the network. All LISTENERS, one eventfd each.
  ┌──────────────────────┐
  │ chan_telemetry       │◀── sensor_thread()    our own reading
  ├──────────────────────┤
@@ -212,7 +222,7 @@ Everything above is general. Here is the whole of the gateway's bus: six channel
  └──────────┬───────────┘
             │   four listeners, four eventfds, one zsock_poll() in main()
             ▼
-      publish to node/1/... and node/2/...
+      MQTT publish to node/1/... and node/2/...
 
  downward — commands off the wire. All MESSAGE SUBSCRIBERS, a private copy each.
  ┌──────────────────────┐
@@ -221,8 +231,8 @@ Everything above is general. Here is the whole of the gateway's bus: six channel
  │ chan_relay_command   │──▶ tx_thread()        then out over ISO-TP
  └──────────┬───────────┘
             ▲
-            │   published on a Command arriving off the socket: commands.cpp
-            │   for chan_sensor_cmd, main.cpp for chan_relay_command
+            │   published to the channel when a Command arrives off the socket:
+            │   commands.cpp for chan_sensor_cmd, main.cpp for chan_relay_command
 ```
 
 | Channel | Direction | Observer | Why that kind |
@@ -240,7 +250,7 @@ The message types and their sizes are in [`zbus-design.md`](../docs/zbus-design.
 
 **The one row that needed thinking about is `chan_relay_ack`.** An ack is plainly an event, so §4 says message subscriber — yet it is a listener. The justification is not "acks are unimportant" but that **at most one ack is ever outstanding**, guaranteed structurally rather than hoped for: `relay.cpp`'s TX thread calls `isotp_send()` with a null completion callback, which blocks until the whole segmented transfer finishes, and then blocks again waiting for the ack. Command round trips are serialised by construction, and latest-wins cannot collapse a set of one. What makes this honest rather than clever is that the premise is *checked*: §7's eventfd counter returns how many times it was signalled, so a count above one means the invariant broke, and `main.cpp` logs that at ERROR — as against the WARN on the telemetry fd, where coalescing is expected and accounted.
 
-**Four eventfds, not one.** A single shared descriptor would say only "something happened", and since `zbus_chan_read()` hands back the channel's current value whether or not it is fresh, the reader would have to read all four channels on every wake and would republish stale ones. `CONFIG_ZVFS_EVENTFD_MAX` is a hard count — the fourth `zvfs_eventfd()` simply fails without it — so this is one of the few places where the design decision shows up directly as a Kconfig number.
+**Four eventfds, not one.** A single shared descriptor would say only "something happened", and since `zbus_chan_read()` hands back the channel's current value whether or not it is fresh, the reader would have to read all four channels on every wake and would republish stale ones. `CONFIG_ZVFS_EVENTFD_MAX` is a hard count — the fourth `zvfs_eventfd()` simply fails unless the symbol is raised to match — so this is one of the few places where the design decision shows up directly as a Kconfig number.
 
 **The observer kinds do *not* decide the pool RAM.** That is a natural thing to assume, and it is worth dismantling carefully, because assuming it produces a memory-corruption bug that can stay hidden for a long time. The message-subscriber net_buf pool is a single pool shared across channels, sized by `CONFIG_ZBUS_MSG_SUBSCRIBER_NET_BUF_STATIC_DATA_SIZE`; listener channels store their message in the channel itself. From that it seems to follow that a listener-only channel never touches the pool, and therefore that putting your big messages on listeners lets you size the pool for the small ones.
 
@@ -305,7 +315,7 @@ host/.venv/bin/python host/command.py interval 100
 
 Then watch `monitor.py`: telemetry keeps arriving at the **previous** cadence, unchanged.
 
-**Proves:** `zbus_chan_pub()` returned `-ENOMSG`, which the MQTT layer maps straight to `ACK_STATUS_INVALID_ARGUMENT`. The period was provably untouched because the message never reached the channel — the rejection is atomic, not a partial application that was rolled back. Note also *where* the rule lives: `main.cpp` never range-checks anything, it only reports what the bus told it.
+**Proves:** `zbus_chan_pub()` returned `-ENOMSG`, which the MQTT layer maps straight to `ACK_STATUS_INVALID_ARGUMENT`. The period was provably untouched because the message never reached the channel — the rejection is atomic, not a partial application that was rolled back. Note also *where* the rule lives: the channel validates, so `commands.cpp` never range-checks the interval.
 
 Now try a legal one and watch the cadence visibly change:
 
@@ -328,7 +338,7 @@ A telemetry message appears **immediately**, not on the next 5 s boundary.
 
 ## 11. The model in one paragraph
 
-A zbus channel is **one message of a fixed type, a lock, and a list of observers**, declared statically — shared storage, notification, and a registry of who cares, which are exactly the three things a bare global-plus-mutex leaves you to build by hand. Publishing copies the message in and runs the observers. Because a channel is not a queue, publishing **overwrites**: right for state, wrong for events, which is why picking the observer kind is the real design decision (§4). A **listener** runs synchronously on the publisher's thread and may only signal; a **message subscriber** gets a private copy on its own thread, so nothing is collapsed. A **validator** puts the rule next to the data it guards and makes rejection atomic. When a consumer must wait on the bus *and* a socket, the answer is an **eventfd** in the poll set rather than a polling timeout. The cost is RAM, a copy per publish, and indirection; the payoff arrives at the *next* consumer, which is a line in an observers list instead of an edit to the producer.
+A zbus channel is **one message of a fixed type, a lock, and a list of observers**, declared statically — the shared storage a bare global already is, plus the notification and the registry it leaves you to build by hand. Publishing copies the message in and runs the observers. Because a channel is not a queue, publishing **overwrites**: right for state, wrong for events, which is why picking the observer kind is the real design decision (§4). A **listener** runs synchronously on the publisher's thread and may only signal; a **message subscriber** gets a private copy on its own thread, so nothing is collapsed. A **validator** puts the rule next to the data it guards and makes rejection atomic. When a consumer must wait on the bus *and* a socket, the answer is an **eventfd** in the poll set rather than a polling timeout. The cost is RAM, a copy per publish, and indirection; the payoff arrives at the *next* consumer, which is a line in an observers list instead of an edit to the producer.
 
 ## 12. Where to go next
 
